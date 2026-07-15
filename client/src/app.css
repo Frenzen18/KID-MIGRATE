@@ -1,0 +1,86 @@
+/* ── Extras on top of shared.css (ported from the mockups) ── */
+
+/* toast */
+#toast{position:fixed;bottom:24px;right:24px;background:#0F172A;color:#fff;border-radius:12px;padding:12px 18px;font-size:13px;display:flex;align-items:center;gap:9px;box-shadow:0 12px 32px rgba(15,23,42,.35);opacity:0;transform:translateY(10px);transition:all .25s;z-index:300;pointer-events:none}
+#toast.show{opacity:1;transform:translateY(0)}
+
+/* modal */
+.modal-overlay{position:fixed;inset:0;background:rgba(15,23,42,.45);display:flex;align-items:center;justify-content:center;z-index:200;padding:20px}
+.modal-box{background:#fff;border-radius:16px;padding:24px;width:100%;max-width:560px;max-height:90vh;overflow-y:auto;box-shadow:0 24px 64px rgba(15,23,42,.3)}
+
+/* tabs / chips */
+.ana-tab{padding:8px 18px;border-radius:9px;border:1px solid #E2E8F0;background:#F8FAFC;font-size:13px;font-weight:600;color:#64748B;cursor:pointer;transition:all .18s}
+.ana-tab.active{background:#0EA5E9;color:#fff;border-color:#0EA5E9}
+.ana-tab:hover:not(.active){background:#EFF6FF;color:#0284C7;border-color:#BAE6FD}
+.bk-chip{padding:7px 14px;border-radius:999px;border:1px solid #E2E8F0;background:#F8FAFC;font-size:12.5px;font-weight:600;color:#64748B;cursor:pointer;display:inline-flex;gap:7px;align-items:center}
+.bk-chip.active{background:#0EA5E9;border-color:#0EA5E9;color:#fff}
+
+/* interactive calendar (ported) */
+.cal-grid{display:grid;grid-template-columns:repeat(7,1fr);gap:3px}
+.cal-day{text-align:center;font-size:11px;font-weight:600;color:#94A3B8;padding:6px 0}
+.cal-cell{aspect-ratio:1;display:flex;flex-direction:column;align-items:center;justify-content:center;font-size:12px;border-radius:8px;cursor:pointer;transition:all .15s;color:#475569;gap:2px}
+.cal-cell:hover{background:#F0F9FF;color:#0EA5E9}
+.cal-cell.today{background:linear-gradient(135deg,#0EA5E9,#0D9488);color:#fff;font-weight:700}
+.cal-cell.selected{background:#EFF6FF;color:#0EA5E9;border:2px solid #0EA5E9;font-weight:700}
+.cal-cell.has-event::after{content:'';width:5px;height:5px;background:#0EA5E9;border-radius:50%}
+.cal-cell.today.has-event::after{background:#fff}
+.cal-cell.other{color:#CBD5E1}
+.cal-cell.past{color:#CBD5E1;cursor:not-allowed}
+.slot-row{display:flex;align-items:stretch;border-bottom:1px solid #F1F5F9;min-height:52px}
+.slot-time{width:70px;font-size:11.5px;color:#94A3B8;padding:8px 10px 8px 0;text-align:right;flex-shrink:0;border-right:2px solid #F1F5F9;font-weight:500}
+.slot-area{flex:1;padding:6px 10px}
+.slot-block{border-radius:8px;padding:8px 12px;font-size:12.5px;font-weight:600;cursor:pointer;transition:all .15s}
+.slot-block:hover{opacity:.88}
+.slot-block.booked{background:#DCFCE7;color:#166534;border-left:3px solid #16A34A}
+.slot-block.pending-slot{background:#FEF9C3;color:#B45309;border-left:3px solid #F59E0B}
+.slot-block.empty{background:#F8FAFC;color:#94A3B8;border:1.5px dashed #E2E8F0;font-weight:400}
+.slot-block.ended{background:#F1F5F9;color:#94A3B8;cursor:not-allowed;border-left:3px solid #CBD5E1}
+
+/* progress chart tooltip */
+.cp-wrap{position:relative}
+.cp-tip{position:absolute;z-index:50;background:#0F172A;color:#fff;border-radius:12px;padding:12px 14px;font-size:12px;line-height:1.5;width:max-content;max-width:260px;box-shadow:0 12px 32px rgba(15,23,42,.4);pointer-events:none;transform:translate(-50%,-112%)}
+.cp-tip .tt-section{font-size:10px;font-weight:700;color:#94A3B8;text-transform:uppercase;letter-spacing:.06em;margin:6px 0 3px}
+.cp-tip .tt-tag{background:rgba(255,255,255,.12);border-radius:5px;padding:2px 7px;font-size:10.5px;margin:1px 2px 1px 0;display:inline-block}
+
+/* login page (ported design), migrated to the portal's sky-blue/teal/Inter
+   palette (was navy #1F4E9E / cream #D9D4C9 / Karla+DM Sans) so the auth
+   flow matches the rest of the app instead of feeling like a different product. */
+.login-body{min-height:100vh;display:flex;align-items:center;justify-content:center;background-color:#EDF2FA;background-image:radial-gradient(circle,#C5D4EE 1px,transparent 1px);background-size:28px 28px;padding:24px;font-family:'Inter',sans-serif;background-position:0 0;animation:bgDrift 40s linear infinite}
+.login-card{display:grid;grid-template-columns:360px 440px;border-radius:12px;overflow:hidden;border:1px solid var(--color-border-subtle);box-shadow:0 16px 48px rgba(15,23,42,.10);max-width:800px;width:100%;background:#fff;animation:authCardIn .55s cubic-bezier(.22,1,.36,1) both}
+.login-left{background:#1F4E9E;padding:48px 40px;display:flex;flex-direction:column;justify-content:center;align-items:center;gap:18px;text-align:center;position:relative;overflow:hidden}
+.login-left::before{content:'';position:absolute;inset:-40%;background:radial-gradient(circle,rgba(255,255,255,.10) 0%,transparent 60%);animation:sheen 7s ease-in-out infinite}
+.login-left>*{position:relative;z-index:1}
+.login-left .login-icon-ring{animation:floatY 4.5s ease-in-out infinite}
+.login-card input{transition:border-color .18s ease,box-shadow .18s ease,transform .12s ease}
+.login-card input:focus{border-color:#1F4E9E !important;box-shadow:0 0 0 3px rgba(31,78,158,.1)}
+.login-card form>div{animation:authFieldIn .5s cubic-bezier(.22,1,.36,1) both}
+.login-card form>div:nth-of-type(1){animation-delay:.02s}
+.login-card form>div:nth-of-type(2){animation-delay:.07s}
+.login-card form>div:nth-of-type(3){animation-delay:.12s}
+.login-card form>div:nth-of-type(4){animation-delay:.17s}
+.login-card form>div:nth-of-type(5){animation-delay:.22s}
+.auth-submit-btn{transition:transform .15s ease,box-shadow .15s ease,opacity .15s ease}
+.auth-submit-btn:hover:not(:disabled){transform:translateY(-1px);box-shadow:0 8px 20px rgba(31,78,158,.28)}
+.auth-submit-btn:active:not(:disabled){transform:translateY(0) scale(.98)}
+.auth-alert-in{animation:authFieldIn .3s ease both}
+.auth-fade-in{animation:chartFadeIn .4s ease both}
+.auth-pop-in{animation:authPopIn .45s cubic-bezier(.34,1.56,.64,1) .1s both}
+.auth-spinner{display:inline-block;width:14px;height:14px;border:2px solid rgba(255,255,255,.4);border-top-color:#fff;border-radius:50%;animation:spin .7s linear infinite;margin-right:8px;vertical-align:-2px}
+@keyframes authPopIn{from{opacity:0;transform:scale(.7)}to{opacity:1;transform:scale(1)}}
+@media(max-width:760px){.login-card{grid-template-columns:1fr}.login-left{display:none}}
+
+@keyframes authCardIn{from{opacity:0;transform:translateY(18px) scale(.98)}to{opacity:1;transform:translateY(0) scale(1)}}
+@keyframes authFieldIn{from{opacity:0;transform:translateY(8px)}to{opacity:1;transform:translateY(0)}}
+@keyframes floatY{0%,100%{transform:translateY(0)}50%{transform:translateY(-8px)}}
+@keyframes sheen{0%,100%{transform:translate(0,0) scale(1)}50%{transform:translate(4%,4%) scale(1.08)}}
+@keyframes bgDrift{from{background-position:0 0}to{background-position:280px 280px}}
+@keyframes spin{to{transform:rotate(360deg)}}
+
+/* dashboard chart "draw-in" animations, shared PieChart/TrendChart components in Dashboard.jsx */
+.pie-seg{transition:stroke-dasharray 1s cubic-bezier(.22,1,.36,1)}
+.chart-fade-in{animation:chartFadeIn .5s ease .35s both}
+.trend-line-draw{transition:stroke-dashoffset 1.1s cubic-bezier(.22,1,.36,1)}
+.trend-point-in{animation:chartFadeIn .35s ease both;transform-box:fill-box;transform-origin:center}
+@keyframes chartFadeIn{from{opacity:0;transform:scale(.85)}to{opacity:1;transform:scale(1)}}
+
+/* landing page styles now live in src/pages/landing.css (faithful port of index.html) */

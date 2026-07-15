@@ -1,0 +1,147 @@
+/* Ported verbatim from index.html's inline <style> block, palette migrated
+   from navy/cream/Karla+DM Sans to the portal's sky-blue/teal/Inter+Poppins
+   system (see shared.css :root) so the marketing site matches the app. */
+.ld{font-family:'Inter',sans-serif;color:var(--color-ink);background:#FDFCFA;overflow-x:hidden}
+.ld img{max-width:100%;display:block}
+.ld :root{--primary:#1F4E9E;--primary-dark:#173F84;--primary-soft:#EDF2FA;--amber:#9A6210;--amber-soft:#FAF3E3;--ink:var(--color-ink);--muted:var(--color-text-muted);--line:var(--color-border-subtle)}
+
+/* NAV */
+.ld-nav{position:fixed;top:0;left:0;right:0;z-index:100;height:64px;padding:0 48px;display:flex;align-items:center;justify-content:space-between;background:rgba(253,252,250,0.95);backdrop-filter:blur(10px);border-bottom:1px solid var(--color-border-subtle)}
+.ld-nav-brand{display:flex;align-items:center;gap:11px;text-decoration:none;color:inherit}
+.ld-nav-icon{width:34px;height:34px;background:#1F4E9E;border-radius:8px;display:flex;align-items:center;justify-content:center;font-family:'Poppins',sans-serif;font-weight:600;font-size:17px;color:#fff}
+.ld-nav-name{font-family:'Poppins',sans-serif;font-size:19px;font-weight:600;color:var(--color-ink);line-height:1}
+.ld-nav-sub{font-size:10.5px;color:var(--color-text-faint);letter-spacing:.08em;text-transform:uppercase;font-weight:600;margin-top:3px}
+.ld-nav-links{display:flex;gap:30px}
+.ld-nav-links a{font-size:14px;color:var(--color-text-muted);text-decoration:none;font-weight:600;transition:color .15s}
+.ld-nav-links a:hover{color:#1F4E9E}
+.ld-nav-actions{display:flex;gap:10px;align-items:center}
+.ld-nav-ghost{padding:8px 18px;border:1px solid var(--color-border);border-radius:7px;font-family:'Inter',sans-serif;font-size:13.5px;font-weight:600;color:var(--color-text-muted);background:transparent;cursor:pointer;text-decoration:none;display:inline-flex;align-items:center;transition:all .15s}
+.ld-nav-ghost:hover{border-color:#1F4E9E;color:#1F4E9E}
+.ld-nav-solid{padding:9px 20px;border:none;border-radius:7px;font-family:'Inter',sans-serif;font-size:13.5px;font-weight:700;color:#fff;background:#1F4E9E;cursor:pointer;text-decoration:none;display:inline-flex;align-items:center;transition:background .15s}
+.ld-nav-solid:hover{background:#173F84}
+
+/* Anchor-jump targets (nav links, footer links) land under the fixed 64px nav
+   without this, the top of the section gets hidden behind it until the user
+   scrolls up manually. scroll-margin-top offsets the native anchor scroll. */
+#announcements,#promise,#news,#about{scroll-margin-top:80px}
+
+/* ANNOUNCEMENT BAND */
+.ld-ann-band{margin-top:64px;background:#FAF3E3;border-bottom:1px solid #EFE3C8;padding:12px 48px}
+.ld-ann-inner{max-width:1080px;margin:0 auto;display:flex;align-items:center;gap:14px;flex-wrap:wrap}
+.ld-ann-label{font-size:11px;font-weight:700;letter-spacing:.09em;text-transform:uppercase;color:#9A6210;flex-shrink:0;border:1px solid #E3D3AC;border-radius:5px;padding:3px 9px;background:#fff}
+.ld-ann-text{font-size:14px;color:#6B5320;font-weight:500;flex:1}
+.ld-ann-more{font-size:13.5px;color:#9A6210;font-weight:700;text-decoration:none;flex-shrink:0}
+.ld-ann-more:hover{text-decoration:underline}
+
+/* HERO */
+.ld-hero-sec{padding:84px 48px 88px;background:#FDFCFA}
+.ld-hero-inner{max-width:1080px;margin:0 auto;display:grid;grid-template-columns:1.05fr 1fr;gap:64px;align-items:center}
+.ld-hero-kicker{font-size:12px;letter-spacing:.11em;text-transform:uppercase;color:#9A6210;font-weight:700;margin-bottom:18px}
+.ld-hero-title{font-family:'Poppins',sans-serif;font-size:46px;font-weight:600;line-height:1.16;color:var(--color-ink);margin-bottom:20px}
+.ld-hero-title em{font-style:italic;color:#1F4E9E}
+.ld-hero-sub{font-size:16.5px;color:var(--color-text-muted);line-height:1.75;max-width:470px;margin-bottom:34px}
+.ld-hero-cta{display:flex;gap:12px;flex-wrap:wrap;align-items:center;margin-bottom:44px}
+.ld-cta-a{padding:13px 26px;background:#1F4E9E;border:none;border-radius:8px;font-family:'Inter',sans-serif;font-size:15px;font-weight:700;color:#fff;cursor:pointer;text-decoration:none;display:inline-flex;align-items:center;gap:9px;transition:background .15s,transform .15s,box-shadow .15s}
+.ld-cta-a:hover{background:#173F84;transform:translateY(-1px);box-shadow:0 8px 20px rgba(31,78,158,.25)}
+.ld-cta-a:active{transform:translateY(0)}
+.ld-cta-b{padding:13px 22px;background:transparent;border:none;font-family:'Inter',sans-serif;font-size:15px;font-weight:700;color:#1F4E9E;cursor:pointer;text-decoration:none;display:inline-flex;align-items:center;gap:7px;transition:gap .15s}
+.ld-cta-b:hover{text-decoration:underline;gap:10px}
+.ld-hero-photo{position:relative}
+.ld-hero-photo img{width:100%;height:430px;object-fit:cover;border-radius:12px}
+
+/* Hero entrance, text and photo fade/slide in on load, photo slightly delayed */
+.ld-hero-in{animation:ldFadeUp .7s cubic-bezier(.22,1,.36,1) both}
+.ld-hero-photo-in{animation:ldFadeUp .8s cubic-bezier(.22,1,.36,1) .15s both}
+@keyframes ldFadeUp{from{opacity:0;transform:translateY(22px)}to{opacity:1;transform:translateY(0)}}
+
+/* Scroll-reveal, sections fade/slide up the first time they enter the viewport */
+.ld-reveal{opacity:0;transform:translateY(28px);transition:opacity .7s cubic-bezier(.22,1,.36,1),transform .7s cubic-bezier(.22,1,.36,1)}
+.ld-reveal-in{opacity:1;transform:translateY(0)}
+.ld-photo-caption{position:absolute;left:16px;bottom:16px;background:rgba(253,252,250,0.94);border-radius:8px;padding:10px 16px;font-size:12.5px;color:var(--color-text-muted);font-weight:600;max-width:75%}
+
+/* SECTIONS */
+.ld-section{padding:84px 48px;max-width:1080px;margin:0 auto}
+.ld-s-tag{font-size:12px;letter-spacing:.11em;text-transform:uppercase;color:#9A6210;font-weight:700;margin-bottom:14px}
+.ld-s-title{font-family:'Poppins',sans-serif;font-size:34px;font-weight:600;color:var(--color-ink);margin-bottom:12px;line-height:1.22}
+.ld-s-title em{font-style:italic;color:#1F4E9E}
+.ld-s-sub{font-size:15px;color:var(--color-text-muted);line-height:1.7;max-width:540px;margin-bottom:48px}
+
+/* PROMISE SECTION */
+.ld-promise{background:#EDF2FA;border-top:1px solid var(--color-border);border-bottom:1px solid var(--color-border)}
+.ld-promise-inner{max-width:1080px;margin:0 auto;padding:84px 48px;display:grid;grid-template-columns:1fr 1.05fr;gap:64px;align-items:center}
+.ld-promise-img img{width:100%;height:380px;object-fit:cover;border-radius:12px}
+.ld-promise-lead{font-size:15.5px;color:var(--color-text-muted);line-height:1.8;margin-bottom:26px;max-width:470px}
+.ld-promise-points{display:grid;gap:0}
+.ld-ppoint{display:flex;gap:14px;align-items:flex-start;padding:14px 0;border-top:1px solid var(--color-border)}
+.ld-ppoint:last-child{border-bottom:1px solid var(--color-border)}
+.ld-ppoint-num{font-family:'Poppins',sans-serif;font-size:15px;font-weight:600;color:#1F4E9E;flex-shrink:0;margin-top:1px}
+.ld-ppoint-tx{font-size:14.5px;color:var(--color-text-muted);font-weight:500;line-height:1.55}
+
+/* NEWS */
+.ld-news-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:24px}
+.ld-news-card{background:#fff;border:1px solid var(--color-border-subtle);border-radius:12px;overflow:hidden;transition:box-shadow .2s,transform .2s;cursor:pointer}
+.ld-news-card:hover{box-shadow:0 12px 28px rgba(60,60,50,.10);transform:translateY(-3px)}
+.ld-news-thumb{height:180px;overflow:hidden;background:#EDF2FA}
+.ld-news-thumb img{width:100%;height:100%;object-fit:cover}
+.ld-news-thumb.placeholder{display:flex;align-items:center;justify-content:center}
+.ld-news-thumb.placeholder svg{width:44px;height:44px;stroke:#A9BBD9;stroke-width:1.5;fill:none}
+.ld-news-body{padding:22px 22px 24px}
+.ld-news-cat{display:inline-block;font-size:11px;font-weight:700;letter-spacing:.08em;text-transform:uppercase;color:#1F4E9E;margin-bottom:11px}
+.ld-news-card h3{font-family:'Poppins',sans-serif;font-size:17px;font-weight:600;color:var(--color-ink);line-height:1.4;margin-bottom:9px}
+.ld-news-card p{font-size:13.5px;color:var(--color-text-muted);line-height:1.65;margin-bottom:16px}
+.ld-news-meta{font-size:12px;color:var(--color-text-faint);font-weight:600}
+
+/* NEWS POST MODAL */
+.ld-post-modal-overlay{position:fixed;inset:0;background:rgba(15,23,42,.5);display:flex;align-items:center;justify-content:center;z-index:200;padding:20px}
+.ld-post-modal{position:relative;background:#fff;border-radius:16px;max-width:560px;width:100%;max-height:85vh;overflow-y:auto;box-shadow:0 24px 64px rgba(15,23,42,.3)}
+.ld-post-modal-close{position:absolute;top:12px;right:14px;background:rgba(15,23,42,.06);border:none;border-radius:50%;width:32px;height:32px;font-size:20px;line-height:1;color:#475569;cursor:pointer;display:flex;align-items:center;justify-content:center;z-index:1}
+.ld-post-modal-close:hover{background:rgba(15,23,42,.12)}
+.ld-post-modal-thumb{height:220px;overflow:hidden;background:#EDF2FA}
+.ld-post-modal-thumb img{width:100%;height:100%;object-fit:cover}
+.ld-post-modal-body{padding:28px 26px 32px}
+.ld-post-modal-text{font-size:14.5px;color:var(--color-text-muted);line-height:1.75;white-space:pre-wrap}
+
+/* CTA BAND */
+.ld-cta-band{background:#1F4E9E;padding:76px 48px;text-align:center}
+.ld-cta-band h2{font-family:'Poppins',sans-serif;font-size:32px;font-weight:600;color:#fff;margin-bottom:14px;line-height:1.25}
+.ld-cta-band h2 em{font-style:italic;color:#C9DAF5}
+.ld-cta-band p{font-size:15px;color:rgba(255,255,255,.72);margin-bottom:32px;max-width:540px;margin-left:auto;margin-right:auto;line-height:1.7}
+.ld-cta-band-btns{display:flex;justify-content:center;gap:14px;flex-wrap:wrap}
+.ld-cband-a{padding:13px 28px;background:#fff;border:none;border-radius:8px;font-family:'Inter',sans-serif;font-size:14.5px;font-weight:700;color:#1F4E9E;cursor:pointer;text-decoration:none;display:inline-flex;align-items:center;gap:8px;transition:background .15s}
+.ld-cband-a:hover{background:#E9EFF9}
+.ld-cband-b{padding:13px 24px;background:transparent;border:1px solid rgba(255,255,255,.45);border-radius:8px;font-family:'Inter',sans-serif;font-size:14.5px;font-weight:700;color:#fff;cursor:pointer;text-decoration:none;display:inline-flex;align-items:center;transition:border-color .15s}
+.ld-cband-b:hover{border-color:#fff}
+
+/* FOOTER */
+.ld-footer{background:#182238;padding:52px 48px 30px}
+.ld-foot-grid{max-width:1080px;margin:0 auto;display:grid;grid-template-columns:1.4fr 1fr 1fr;gap:36px;padding-bottom:36px;border-bottom:1px solid rgba(255,255,255,.1)}
+.ld-foot-brand .fn{font-family:'Poppins',sans-serif;font-size:20px;font-weight:600;color:#fff;margin-bottom:10px}
+.ld-foot-brand .fs{font-size:12.5px;color:rgba(255,255,255,.5);line-height:1.75}
+.ld-foot-col h4{font-size:11.5px;font-weight:700;letter-spacing:.09em;text-transform:uppercase;color:rgba(255,255,255,.45);margin-bottom:15px}
+.ld-foot-col a{display:block;font-size:13.5px;color:rgba(255,255,255,.65);text-decoration:none;margin-bottom:10px;font-weight:500;transition:color .15s}
+.ld-foot-col a:hover{color:#fff}
+.ld-foot-bottom{max-width:1080px;margin:0 auto;padding-top:24px;display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:10px}
+.ld-foot-copy{font-size:12px;color:rgba(255,255,255,.35);font-weight:500}
+
+@media(max-width:960px){
+  .ld-nav{padding:0 20px}.ld-nav-links{display:none}
+  .ld-ann-band{padding:12px 20px}
+  .ld-hero-sec{padding:56px 24px 64px}
+  .ld-hero-inner{grid-template-columns:1fr;gap:40px}
+  .ld-hero-title{font-size:36px}
+  .ld-hero-photo img{height:320px}
+  .ld-promise-inner{grid-template-columns:1fr;padding:60px 24px;gap:40px}
+  .ld-promise-img img{height:300px}
+  .ld-section{padding:60px 24px}
+  .ld-news-grid{grid-template-columns:1fr 1fr}
+  .ld-cta-band{padding:56px 24px}
+  .ld-foot-grid{grid-template-columns:1fr 1fr;gap:28px}
+  .ld-footer{padding:40px 24px 22px}
+  .ld-foot-bottom{flex-direction:column;text-align:center}
+}
+@media(max-width:600px){
+  .ld-hero-title{font-size:30px}
+  .ld-news-grid{grid-template-columns:1fr}
+  .ld-foot-grid{grid-template-columns:1fr}
+  .ld-s-title,.ld-cta-band h2{font-size:27px}
+}
