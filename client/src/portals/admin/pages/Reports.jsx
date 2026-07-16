@@ -180,6 +180,10 @@ export default function Reports({ toast, role = 'admin' }) {
       toast('Only an administrator can generate this report', 'fa-triangle-exclamation');
       return;
     }
+    if (f > todayStr() || tt > todayStr()) {
+      toast('Date range cannot be in the future', 'fa-triangle-exclamation');
+      return;
+    }
     setType(t); setFrom(f); setTo(tt);
     if (t === 'milestones' && !clientId) {
       toast('Select a client to generate this report', 'fa-triangle-exclamation');
@@ -249,8 +253,8 @@ export default function Reports({ toast, role = 'admin' }) {
             </div>
           )}
           <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12, marginBottom: 20 }}>
-            <div><label className="form-label">Date From</label><input type="date" className="form-input" value={from} onChange={e => setFrom(e.target.value)} /></div>
-            <div><label className="form-label">Date To</label><input type="date" className="form-input" value={to} onChange={e => setTo(e.target.value)} /></div>
+            <div><label className="form-label">Date From</label><input type="date" className="form-input" max={todayStr()} value={from} onChange={e => setFrom(e.target.value)} /></div>
+            <div><label className="form-label">Date To</label><input type="date" className="form-input" max={todayStr()} value={to} onChange={e => setTo(e.target.value)} /></div>
           </div>
           <button className="btn-primary" style={{ width: '100%' }} disabled={loading} onClick={() => generate()}>
             {loading ? <><i className="fa-solid fa-spinner fa-spin" style={{ marginRight: 6 }} />Generating…</> : <><i className="fa-solid fa-file-chart-column" style={{ marginRight: 6 }} />Generate Report</>}

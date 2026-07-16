@@ -167,7 +167,6 @@ export default function StaffPortal() {
           <button id="hamburger" className="topnav-btn" onClick={() => setSidebarOpen(o => !o)}><i className="fa-solid fa-bars" /></button>
           <div style={{ flex: 1 }} />
           <div style={{ display: 'flex', alignItems: 'center', gap: 10, position: 'relative' }}>
-            <button className="topnav-btn" data-tip="Help"><i className="fa-regular fa-circle-question" /></button>
             <div style={{ position: 'relative' }}>
               <button className="topnav-btn" data-tip="Notifications" id="notif-btn" onClick={toggleNotif}><i className="fa-regular fa-bell" />{notifDot && <span className="notif-dot" />}</button>
               <div id="notif-panel" className={notifOpen ? 'open' : ''}>
