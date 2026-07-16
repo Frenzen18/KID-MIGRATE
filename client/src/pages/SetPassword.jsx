@@ -2,6 +2,8 @@ import { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useAuth } from '../auth.jsx';
 import { HOME_FOR_ROLE } from '../App.jsx';
+import PasswordChecklist, { passwordMeetsPolicy } from '../components/PasswordChecklist.jsx';
+import AuthLeftPanel from '../components/AuthLeftPanel.jsx';
 
 /**
  * Forced first-login password set-up. Shown right after a successful login
@@ -26,8 +28,8 @@ export default function SetPassword() {
       setErr('New password and confirmation do not match.');
       return;
     }
-    if (newPassword.length < 8 || !/[A-Za-z]/.test(newPassword) || !/[0-9]/.test(newPassword)) {
-      setErr('New password must be at least 8 characters with letters and numbers.');
+    if (!passwordMeetsPolicy(newPassword)) {
+      setErr('New password does not meet all the requirements below.');
       return;
     }
     if (newPassword === currentPassword) {
@@ -51,18 +53,7 @@ export default function SetPassword() {
   return (
     <div className="login-body">
       <div className="login-card">
-        <div className="login-left">
-          <div style={{ width: 96, height: 96, borderRadius: '50%', border: '1.5px solid rgba(255,255,255,.45)', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-            <i className="fa-solid fa-key" style={{ color: '#fff', fontSize: 40 }} />
-          </div>
-          <div style={{ fontFamily: 'Poppins,sans-serif', fontSize: 30, fontWeight: 600, color: '#fff' }}>KID</div>
-          <div style={{ fontSize: 12, color: 'rgba(255,255,255,.7)', letterSpacing: '.05em', textTransform: 'uppercase', fontWeight: 600, lineHeight: 1.6 }}>
-            Pediatric Speech &amp;<br />Occupational Therapy Clinic
-          </div>
-          <div style={{ fontSize: 11.5, color: 'rgba(255,255,255,.5)', lineHeight: 1.7, marginTop: 24 }}>
-            Bloomsdale Therapy Center<br />Imus, Cavite · LPU-Cavite CITCS
-          </div>
-        </div>
+        <AuthLeftPanel icon="fa-key" iconSize={40} eyebrow={<>Pediatric Speech &amp;<br />Occupational Therapy Clinic</>} />
         <div style={{ padding: '48px 44px', display: 'flex', flexDirection: 'column', justifyContent: 'center' }}>
           <div style={{ fontFamily: 'Poppins,sans-serif', fontSize: 26, fontWeight: 600, color: 'var(--color-ink)', marginBottom: 8 }}>Set your password</div>
           <p style={{ fontSize: 14, color: 'var(--color-text-muted)', marginBottom: 28, lineHeight: 1.6 }}>
@@ -95,10 +86,11 @@ export default function SetPassword() {
                 type={showPw ? 'text' : 'password'}
                 value={newPassword}
                 onChange={e => setNewPassword(e.target.value)}
-                placeholder="Min. 8 characters, letters and numbers"
+                placeholder="Create a password"
                 autoComplete="new-password"
                 required
               />
+              <PasswordChecklist password={newPassword} />
             </div>
             <div style={{ marginBottom: 12 }}>
               <label style={label}>Confirm New Password</label>

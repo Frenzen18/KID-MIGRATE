@@ -187,11 +187,12 @@ router.delete('/items/:id', requireRole('admin'), async (req, res) => {
   res.json({ ok: true });
 });
 
-/** GET /api/gas/entries?client_id=&discipline=, submitted assessments with their per-goal scores */
+/** GET /api/gas/entries?client_id=&discipline=&archived=, submitted assessments with their per-goal scores */
 router.get('/entries', requireRole('admin', 'staff', 'ot', 'speech'), async (req, res) => {
   let q = db.from('gas_entries').select('*').order('session_date', { ascending: false });
   if (req.query.client_id) q = q.eq('client_id', req.query.client_id);
   if (req.query.discipline) q = q.eq('discipline', req.query.discipline);
+  q = q.eq('archived', req.query.archived === 'true');
   const { data: entries, error } = await q;
   if (error) return res.status(500).json({ error: error.message });
   if (!entries.length) return res.json([]);
@@ -342,7 +343,7 @@ router.put('/entries/:id', requireRole('admin', 'staff', 'ot', 'speech'), async 
   res.json({ ...updated, scores: scoreRows });
 });
 
-/** DELETE /api/gas/entries/:id, permanently remove a submitted GAS assessment and its scores */
+/** DELETE /api/gas/entries/:id, archive a submitted GAS assessment (soft delete, scores are kept) */
 router.delete('/entries/:id', requireRole('admin', 'staff', 'ot', 'speech'), async (req, res) => {
   const { data: entry, error: eErr } = await db.from('gas_entries').select('*').eq('id', req.params.id).single();
   if (eErr || !entry) return res.status(404).json({ error: 'Entry not found' });
@@ -350,16 +351,12 @@ router.delete('/entries/:id', requireRole('admin', 'staff', 'ot', 'speech'), asy
   const disciplineErr = assertDisciplineAccess(req.user,entry.discipline);
   if (disciplineErr) return res.status(403).json({ error: disciplineErr });
 
-  // Delete scores first (child rows), then the entry itself
-  const { error: scErr } = await db.from('gas_entry_scores').delete().eq('entry_id', entry.id);
-  if (scErr) return res.status(500).json({ error: scErr.message });
-
-  const { error: delErr } = await db.from('gas_entries').delete().eq('id', entry.id);
-  if (delErr) return res.status(500).json({ error: delErr.message });
+  const { error: archErr } = await db.from('gas_entries').update({ archived: true }).eq('id', entry.id);
+  if (archErr) return res.status(500).json({ error: archErr.message });
 
   await logAudit({
-    table_name: 'gas_entries', record_id: entry.id, action: 'delete',
-    description: `Deleted GAS assessment (${entry.discipline}) for client ${entry.client_id}`,
+    table_name: 'gas_entries', record_id: entry.id, action: 'archive',
+    description: `Archived GAS assessment (${entry.discipline}) for client ${entry.client_id}`,
     updated_by: req.user.id
   });
 

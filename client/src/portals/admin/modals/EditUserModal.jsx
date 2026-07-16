@@ -1,4 +1,5 @@
 import { Modal } from '../../../components/ui.jsx';
+import { filterPhoneInput } from './phoneInput.js';
 
 const ROLE_DB_MAP = {
   'Administrator': { role: 'admin' },
@@ -29,7 +30,13 @@ export default function EditUserModal({ data, closeModal, toast }) {
   const last = nameParts.slice(1).join(' ') || '';
   // profiles.role is admin/staff/ot/speech/parent, role directly encodes discipline
   // for the two therapist options, no separate specialty field needed.
-  const roleOptions = Object.keys(ROLE_DB_MAP);
+  // Guardian/Caretaker is a portal category, not a staff role, a parent account can't be
+  // reassigned into a staff/therapist/admin role and vice versa, so each side only offers
+  // role options within its own category.
+  const isGuardian = data.role === 'Guardian/Caretaker';
+  const roleOptions = isGuardian
+    ? ['Guardian/Caretaker']
+    : Object.keys(ROLE_DB_MAP).filter(r => r !== 'Guardian/Caretaker');
   const status = data.status || 'Active';
 
   const accessAction = type => {
@@ -50,8 +57,22 @@ export default function EditUserModal({ data, closeModal, toast }) {
     const firstVal = document.getElementById('ef-first').value.trim();
     const lastVal = document.getElementById('ef-last').value.trim();
     const emailVal = document.getElementById('ef-email').value.trim();
-    const phoneVal = document.getElementById('ef-phone').value.trim();
+    const rawPhone = document.getElementById('ef-phone').value.trim();
     const roleVal = document.getElementById('ef-role').value;
+
+    // The field starts pre-filled with "+63", so an untouched field reads back as just that
+    // prefix with no digits, treat it the same as empty (phone is optional here).
+    let phoneVal = '';
+    if (rawPhone && rawPhone !== '+63') {
+      const digits = rawPhone.replace(/\D/g, '');
+      if (/^09\d{9}$/.test(digits)) phoneVal = '+63' + digits.slice(1);
+      else if (/^639\d{9}$/.test(digits)) phoneVal = '+' + digits;
+      else {
+        toast('Phone number must be a complete PH mobile number, e.g. +639171234567', 'fa-triangle-exclamation');
+        return;
+      }
+    }
+
     const cb = data.onSave;
     closeModal();
     if (cb) cb({ name: firstVal + (lastVal ? ' ' + lastVal : ''), email: emailVal, phone: phoneVal, ...(ROLE_DB_MAP[roleVal] || { role: 'staff' }) });
@@ -64,12 +85,13 @@ export default function EditUserModal({ data, closeModal, toast }) {
         <div><label className="form-label">First Name</label><input id="ef-first" className="form-input" defaultValue={first} /></div>
         <div><label className="form-label">Last Name</label><input id="ef-last" className="form-input" defaultValue={last} /></div>
         <div><label className="form-label">Email</label><input id="ef-email" className="form-input" type="email" defaultValue={data.email || ''} /></div>
-        <div><label className="form-label">Phone</label><input id="ef-phone" className="form-input" defaultValue={data.phone || ''} /></div>
+        <div><label className="form-label">Phone Number</label><input id="ef-phone" type="tel" className="form-input" placeholder="+639171234567" maxLength={13} defaultValue={data.phone || '+63'} onInput={e => { e.target.value = filterPhoneInput(e.target.value); }} /></div>
         <div style={{ gridColumn: '1/-1' }}>
           <label className="form-label">Role</label>
-          <select id="ef-role" className="form-select" defaultValue={roleOptions.includes(data.role) ? data.role : 'Staff'}>
+          <select id="ef-role" className="form-select" disabled={isGuardian} defaultValue={roleOptions.includes(data.role) ? data.role : roleOptions[0]}>
             {roleOptions.map(r => <option key={r}>{r}</option>)}
           </select>
+          {isGuardian && <div style={{ fontSize: 11.5, color: '#94A3B8', marginTop: 5 }}>Guardian/Caretaker accounts can't be reassigned to a staff role.</div>}
         </div>
       </div>
       <div style={{ borderTop: '1px solid #F1F5F9', margin: '16px 0 14px' }} />

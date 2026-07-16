@@ -1,11 +1,13 @@
 import { useState } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { Link, useNavigate } from 'react-router-dom';
 import { useAuth } from '../auth.jsx';
 
 /**
  * Administrator sign-in, deliberately unlinked from every public page.
- * Reachable only by typing /admin/login directly. Minimal by design:
- * no signup, no Google sign-in, no public password-reset, no site links.
+ * Reachable only by typing /admin/login directly. Minimal by design: no
+ * signup, no Google sign-in, no public password-reset. The only outbound
+ * links are to the other internal-role logins (staff/therapist), grouped
+ * here together rather than on the public parent login.
  */
 export default function AdminLogin() {
   const { login } = useAuth();
@@ -89,6 +91,11 @@ export default function AdminLogin() {
 
         <div style={{ textAlign: 'center', marginTop: 20, fontSize: 12, color: '#5B6579', lineHeight: 1.6 }}>
           Access is restricted and monitored. Forgot your password?<br />Contact another administrator.
+        </div>
+
+        <div style={{ textAlign: 'center', marginTop: 20, display: 'flex', flexDirection: 'column', gap: 8 }}>
+          <Link to="/staff/login" style={{ color: '#8A94A8', fontSize: 12.5, fontWeight: 600, textDecoration: 'none' }}>Are you a staff member? Sign in here →</Link>
+          <Link to="/therapist/login" style={{ color: '#8A94A8', fontSize: 12.5, fontWeight: 600, textDecoration: 'none' }}>Are you a therapist? Sign in here →</Link>
         </div>
       </div>
     </div>

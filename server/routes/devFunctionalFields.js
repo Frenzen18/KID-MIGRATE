@@ -6,7 +6,10 @@ import { logAudit } from '../lib/audit.js';
 const router = Router();
 router.use(requireAuth);
 
-const FIELD_TYPES = ['select', 'text'];
+const FIELD_TYPES = ['select', 'text', 'select_other'];
+// 'select_other' is a dropdown plus an implicit trailing "Others" option that
+// reveals a free-text box, needs the same >=2 curated options as 'select'.
+const NEEDS_OPTIONS = ['select', 'select_other'];
 
 /**
  * GET /api/dev-functional-fields, active fields, ordered for rendering.
@@ -31,15 +34,15 @@ router.get('/all', requireRole('admin'), async (req, res) => {
 router.post('/', requireRole('admin'), async (req, res) => {
   const b = req.body || {};
   if (!b.section?.trim() || !b.label?.trim()) return res.status(400).json({ error: 'Section and label are required' });
-  if (!FIELD_TYPES.includes(b.field_type)) return res.status(400).json({ error: 'field_type must be "select" or "text"' });
-  const options = b.field_type === 'select' ? (Array.isArray(b.options) ? b.options.map(o => String(o).trim()).filter(Boolean) : []) : null;
-  if (b.field_type === 'select' && options.length < 2) return res.status(400).json({ error: 'A select field needs at least 2 options' });
+  if (!FIELD_TYPES.includes(b.field_type)) return res.status(400).json({ error: 'field_type must be "select", "text", or "select_other"' });
+  const options = NEEDS_OPTIONS.includes(b.field_type) ? (Array.isArray(b.options) ? b.options.map(o => String(o).trim()).filter(Boolean) : []) : null;
+  if (NEEDS_OPTIONS.includes(b.field_type) && options.length < 2) return res.status(400).json({ error: 'This field type needs at least 2 options' });
 
   const { data: maxRow } = await db.from('dev_functional_fields').select('sort_order').order('sort_order', { ascending: false }).limit(1).maybeSingle();
   const sort_order = Number.isFinite(Number(b.sort_order)) ? Number(b.sort_order) : ((maxRow?.sort_order ?? 0) + 1);
 
   const { data, error } = await db.from('dev_functional_fields').insert({
-    section: b.section.trim(), label: b.label.trim(), field_type: b.field_type, options, sort_order, updated_by: req.user.id
+    section: b.section.trim(), label: b.label.trim(), field_type: b.field_type, options, required: b.required === true, sort_order, updated_by: req.user.id
   }).select().single();
   if (error) return res.status(500).json({ error: error.message });
 
@@ -61,17 +64,18 @@ router.put('/:id', requireRole('admin'), async (req, res) => {
   if ('section' in b) patch.section = String(b.section).trim();
   if ('label' in b) patch.label = String(b.label).trim();
   if ('field_type' in b) {
-    if (!FIELD_TYPES.includes(b.field_type)) return res.status(400).json({ error: 'field_type must be "select" or "text"' });
+    if (!FIELD_TYPES.includes(b.field_type)) return res.status(400).json({ error: 'field_type must be "select", "text", or "select_other"' });
     patch.field_type = b.field_type;
   }
   if ('options' in b) patch.options = Array.isArray(b.options) ? b.options.map(o => String(o).trim()).filter(Boolean) : null;
+  if ('required' in b) patch.required = b.required === true;
   if ('sort_order' in b) patch.sort_order = Number(b.sort_order) || 0;
   if ('active' in b) patch.active = b.active === true;
 
   const finalType = patch.field_type || existing.field_type;
   const finalOptions = 'options' in patch ? patch.options : existing.options;
-  if (finalType === 'select' && (!Array.isArray(finalOptions) || finalOptions.length < 2)) {
-    return res.status(400).json({ error: 'A select field needs at least 2 options' });
+  if (NEEDS_OPTIONS.includes(finalType) && (!Array.isArray(finalOptions) || finalOptions.length < 2)) {
+    return res.status(400).json({ error: 'This field type needs at least 2 options' });
   }
 
   patch.updated_at = new Date().toISOString();

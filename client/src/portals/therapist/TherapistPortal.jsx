@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useAuth } from '../../auth.jsx';
 import { useToast } from '../../components/ui.jsx';
+import BrandLogo from '../../components/BrandLogo.jsx';
 import { api } from '../../api.js';
 import '../admin/admin.css';
 import AdminModals from '../admin/AdminModals.jsx';
@@ -10,7 +11,6 @@ import Dashboard from '../admin/pages/Dashboard.jsx';
 import Clients from '../admin/pages/Clients.jsx';
 import Milestones from '../admin/pages/Milestones.jsx';
 import Notifications from '../admin/pages/Notifications.jsx';
-import Reports from '../admin/pages/Reports.jsx';
 import MyCalendar from './MyCalendar.jsx';
 
 /**
@@ -24,10 +24,9 @@ import MyCalendar from './MyCalendar.jsx';
  *     children they actually have real session history with.
  *   - Milestone Scoreboard: discipline-locked (own GAS tab/entries only).
  *   - Notifications: only the Reminders tab, scoped to their own sessions.
- *   - Reports: same reduced set staff gets (no Security Audit / Milestone report).
- * User Management, CMS, and Payments aren't part of this portal.
+ * User Management, CMS, Payments, and Reports aren't part of this portal.
  */
-const THERAPIST_PAGE_KEYS = ['dashboard', 'booking', 'clients', 'milestones', 'notifications', 'reports'];
+const THERAPIST_PAGE_KEYS = ['dashboard', 'booking', 'clients', 'milestones', 'notifications'];
 
 /** "5 min ago" / "3 hrs ago" / "Jun 27" style relative timestamp for notification rows. */
 function relativeTime(iso) {
@@ -151,17 +150,7 @@ export default function TherapistPortal() {
   return (
     <>
       <aside id="sidebar" className={sidebarOpen ? 'open' : ''}>
-        <div className="logo-area">
-          <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-            <div style={{ width: 38, height: 38, borderRadius: 10, background: 'linear-gradient(135deg,#0EA5E9,#0D9488)', display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}>
-              <i className="fa-solid fa-child-reaching" style={{ color: '#fff', fontSize: 17 }} />
-            </div>
-            <div>
-              <div style={{ fontFamily: "'Poppins',sans-serif", fontWeight: 700, fontSize: 16, color: '#0F172A', lineHeight: 1.1 }}>KID</div>
-              <div style={{ fontSize: 10.5, color: '#64748B', fontWeight: 500 }}>{portalLabel}</div>
-            </div>
-          </div>
-        </div>
+        <BrandLogo subtitle={portalLabel} />
         <nav id="sidebar-nav">
           <div className="nav-label">Overview</div>
           {nav_item('dashboard', 'fa-gauge-high', 'Dashboard')}
@@ -171,7 +160,6 @@ export default function TherapistPortal() {
           {nav_item('milestones', 'fa-trophy', 'Milestone Scoreboard')}
           <div className="nav-label">System</div>
           {nav_item('notifications', 'fa-bell', 'Notifications')}
-          {nav_item('reports', 'fa-chart-bar', 'Reports')}
         </nav>
       </aside>
 
@@ -180,7 +168,6 @@ export default function TherapistPortal() {
           <button id="hamburger" className="topnav-btn" onClick={() => setSidebarOpen(o => !o)}><i className="fa-solid fa-bars" /></button>
           <div style={{ flex: 1 }} />
           <div style={{ display: 'flex', alignItems: 'center', gap: 10, position: 'relative' }}>
-            <button className="topnav-btn" data-tip="Help"><i className="fa-regular fa-circle-question" /></button>
             <div style={{ position: 'relative' }}>
               <button className="topnav-btn" data-tip="Notifications" id="notif-btn" onClick={toggleNotif}><i className="fa-regular fa-bell" />{notifDot && <span className="notif-dot" />}</button>
               <div id="notif-panel" className={notifOpen ? 'open' : ''}>
@@ -235,7 +222,6 @@ export default function TherapistPortal() {
           {page === 'clients' && <Clients {...pageProps} scopeToTherapist therapistName={user?.name || ''} />}
           {page === 'milestones' && <Milestones {...pageProps} />}
           {page === 'notifications' && <Notifications {...pageProps} />}
-          {page === 'reports' && <Reports toast={toast} role={user?.role} />}
         </main>
       </div>
 

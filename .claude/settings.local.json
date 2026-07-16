@@ -2,7 +2,18 @@
   "permissions": {
     "allow": [
       "Bash(node --check routes/gas.js)",
-      "Bash(node --check index.js)"
+      "Bash(node --check index.js)",
+      "Bash(git diff *)",
+      "Read(//tmp/**)",
+      "Bash(git checkout *)",
+      "Bash(node --input-type=module -e ' *)",
+      "Bash(node --check routes/shifts.js)",
+      "Bash(node --check routes/reservations.js)",
+      "Bash(node --check lib/paymongoWebhook.js)",
+      "Bash(node --check lib/bookingHolds.js)",
+      "Bash(npx --no-install vite build --mode development)",
+      "Bash(node --check routes/payments.js)",
+      "Bash(node --check lib/paymongo.js)"
     ]
   }
 }

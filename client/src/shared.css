@@ -55,16 +55,32 @@
   --radius-md: 9px;
   --radius-lg: 12px;
   --radius-xl: 14px;
+
+  /* Branding & Theme module tokens (overridden at runtime from
+     branding_settings, see client/src/theme.js). --color-surface and
+     --color-text/--color-body-text above double as card/text color for that module. */
+  --color-page-bg: #F0F6FF;
+  --color-navbar-bg: #FFFFFF;
+  --color-navbar-text: #475569;
+  --color-navbar-hover: #0EA5E9;
+  --color-footer-bg: #182238;
+  --color-footer-text: #CBD5E1;
+  --font-family-base: 'Inter', sans-serif;
+
+  /* Public landing page only, independent from the dashboard tokens above. */
+  --color-landing-primary: #1F4E9E;
+  --color-landing-navbar-bg: #FDFCFA;
+  --color-landing-background: #FDFCFA;
 }
 
 *, *::before, *::after { box-sizing: border-box; }
 html, body { height: 100%; margin: 0; padding: 0; }
-body { font-family: 'Inter', sans-serif; background: #F0F6FF; color: var(--color-body-text); }
+body { font-family: var(--font-family-base); background: var(--color-page-bg); color: var(--color-body-text); }
 h1,h2,h3,h4,h5 { font-family: 'Poppins', sans-serif; }
 
 #sidebar {
   width: 256px; min-width: 256px; height: 100vh;
-  background: var(--color-surface); border-right: 1px solid var(--color-border);
+  background: var(--color-navbar-bg); border-right: 1px solid var(--color-border);
   position: fixed; top: 0; left: 0; z-index: 50;
   display: flex; flex-direction: column;
   transition: transform .25s ease;
@@ -78,11 +94,11 @@ h1,h2,h3,h4,h5 { font-family: 'Poppins', sans-serif; }
 .nav-item {
   display: flex; align-items: center; gap: 10px;
   padding: 9px 12px; border-radius: 10px;
-  font-size: 13.5px; font-weight: 500; color: var(--color-text-muted);
+  font-size: 13.5px; font-weight: 500; color: var(--color-navbar-text);
   cursor: pointer; transition: all .18s ease;
   margin-bottom: 2px; text-decoration: none;
 }
-.nav-item:hover { background: var(--color-info-bg-soft); color: var(--color-primary); }
+.nav-item:hover { background: var(--color-info-bg-soft); color: var(--color-navbar-hover); }
 .nav-item.active { background: linear-gradient(135deg,#E0F2FE 0%,#CCFBF1 100%); color: var(--color-primary-dark); font-weight: 600; }
 .nav-item .icon { width: 18px; text-align: center; font-size: 14px; }
 .nav-badge { margin-left: auto; background: var(--color-info-bg-soft); color: var(--color-info); font-size: 10px; font-weight: 600; padding: 1px 7px; border-radius: 20px; }
@@ -91,7 +107,7 @@ h1,h2,h3,h4,h5 { font-family: 'Poppins', sans-serif; }
 #main { margin-left: 256px; min-height: 100vh; display: flex; flex-direction: column; }
 #topnav {
   position: sticky; top: 0; z-index: 40;
-  background: rgba(255,255,255,.85); backdrop-filter: blur(12px);
+  background: color-mix(in srgb, var(--color-navbar-bg) 85%, transparent); backdrop-filter: blur(12px);
   border-bottom: 1px solid var(--color-border);
   padding: 0 28px; height: 64px;
   display: flex; align-items: center; gap: 16px;
@@ -147,6 +163,7 @@ h1,h2,h3,h4,h5 { font-family: 'Poppins', sans-serif; }
 .pill-red   { background: var(--color-danger-bg); color: var(--color-danger); }
 .pill-teal  { background: #CCFBF1; color: var(--color-teal-dark); }
 .pill-gray  { background: var(--color-border-subtle); color: var(--color-text-subtle); }
+.pill-purple { background: #F3E8FF; color: #9333EA; }
 .data-table { width: 100%; border-collapse: collapse; }
 .data-table th {
   font-size: 11px; font-weight: 600; text-transform: uppercase;
@@ -251,6 +268,11 @@ h1,h2,h3,h4,h5 { font-family: 'Poppins', sans-serif; }
   padding: 5px 10px; border-radius: 7px;
   border: 1px solid var(--color-danger-bg); background: var(--color-danger-bg-soft);
   font-size: 11.5px; color: var(--color-danger); cursor: pointer;
+}
+.btn-archive {
+  padding: 5px 10px; border-radius: 7px;
+  border: 1px solid var(--color-warning-border); background: var(--color-warning-bg-soft);
+  font-size: 11.5px; color: var(--color-warning); cursor: pointer;
 }
 .btn-edit {
   padding: 5px 10px; border-radius: 7px;

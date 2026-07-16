@@ -1,110 +1,185 @@
 import { useEffect, useRef, useState } from 'react';
-import { Link, useSearchParams } from 'react-router-dom';
+import { Link, useLocation, useNavigate, useSearchParams } from 'react-router-dom';
 import { api } from '../api.js';
+import AuthLeftPanel from '../components/AuthLeftPanel.jsx';
 
 /**
- * Landing page for the emailed verification link (/verify-email?token=...).
- * Confirms the account with the server, then invites the user to sign in.
+ * Email verification, code-based (mirrors ForgotPassword's flow): the
+ * signup/resend endpoints email a 6-digit code instead of a link, and this
+ * page collects it. Reached either with a known email (from Signup's
+ * navigate state, or a ?email= query param from the "verify now" prompt on
+ * a blocked login) or blank, in which case the user types their email first.
  */
 export default function VerifyEmail() {
+  const nav = useNavigate();
+  const location = useLocation();
   const [params] = useSearchParams();
-  const token = params.get('token');
+  const stateEmail = location.state?.email || '';
+  const queryEmail = params.get('email') || '';
+  const initialEmail = stateEmail || queryEmail;
 
-  const [status, setStatus] = useState(token ? 'verifying' : 'error'); // verifying | success | error
-  const [message, setMessage] = useState(token ? '' : 'This verification link is missing its token.');
-  const ran = useRef(false);
-
-  // Resend form (shown on error, expired/used links)
-  const [email, setEmail] = useState('');
-  const [resendMsg, setResendMsg] = useState('');
+  const [step, setStep] = useState(initialEmail ? 'code' : 'email'); // email | code | success
+  const [email, setEmail] = useState(initialEmail);
+  const [code, setCode] = useState('');
+  const [err, setErr] = useState('');
   const [busy, setBusy] = useState(false);
+  const [resendMsg, setResendMsg] = useState('');
+
+  // Signup already sends the first code as part of account creation, so
+  // don't fire a second one when arriving with state from that flow, only
+  // when landing here directly (e.g. the query-param link from a blocked login).
+  const autoSent = useRef(!!stateEmail);
 
   useEffect(() => {
-    if (!token || ran.current) return;
-    ran.current = true; // React StrictMode mounts twice; the token is single-use
-    api('/auth/verify-email', { method: 'POST', body: { token } })
-      .then(() => setStatus('success'))
-      .catch(ex => {
-        setStatus('error');
-        setMessage(ex.message);
-      });
-  }, [token]);
+    if (!queryEmail || autoSent.current) return;
+    autoSent.current = true;
+    api('/auth/resend-verification', { method: 'POST', body: { email: queryEmail } }).catch(() => {});
+  }, [queryEmail]);
 
-  async function resend(e) {
+  async function sendCode(e) {
     e.preventDefault();
-    setResendMsg('');
+    setErr('');
+    if (!email.trim()) return setErr('Please enter your email address.');
     setBusy(true);
     try {
-      const r = await api('/auth/resend-verification', { method: 'POST', body: { email: email.trim() } });
-      setResendMsg(r.message || 'A new link has been sent.');
+      await api('/auth/resend-verification', { method: 'POST', body: { email: email.trim() } });
+      setStep('code');
     } catch (ex) {
-      setResendMsg(ex.message);
+      setErr(ex.message || 'Something went wrong. Please try again.');
     } finally {
       setBusy(false);
     }
   }
 
-  const input = { width: '100%', padding: '12px 15px', border: '1px solid var(--color-border)', borderRadius: 8, fontFamily: 'Inter,sans-serif', fontSize: 14, outline: 'none', background: '#fff', boxSizing: 'border-box' };
+  async function resendCode() {
+    setErr('');
+    setResendMsg('');
+    try {
+      const r = await api('/auth/resend-verification', { method: 'POST', body: { email: email.trim() } });
+      setResendMsg(r.message || 'A new code has been sent.');
+    } catch (ex) {
+      setErr(ex.message);
+    }
+  }
+
+  async function verifyCode(e) {
+    e.preventDefault();
+    setErr('');
+    if (!code.trim() || code.trim().length !== 6) return setErr('Please enter the 6-digit code.');
+    setBusy(true);
+    try {
+      await api('/auth/verify-email', { method: 'POST', body: { email: email.trim(), code: code.trim() } });
+      setStep('success');
+    } catch (ex) {
+      setErr(ex.message || 'Invalid code.');
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  const input = { width: '100%', padding: '14px 16px', border: '1.5px solid var(--color-border)', borderRadius: 8, fontFamily: 'Inter,sans-serif', fontSize: 14, outline: 'none', background: '#fff', boxSizing: 'border-box', transition: 'border-color .2s' };
+  const label = { display: 'block', fontSize: 13, fontWeight: 600, color: 'var(--color-text-muted)', marginBottom: 8 };
 
   return (
     <div className="login-body">
-      <div className="login-card" style={{ gridTemplateColumns: '1fr', maxWidth: 460 }}>
-        <div style={{ padding: '48px 44px', textAlign: 'center' }}>
-          {status === 'verifying' && (
+      <div className="login-card" style={{ gridTemplateColumns: '360px 440px' }}>
+        <AuthLeftPanel icon="fa-child-reaching" iconSize={40} eyebrow={<>Pediatric Speech &amp;<br />Occupational Therapy Clinic</>} />
+        <div style={{ padding: '48px 44px', display: 'flex', flexDirection: 'column', justifyContent: 'center' }}>
+
+          {/* Step: enter email (only when we don't already know it) */}
+          {step === 'email' && (
             <>
-              <div style={{ width: 72, height: 72, borderRadius: '50%', background: '#EFF6FF', display: 'flex', alignItems: 'center', justifyContent: 'center', margin: '0 auto 20px' }}>
-                <i className="fa-solid fa-spinner fa-spin" style={{ color: '#1F4E9E', fontSize: 30 }} />
-              </div>
-              <div style={{ fontFamily: 'Poppins,sans-serif', fontSize: 24, fontWeight: 600, color: 'var(--color-ink)' }}>Verifying your email…</div>
+              <div style={{ fontFamily: 'Poppins,sans-serif', fontSize: 26, fontWeight: 600, color: 'var(--color-ink)', marginBottom: 8 }}>Verify your email</div>
+              <p style={{ fontSize: 14, color: 'var(--color-text-muted)', marginBottom: 28, lineHeight: 1.6 }}>
+                Enter the email address on your account. We'll send you a 6-digit code to verify it.
+              </p>
+
+              {err && (
+                <div style={{ background: '#FEF2F2', border: '1px solid #FECACA', borderRadius: 8, padding: '10px 14px', fontSize: 13, color: 'var(--color-danger)', marginBottom: 16, fontWeight: 600 }}>
+                  <i className="fa-solid fa-circle-exclamation" style={{ marginRight: 6 }} />{err}
+                </div>
+              )}
+
+              <form onSubmit={sendCode}>
+                <div style={{ marginBottom: 22 }}>
+                  <label style={label}>Email Address</label>
+                  <input style={input} type="email" value={email} onChange={e => setEmail(e.target.value)} placeholder="you@email.com" required />
+                </div>
+                <button disabled={busy} style={{ width: '100%', padding: 13, background: '#1F4E9E', color: '#fff', border: 'none', borderRadius: 8, fontFamily: 'Inter,sans-serif', fontSize: 15, fontWeight: 700, cursor: 'pointer', opacity: busy ? .7 : 1 }}>
+                  {busy ? 'Sending…' : 'Send Verification Code'}
+                </button>
+              </form>
             </>
           )}
 
-          {status === 'success' && (
+          {/* Step: enter code */}
+          {step === 'code' && (
             <>
-              <div style={{ width: 72, height: 72, borderRadius: '50%', background: '#F0FDF4', display: 'flex', alignItems: 'center', justifyContent: 'center', margin: '0 auto 20px' }}>
-                <i className="fa-solid fa-circle-check" style={{ color: '#16A34A', fontSize: 34 }} />
+              <div style={{ fontFamily: 'Poppins,sans-serif', fontSize: 26, fontWeight: 600, color: 'var(--color-ink)', marginBottom: 8 }}>Enter verification code</div>
+              <p style={{ fontSize: 14, color: 'var(--color-text-muted)', marginBottom: 28, lineHeight: 1.6 }}>
+                We sent a 6-digit code to <strong>{email}</strong>. Check your inbox (and spam folder) and enter it below.
+              </p>
+
+              {err && (
+                <div style={{ background: '#FEF2F2', border: '1px solid #FECACA', borderRadius: 8, padding: '10px 14px', fontSize: 13, color: 'var(--color-danger)', marginBottom: 16, fontWeight: 600 }}>
+                  <i className="fa-solid fa-circle-exclamation" style={{ marginRight: 6 }} />{err}
+                </div>
+              )}
+              {resendMsg && (
+                <div style={{ background: '#F0FDF4', border: '1px solid #BBF7D0', borderRadius: 8, padding: '10px 14px', fontSize: 13, color: '#15803D', marginBottom: 16, fontWeight: 600 }}>
+                  {resendMsg}
+                </div>
+              )}
+
+              <form onSubmit={verifyCode}>
+                <div style={{ marginBottom: 22 }}>
+                  <label style={label}>6-Digit Code</label>
+                  <input
+                    style={{ ...input, fontSize: 24, letterSpacing: 8, textAlign: 'center', fontWeight: 700 }}
+                    type="text"
+                    value={code}
+                    onChange={e => setCode(e.target.value.replace(/\D/g, '').slice(0, 6))}
+                    placeholder="000000"
+                    maxLength={6}
+                    required
+                  />
+                </div>
+                <button disabled={busy || code.length !== 6} style={{ width: '100%', padding: 13, background: '#1F4E9E', color: '#fff', border: 'none', borderRadius: 8, fontFamily: 'Inter,sans-serif', fontSize: 15, fontWeight: 700, cursor: 'pointer', opacity: (busy || code.length !== 6) ? .7 : 1 }}>
+                  {busy ? 'Verifying…' : 'Verify Email'}
+                </button>
+              </form>
+
+              <div style={{ textAlign: 'center', marginTop: 16 }}>
+                <button onClick={resendCode} style={{ background: 'none', border: 'none', color: '#1F4E9E', fontSize: 13, fontWeight: 600, cursor: 'pointer' }}>
+                  Didn't receive it? Resend code
+                </button>
               </div>
-              <div style={{ fontFamily: 'Poppins,sans-serif', fontSize: 24, fontWeight: 600, color: 'var(--color-ink)', marginBottom: 10 }}>Email verified!</div>
-              <p style={{ fontSize: 14, color: 'var(--color-text-muted)', lineHeight: 1.7, marginBottom: 24 }}>
+            </>
+          )}
+
+          {/* Step: success */}
+          {step === 'success' && (
+            <div style={{ textAlign: 'center' }}>
+              <div style={{ width: 64, height: 64, borderRadius: '50%', background: '#DCFCE7', display: 'flex', alignItems: 'center', justifyContent: 'center', margin: '0 auto 20px' }}>
+                <i className="fa-solid fa-check" style={{ fontSize: 28, color: '#16A34A' }} />
+              </div>
+              <div style={{ fontFamily: 'Poppins,sans-serif', fontSize: 22, fontWeight: 600, color: 'var(--color-ink)', marginBottom: 10 }}>Email verified!</div>
+              <p style={{ fontSize: 14, color: 'var(--color-text-muted)', lineHeight: 1.6, marginBottom: 24 }}>
                 Your account is now active. You can sign in to the parent portal.
               </p>
-              <Link
-                to="/login"
-                style={{ display: 'block', padding: 13, background: '#1F4E9E', color: '#fff', borderRadius: 8, fontFamily: 'Inter,sans-serif', fontSize: 15, fontWeight: 700, textDecoration: 'none' }}
-              >
-                Sign In
+              <button onClick={() => nav('/login')} style={{ width: '100%', padding: 13, background: '#1F4E9E', color: '#fff', border: 'none', borderRadius: 8, fontFamily: 'Inter,sans-serif', fontSize: 15, fontWeight: 700, cursor: 'pointer' }}>
+                Go to Sign In
+              </button>
+            </div>
+          )}
+
+          {step !== 'success' && (
+            <div style={{ textAlign: 'center', marginTop: 24 }}>
+              <Link to="/" style={{ color: '#1F4E9E', fontSize: 13, fontWeight: 600, textDecoration: 'none' }}>
+                <i className="fa-solid fa-arrow-left" style={{ marginRight: 5 }} />Back to website
               </Link>
-            </>
+            </div>
           )}
-
-          {status === 'error' && (
-            <>
-              <div style={{ width: 72, height: 72, borderRadius: '50%', background: '#FEF2F2', display: 'flex', alignItems: 'center', justifyContent: 'center', margin: '0 auto 20px' }}>
-                <i className="fa-solid fa-circle-exclamation" style={{ color: 'var(--color-danger)', fontSize: 34 }} />
-              </div>
-              <div style={{ fontFamily: 'Poppins,sans-serif', fontSize: 24, fontWeight: 600, color: 'var(--color-ink)', marginBottom: 10 }}>Verification failed</div>
-              <p style={{ fontSize: 14, color: 'var(--color-text-muted)', lineHeight: 1.7, marginBottom: 20 }}>{message}</p>
-
-              <form onSubmit={resend} style={{ textAlign: 'left' }}>
-                <label style={{ display: 'block', fontSize: 13, fontWeight: 600, color: 'var(--color-text-muted)', marginBottom: 8 }}>Resend the link to your email</label>
-                <div style={{ display: 'flex', gap: 8 }}>
-                  <input style={input} type="email" value={email} onChange={e => setEmail(e.target.value)} placeholder="you@email.com" required />
-                  <button disabled={busy} style={{ padding: '0 18px', background: '#1F4E9E', color: '#fff', border: 'none', borderRadius: 8, fontFamily: 'Inter,sans-serif', fontSize: 14, fontWeight: 700, cursor: 'pointer', opacity: busy ? .7 : 1, whiteSpace: 'nowrap' }}>
-                    {busy ? 'Sending…' : 'Resend'}
-                  </button>
-                </div>
-              </form>
-              {resendMsg && (
-                <div style={{ marginTop: 14, fontSize: 13, color: '#15803D', fontWeight: 600 }}>{resendMsg}</div>
-              )}
-            </>
-          )}
-
-          <div style={{ textAlign: 'center', marginTop: 24 }}>
-            <Link to="/" style={{ color: '#1F4E9E', fontSize: 13, fontWeight: 600, textDecoration: 'none' }}>
-              <i className="fa-solid fa-arrow-left" style={{ marginRight: 5 }} />Back to website
-            </Link>
-          </div>
         </div>
       </div>
     </div>

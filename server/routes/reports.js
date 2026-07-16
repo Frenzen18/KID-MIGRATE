@@ -23,7 +23,7 @@ const endOfDay = to => to + 'T23:59:59.999';
 router.get('/summary', async (req, res) => {
   const { from, to } = dateRange(req);
   const [{ data: clients, error: cErr }, { data: reservations, error: rErr }, { data: notes, error: nErr }, { data: payments, error: pErr }] = await Promise.all([
-    db.from('clients').select('id, created_at'),
+    db.from('clients').select('id, created_at').eq('archived', false),
     db.from('reservations').select('id, status').gte('date', from).lte('date', to),
     db.from('session_notes').select('score').gte('session_date', from).lte('session_date', to),
     db.from('payments').select('amount, status').gte('created_at', from).lte('created_at', endOfDay(to))
@@ -80,6 +80,7 @@ router.get('/dashboard', async (req, res) => {
   let gasTrend = null;
   if (showGas) {
     let gasQ = db.from('gas_entries').select('session_date, discipline, gas_t_score')
+      .eq('archived', false)
       .gte('session_date', from).lte('session_date', to).order('session_date', { ascending: true });
     if (lockedDiscipline) gasQ = gasQ.eq('discipline', lockedDiscipline);
     const { data: gasEntries, error: gasErr } = await gasQ;
@@ -129,7 +130,7 @@ router.get('/dashboard', async (req, res) => {
     for (const r of rows) specialtyCounts[r.specialty]++;
     employees = { total: (therapists || []).length, specialtyCounts, teamSessionsTotal: rows.reduce((s, r) => s + r.totalSessions, 0), rows };
 
-    const { data: clients, error: clErr } = await db.from('clients').select('gender, dob');
+    const { data: clients, error: clErr } = await db.from('clients').select('gender, dob').eq('archived', false);
     if (clErr) return res.status(500).json({ error: clErr.message });
     const gender = { Male: 0, Female: 0, Unspecified: 0 };
     const ageBrackets = { '3-4': 0, '5-6': 0, '7-8': 0, '9+': 0 };
@@ -225,7 +226,7 @@ router.get('/milestones', requireRole('admin'), async (req, res) => {
   if (!client) return res.status(404).json({ error: 'Client not found' });
 
   const { data: entries, error } = await db.from('gas_entries')
-    .select('*').eq('client_id', clientId)
+    .select('*').eq('client_id', clientId).eq('archived', false)
     .gte('session_date', from).lte('session_date', to)
     .order('session_date', { ascending: true });
   if (error) return res.status(500).json({ error: error.message });

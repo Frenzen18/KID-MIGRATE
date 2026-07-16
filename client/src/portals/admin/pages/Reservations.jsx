@@ -1,31 +1,189 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useCallback, useMemo, useRef, useState } from 'react';
 import { api } from '../../../api.js';
 import { LoadingState, TableEmptyRow } from '../../../components/ui.jsx';
 import BookingModal from './reservations/BookingModal.jsx';
 import SlotActionsModal from './reservations/SlotActionsModal.jsx';
-import DeclineModal from './reservations/DeclineModal.jsx';
-import ApproveModal from './reservations/ApproveModal.jsx';
 import {
-  pad, fmtYMD, todayPH, nowPH, DAY_NAMES, CAL_MONTH_NAMES, MON_SHORT, SESSION_MIN,
-  defaultSessionTypeFor, rateForSessionType, STATUS_PILL, slotMinutes, toMinutes,
-  computeSelection, fmtShort
+  pad, fmtYMD, todayPH, nowPH, minBookableDatePH, DAY_NAMES, CAL_MONTH_NAMES, MON_SHORT, SESSION_MIN,
+  STATUS_PILL, slotMinutes, toMinutes,
+  computeSelection, fmtShort, ASSESSMENT_TYPES, REQUIRED_ROLE_FOR_TYPE, effectiveSlotAvailable
 } from './reservations/reservationsHelpers.js';
 
 /* == page: reservations (real data via /api/reservations + /api/clients) == */
-/* Shared helpers, and the 4 page-local modal components (BookingModal,
-   SlotActionsModal, DeclineModal, ApproveModal), now live under ./reservations/
-  , this file keeps only the page component itself: state, data fetching,
-   and the tab views (calendar / queue / master calendar / parent requests). */
+/* Shared helpers, and the page-local modal components (BookingModal,
+   SlotActionsModal), now live under ./reservations/, this file keeps only
+   the page component itself: state, data fetching, and the tab views
+   (calendar / adjust & cancel schedules / master calendar / employee scheduling). */
 
-export default function Reservations({ toast }) {
+/* ── Employee Scheduling tab, moved here from Client Records (it's booking
+   availability, not a client-record concern), same live /api/shifts data ── */
+const SCHED_AVATAR_COLORS = [
+  { bg: '#DBEAFE', color: '#2563EB' }, { bg: '#CCFBF1', color: '#0F766E' },
+  { bg: '#FEF3C7', color: '#D97706' }, { bg: '#EDE9FE', color: '#818CF8' },
+  { bg: '#F3E8FF', color: '#9333EA' }, { bg: '#E0F2FE', color: '#0284C7' },
+  { bg: '#DCFCE7', color: '#16A34A' }, { bg: '#FFE4E6', color: '#E11D48' },
+];
+const DOT_COLORS = { available: '#22C55E', off: '#E2E8F0' };
+// Mon..Sun. Sunday defaults to closed, mirrors server/routes/shifts.js.
+const ALL_WORK_DAYS = [true, true, true, true, true, true, false];
+
+function hourLabel(h) {
+  const hr = h % 12 === 0 ? 12 : h % 12;
+  return hr + ':00 ' + (h >= 12 ? 'PM' : 'AM');
+}
+/** Current hour in PH time (UTC+8), used to show On Shift / Off Duty. */
+function currentHourPH() {
+  return new Date(Date.now() + 8 * 60 * 60 * 1000).getUTCHours();
+}
+function mapShift(s, idx) {
+  const initials = (s.name || '').split(' ').map(w => w[0]).join('').toUpperCase().slice(0, 2);
+  const av = SCHED_AVATAR_COLORS[idx % SCHED_AVATAR_COLORS.length];
+  const onShift = currentHourPH() >= s.start_hour && currentHourPH() < s.end_hour;
+  const hasLunch = s.lunch_start_hour != null && s.lunch_end_hour != null;
+  return {
+    ...s,
+    initials, bg: av.bg, color: av.color,
+    start: hourLabel(s.start_hour), end: hourLabel(s.end_hour),
+    lunch: hasLunch ? hourLabel(s.lunch_start_hour) + ' – ' + hourLabel(s.lunch_end_hour) : '—',
+    status: onShift ? 'On Shift' : 'Off Duty',
+    statusPill: onShift ? 'pill pill-green' : 'pill pill-gray',
+  };
+}
+
+export default function Reservations({ toast, openModal }) {
   /* ── Section tabs ── */
   const [tab, setTab] = useState('calendar');
 
-  /* ── Calendar view (0-indexed month) ── */
-  const [calView, setCalView] = useState(() => { const n = new Date(); return { y: n.getFullYear(), m: n.getMonth() }; });
+  /* ── Employee Scheduling tab state ── */
+  const [shifts, setShifts] = useState([]);
+  const fetchShifts = useCallback(async () => {
+    try {
+      const data = await api('/shifts');
+      setShifts(data.map((s, i) => mapShift(s, i)));
+      setDayEdits({});
+    } catch (err) {
+      toast('Failed to load shifts: ' + err.message, 'fa-triangle-exclamation');
+    }
+  }, [toast]);
+  useEffect(() => { fetchShifts(); }, [fetchShifts]);
 
-  /* ── Selected day, auto-select today (PH time) on load ── */
-  const [selected, setSelected] = useState(() => computeSelection(todayPH()));
+  /* availability matrix, unsaved day toggles, keyed by therapist_id */
+  const [dayEdits, setDayEdits] = useState({});
+  const [matrixSaving, setMatrixSaving] = useState(false);
+
+  async function saveShift(therapistId, patch) {
+    try {
+      const r = await api('/shifts/' + therapistId, { method: 'PUT', body: patch });
+      if (r.affected > 0) {
+        toast(`Shift updated, ${r.affected} booking${r.affected > 1 ? 's' : ''} flagged for rescheduling, parents notified`, 'fa-calendar-xmark');
+      } else {
+        toast('Shift updated for ' + r.therapist, 'fa-calendar-check');
+      }
+      fetchShifts();
+      return true;
+    } catch (err) {
+      toast(err.message, 'fa-triangle-exclamation');
+      return false;
+    }
+  }
+
+  /* Effective working days for a therapist = unsaved edit, else saved value. */
+  const daysFor = s => dayEdits[s.therapist_id] || s.work_days || ALL_WORK_DAYS;
+
+  function toggleDay(s, dayIdx) {
+    const next = daysFor(s).slice();
+    next[dayIdx] = !next[dayIdx];
+    setDayEdits(prev => ({ ...prev, [s.therapist_id]: next }));
+  }
+
+  async function saveMatrix() {
+    const changed = shifts.filter(s => {
+      const edit = dayEdits[s.therapist_id];
+      return edit && edit.join() !== (s.work_days || ALL_WORK_DAYS).join();
+    });
+    if (!changed.length) {
+      toast('No availability changes to save', 'fa-circle-info');
+      return;
+    }
+    setMatrixSaving(true);
+    let saved = 0, flagged = 0;
+    try {
+      for (const s of changed) {
+        const r = await api('/shifts/' + s.therapist_id, { method: 'PUT', body: { work_days: dayEdits[s.therapist_id] } });
+        saved++;
+        flagged += r.affected || 0;
+      }
+      toast(
+        `Availability saved, ${saved} therapist${saved > 1 ? 's' : ''} updated` +
+        (flagged > 0 ? ` · ${flagged} booking${flagged > 1 ? 's' : ''} flagged, parents notified` : ''),
+        flagged > 0 ? 'fa-calendar-xmark' : 'fa-floppy-disk'
+      );
+      setDayEdits({});
+      fetchShifts();
+    } catch (err) {
+      toast(err.message, 'fa-triangle-exclamation');
+    } finally {
+      setMatrixSaving(false);
+    }
+  }
+
+  function exportShiftsCsv() {
+    if (!shifts.length) { toast('No therapist shifts to export', 'fa-triangle-exclamation'); return; }
+    const MON_FIRST_DAYS = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
+    const header = ['Therapist', 'Role', 'Shift Start', 'Shift End', 'Lunch Break', 'Status', 'Working Days'];
+    const rows = shifts.map(s => [
+      s.name || '', s.role || '', s.start, s.end, s.lunch, s.status,
+      daysFor(s).map((working, i) => working ? MON_FIRST_DAYS[i] : null).filter(Boolean).join(' ')
+    ]);
+    const csv = [header, ...rows].map(r => r.map(v => `"${String(v).replace(/"/g, '""')}"`).join(',')).join('\r\n');
+    // Leading BOM, without it Excel guesses Windows-1252 instead of UTF-8 and
+    // mangles non-ASCII characters (the "–" in Lunch Break becomes "â€“").
+    const blob = new Blob(['﻿' + csv], { type: 'text/csv;charset=utf-8;' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `therapist-shift-schedules-${new Date().toISOString().slice(0, 10)}.csv`;
+    a.click();
+    URL.revokeObjectURL(url);
+    toast('Shift schedules exported to CSV', 'fa-file-export');
+  }
+
+  /* ── Book Client must choose a service type before it can select a day/slot.
+     For discipline-specific assessments (Speech-Language/Occupational), the
+     therapist of that discipline is then picked inside the Book Slot modal,
+     right below the Client field, rather than gating the calendar itself.
+     Persisted in sessionStorage so a refresh mid-booking doesn't bounce staff
+     back to the service-type picker and lose their place. ── */
+  const BOOKING_SERVICE_TYPE_KEY = 'kc_booking_service_type';
+  const [bookingServiceType, setBookingServiceType] = useState(() => {
+    try {
+      const saved = sessionStorage.getItem(BOOKING_SERVICE_TYPE_KEY);
+      return ASSESSMENT_TYPES.includes(saved) ? saved : '';
+    } catch { return ''; }
+  });
+  useEffect(() => {
+    try {
+      if (bookingServiceType) sessionStorage.setItem(BOOKING_SERVICE_TYPE_KEY, bookingServiceType);
+      else sessionStorage.removeItem(BOOKING_SERVICE_TYPE_KEY);
+    } catch { /* sessionStorage unavailable, just don't persist */ }
+  }, [bookingServiceType]);
+  const requiredTherapistRole = REQUIRED_ROLE_FOR_TYPE[bookingServiceType] || null;
+  function resetBooking() { setBookingServiceType(''); }
+
+  /* ── Selected day, auto-select the earliest bookable date (tomorrow, PH
+     time) on load, today is always locked out (bookings need a day's lead
+     time), so starting there would just force an extra click every visit. ── */
+  const [selected, setSelected] = useState(() => computeSelection(minBookableDatePH()));
+
+  /* ── Calendar view (0-indexed month), matches whatever month `selected` falls in. ── */
+  const [calView, setCalView] = useState(() => {
+    const [y, m] = minBookableDatePH().split('-').map(Number);
+    return { y, m: m - 1 };
+  });
+
+  /* ── Master Calendar week navigation, 0 = the current week, +/-1 a week
+     ahead/behind, etc. ── */
+  const [masterWeekOffset, setMasterWeekOffset] = useState(0);
 
   /* ── Page-local modal state ── */
   const [modal, setModal] = useState(null);
@@ -52,7 +210,7 @@ export default function Reservations({ toast }) {
     const reqId = ++daySlotsReqRef.current;
     try {
       const data = await api('/reservations/slots?date=' + (date || selected.date));
-      // Ignore this response if a newer request has since been kicked off, 
+      // Ignore this response if a newer request has since been kicked off,
       // prevents an older/slower poll from overwriting fresher data and
       // causing the "pops up then disappears" flicker.
       if (reqId === daySlotsReqRef.current) setDaySlots(data);
@@ -67,7 +225,7 @@ export default function Reservations({ toast }) {
   }, [selected.date]);
 
   const slotByTime = t => daySlots.find(s => s.time_slot === t);
-  const slotAvailable = t => (slotByTime(t)?.available ?? 0) > 0;
+  const slotAvailable = t => effectiveSlotAvailable(slotByTime(t), bookingServiceType) > 0;
 
   /* Fetch a wide window of reservations (covers the visible month + a buffer)
      so the mini-calendar dots, master calendar, and Adjust/Cancel table all
@@ -110,6 +268,9 @@ export default function Reservations({ toast }) {
   }, [calView.y, calView.m]);
 
   const todayISO = todayPH();
+  // Bookings must be made at least a day ahead, same-day booking isn't allowed
+  // even though same-day *viewing* of the schedule still is.
+  const sameDayLocked = selected.date <= todayISO;
 
   /* Map of date|time -> ACTIVE reservations (a slot can hold several, one per on-shift therapist) */
   const slotMap = useMemo(() => {
@@ -161,11 +322,13 @@ export default function Reservations({ toast }) {
   /* ── Book Selected Day button ── */
   function bookSelectedDay() {
     if (selected.isPast) { toast('Cannot book, this date has already passed', 'fa-lock'); return; }
+    if (sameDayLocked) { toast('Bookings must be made at least a day in advance', 'fa-lock'); return; }
     openBookingModal(null);
   }
 
   /* ══════════ Booking modal ══════════ */
   function openBookingModal(time) {
+    if (sameDayLocked) { toast('Bookings must be made at least a day in advance', 'fa-lock'); return; }
     if (time && !slotAvailable(time)) return; // fully booked
     if (time && slotState(time) !== 'future') {
       toast('That time has already passed, the session has ' + (slotState(time) === 'ongoing' ? 'already started' : 'ended'), 'fa-clock');
@@ -184,13 +347,17 @@ export default function Reservations({ toast }) {
   async function confirmBooking() {
     const timeSelect = document.getElementById('modal-time-select');
     const clientSelect = document.getElementById('modal-client-select');
+    const therapistSelect = document.getElementById('modal-therapist-select');
     const bookedTime = timeSelect ? timeSelect.value : '';
     const clientVal = clientSelect ? clientSelect.value : '';
+    const therapistVal = therapistSelect ? therapistSelect.value : '';
     const bkErr = msg => {
       const box = document.getElementById('bk-err');
       if (box) { document.getElementById('bk-err-msg').textContent = msg; box.style.display = 'block'; }
       toast(msg, 'fa-circle-exclamation');
     };
+    if (!bookingServiceType) { bkErr('Select a service type first.'); return; }
+    if (requiredTherapistRole && !therapistVal) { bkErr('Select a therapist first.'); if (therapistSelect) { therapistSelect.style.borderColor = '#EF4444'; therapistSelect.focus(); } return; }
     if (!bookedTime) { bkErr('Pick a time slot first.'); if (timeSelect) timeSelect.style.borderColor = '#EF4444'; return; }
     if (!slotAvailable(bookedTime)) { bkErr('That time is fully booked, choose a different slot.'); if (timeSelect) timeSelect.style.borderColor = '#EF4444'; return; }
     if (slotState(bookedTime) !== 'future') { bkErr('That time has already passed today, pick a later slot.'); if (timeSelect) timeSelect.style.borderColor = '#EF4444'; return; }
@@ -210,7 +377,8 @@ export default function Reservations({ toast }) {
           client_id: client.id,
           date: selected.date,
           time_slot: bookedTime,
-          session_type: defaultSessionTypeFor(client),
+          session_type: bookingServiceType,
+          therapist_name: therapistVal || undefined,
           notes: notesVal,
           payment_amount: amountVal
         }
@@ -303,72 +471,6 @@ export default function Reservations({ toast }) {
   /* ══════════ Adjust & Cancel Schedules table ══════════ */
   const [statusFilter, setStatusFilter] = useState('all');
 
-  /* ══════════ Parent request queue ══════════ */
-  const pendingRequests = useMemo(() => reservations.filter(r => r.status === 'pending'), [reservations]);
-
-  /** Used only by "Approve All Clear" (bulk), individual approvals go through
-   *  ApproveModal so staff can see and set the price first. */
-  async function approveParentRequest(r) {
-    setBusy(true);
-    try {
-      await api('/reservations/' + r.id, { method: 'PUT', body: { status: 'confirmed' } });
-      await refetchReservations();
-      toast((r.clients?.full_name || 'Request') + ' booking approved and synced to calendar', 'fa-circle-check');
-    } catch (e) {
-      toast(e.message || 'Cannot approve, slot may already be booked', 'fa-circle-exclamation');
-    } finally {
-      setBusy(false);
-    }
-  }
-
-  function openApproveModal(r) { setModal({ kind: 'approve', reservation: r }); }
-
-  async function confirmApproveRequest(r, amount) {
-    setBusy(true);
-    try {
-      await api('/reservations/' + r.id, { method: 'PUT', body: { status: 'confirmed', payment_amount: amount } });
-      closeModal();
-      await refetchReservations();
-      toast((r.clients?.full_name || 'Request') + ' booking approved and synced to calendar', 'fa-circle-check');
-    } catch (e) {
-      toast(e.message || 'Cannot approve, slot may already be booked', 'fa-circle-exclamation');
-    } finally {
-      setBusy(false);
-    }
-  }
-
-  function openDeclineModal(r) { setModal({ kind: 'decline', reservation: r }); }
-
-  async function confirmDecline(r, reason) {
-    setBusy(true);
-    try {
-      await api('/reservations/' + r.id, { method: 'PUT', body: { status: 'declined', notes: (reason || '').trim() || 'No reason provided' } });
-      closeModal();
-      await refetchReservations();
-      toast((r.clients?.full_name || 'Request') + ' declined', 'fa-circle-xmark');
-    } catch (e) {
-      toast(e.message || 'Failed to decline request', 'fa-circle-exclamation');
-    } finally {
-      setBusy(false);
-    }
-  }
-
-  async function approveAllClear() {
-    if (!pendingRequests.length) { toast('No pending requests to approve', 'fa-circle-info'); return; }
-    setBusy(true);
-    let approvedCount = 0;
-    for (const r of pendingRequests) {
-      try {
-        await api('/reservations/' + r.id, { method: 'PUT', body: { status: 'confirmed' } });
-        approvedCount++;
-      } catch (e) { /* slot conflict or similar, skip and continue */ }
-    }
-    await refetchReservations();
-    setBusy(false);
-    if (approvedCount > 0) toast(approvedCount + ' pending request(s) approved and synced', 'fa-circle-check');
-    else toast('Could not approve pending requests, check for slot conflicts', 'fa-triangle-exclamation');
-  }
-
   /* ══════════ Live clock (PH time) ══════════ */
   const liveClock = (() => {
     const now = nowPH();
@@ -425,7 +527,9 @@ export default function Reservations({ toast }) {
     return daySlots.map(slot => {
       const time = slot.time_slot;
       const bks = slot.reservations || [];
-      const openCount = Math.max(0, slot.capacity - bks.length);
+      const isInitialAssessment = bookingServiceType === 'Initial Assessment';
+      const effCapacity = isInitialAssessment ? 1 : slot.capacity;
+      const openCount = isInitialAssessment ? effectiveSlotAvailable(slot, bookingServiceType) : Math.max(0, slot.capacity - bks.length);
 
       const bookedBlock = (bk, extra) => {
         const client = bk.clients?.full_name || '-';
@@ -445,12 +549,17 @@ export default function Reservations({ toast }) {
       };
       const emptyBlock = () => (
         <div className="slot-block empty" key="empty" onClick={() => openBookingModal(time)}>
-          + Click to book this slot{slot.capacity > 1 ? ` · ${openCount} of ${slot.capacity} therapists free` : ''}
+          + Click to book this slot{isInitialAssessment ? ' · 1 Initial Assessment slot per hour' : (slot.capacity > 1 ? ` · ${openCount} of ${effCapacity} therapists free` : '')}
         </div>
       );
       const lockedEmpty = (label) => (
         <div className="slot-block empty" key="locked" style={{ opacity: 0.5, pointerEvents: 'none', cursor: 'not-allowed' }}>
           <i className="fa-solid fa-lock" style={{ marginRight: 5, fontSize: 10 }} />{label}
+        </div>
+      );
+      const lunchBlock = () => (
+        <div className="slot-block empty" key="lunch" style={{ opacity: 0.65, pointerEvents: 'none', cursor: 'not-allowed', background: '#FFF7ED', borderLeft: '3px solid #FDBA74', color: '#9A3412', fontWeight: 600 }}>
+          <i className="fa-solid fa-utensils" style={{ marginRight: 6, fontSize: 10 }} />Lunch Break
         </div>
       );
 
@@ -476,11 +585,13 @@ export default function Reservations({ toast }) {
           );
         } else {
           bks.forEach(bk => blocks.push(bookedBlock(bk)));
-          if (openCount > 0) blocks.push(emptyBlock());
+          if (slot.lunch_break) blocks.push(lunchBlock());
+          else if (openCount > 0) blocks.push(lockedEmpty('Book at least a day in advance'));
         }
       } else {
         bks.forEach(bk => blocks.push(bookedBlock(bk)));
-        if (openCount > 0) blocks.push(emptyBlock());
+        if (slot.lunch_break) blocks.push(lunchBlock());
+        else if (openCount > 0) blocks.push(emptyBlock());
       }
 
       return (
@@ -538,7 +649,7 @@ export default function Reservations({ toast }) {
     const today = new Date(); today.setHours(0, 0, 0, 0);
     const dayOfWeek = today.getDay();
     const weekStart = new Date(today);
-    weekStart.setDate(today.getDate() - ((dayOfWeek === 0 ? 7 : dayOfWeek) - 1));
+    weekStart.setDate(today.getDate() - ((dayOfWeek === 0 ? 7 : dayOfWeek) - 1) + masterWeekOffset * 7);
     const weekDays = [];
     for (let i = 0; i < 7; i++) { const d = new Date(weekStart); d.setDate(weekStart.getDate() + i); weekDays.push(d); }
 
@@ -600,31 +711,6 @@ export default function Reservations({ toast }) {
     return { header, body, weekLabel, weekSelLabel };
   }
 
-  /* ══════════ Parent request queue ══════════ */
-  function renderParentQueue() {
-    if (!pendingRequests.length) {
-      return <div style={{ fontSize: 12.5, color: '#94A3B8', textAlign: 'center', padding: '20px 0' }}><i className="fa-solid fa-inbox" style={{ marginRight: 7 }} />No pending parent requests right now</div>;
-    }
-    return pendingRequests.map(r => {
-      const dateLabel = fmtShort(r.date) + ' · ' + r.time_slot;
-      return (
-        <div key={r.id} style={{ padding: 14, borderRadius: 10, background: '#F8FAFC', border: '1px solid #E2E8F0' }}>
-          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 8 }}>
-            <div>
-              <div style={{ fontSize: 13, fontWeight: 600, color: '#0F172A' }}>{r.clients?.full_name || '-'}, {dateLabel}</div>
-              <div style={{ fontSize: 12, color: '#64748B' }}>{r.session_type} · {r.clients?.client_code || ''} · via Parent Portal</div>
-            </div>
-            <span className="pill pill-amber" style={{ fontSize: 10, flexShrink: 0 }}>Pending</span>
-          </div>
-          <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
-            <button className="btn-edit" style={{ fontSize: 11, color: '#16A34A', background: '#F0FDF4', borderColor: '#DCFCE7' }} disabled={busy} onClick={() => openApproveModal(r)}>✓ Approve</button>
-            <button className="btn-danger" style={{ fontSize: 11 }} disabled={busy} onClick={() => openDeclineModal(r)}>✗ Decline</button>
-          </div>
-        </div>
-      );
-    });
-  }
-
   const resTable = renderResTable();
   const master = renderMasterCal();
 
@@ -634,16 +720,15 @@ export default function Reservations({ toast }) {
       <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', marginBottom: 24, flexWrap: 'wrap', gap: 12 }}>
         <div>
           <h1 style={{ fontSize: 22, fontWeight: 700, color: '#0F172A', margin: '0 0 4px' }}>Booking and Appointment</h1>
-          <p style={{ fontSize: 13.5, color: '#64748B', margin: 0 }}>Interactive booking calendar, real-time scheduling, and synchronized adjustments/cancellations.</p>
         </div>
       </div>
 
       {/* Section tabs */}
       <div style={{ display: 'flex', gap: 6, marginBottom: 20, flexWrap: 'wrap' }}>
-        <button className={'res-tab' + (tab === 'calendar' ? ' active' : '')} onClick={() => setTab('calendar')}><i className="fa-solid fa-calendar-days" style={{ marginRight: 6 }} />Schedule Session</button>
+        <button className={'res-tab' + (tab === 'calendar' ? ' active' : '')} onClick={() => setTab('calendar')}><i className="fa-solid fa-calendar-days" style={{ marginRight: 6 }} />Book Client</button>
         <button className={'res-tab' + (tab === 'queue' ? ' active' : '')} onClick={() => setTab('queue')}><i className="fa-solid fa-list-check" style={{ marginRight: 6 }} />Adjust &amp; Cancel Schedules</button>
         <button className={'res-tab' + (tab === 'mastercal' ? ' active' : '')} onClick={() => setTab('mastercal')}><i className="fa-solid fa-table-cells-large" style={{ marginRight: 6 }} />Master Calendar</button>
-        <button className={'res-tab' + (tab === 'parentqueue' ? ' active' : '')} onClick={() => setTab('parentqueue')}><i className="fa-solid fa-inbox" style={{ marginRight: 6 }} />Parent Requests <span style={{ display: pendingRequests.length > 0 ? 'inline-flex' : 'none', alignItems: 'center', justifyContent: 'center', background: '#EF4444', color: '#fff', borderRadius: 20, fontSize: 10, fontWeight: 700, minWidth: 18, height: 18, padding: '0 5px', marginLeft: 6 }}>{pendingRequests.length}</span></button>
+        <button className={'res-tab' + (tab === 'scheduling' ? ' active' : '')} onClick={() => setTab('scheduling')}><i className="fa-solid fa-calendar-alt" style={{ marginRight: 6 }} />Employee Scheduling</button>
       </div>
 
       {loading && <LoadingState label="Loading reservations…" />}
@@ -652,6 +737,25 @@ export default function Reservations({ toast }) {
       <>
       {/* ═══════ INTERACTIVE RESERVATION BOOKING CALENDAR ═══════ */}
       <div style={{ display: tab === 'calendar' ? '' : 'none' }}>
+        {!bookingServiceType ? (
+          <div className="card" style={{ padding: '28px 24px', marginBottom: 24 }}>
+            <div className="section-title" style={{ marginBottom: 4 }}>Select a Service Type to Start Booking</div>
+            <div className="section-sub" style={{ marginBottom: 18 }}>Pick what this booking is for before choosing a day and time slot.</div>
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))', gap: 12 }}>
+              {ASSESSMENT_TYPES.map(t => (
+                <button key={t} className="btn-secondary" style={{ padding: '16px 14px', textAlign: 'left', fontWeight: 600 }} onClick={() => setBookingServiceType(t)}>
+                  <i className="fa-solid fa-clipboard-check" style={{ marginRight: 8, color: '#0EA5E9' }} />{t}
+                </button>
+              ))}
+            </div>
+          </div>
+        ) : (
+        <>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '10px 14px', borderRadius: 9, background: '#F0F9FF', border: '1px solid #BAE6FD', marginBottom: 16 }}>
+          <i className="fa-solid fa-clipboard-check" style={{ color: '#0EA5E9', fontSize: 16 }} />
+          <div style={{ fontSize: 13, fontWeight: 700, color: '#0F172A', flex: 1 }}>Booking: {bookingServiceType}</div>
+          <button className="btn-secondary" style={{ fontSize: 11.5, padding: '5px 10px' }} onClick={resetBooking}>Change</button>
+        </div>
         <div style={{ display: 'grid', gridTemplateColumns: '300px 1fr', gap: 16, marginBottom: 24 }}>
 
           {/* Monthly mini-calendar */}
@@ -672,10 +776,12 @@ export default function Reservations({ toast }) {
               <div style={{ fontSize: 11.5, color: '#64748B', display: 'flex', alignItems: 'center', gap: 6 }}><span style={{ width: 14, height: 14, borderRadius: 4, background: '#EFF6FF', border: '2px solid #0EA5E9', display: 'inline-block' }} />Selected day</div>
               <div style={{ fontSize: 11.5, color: '#94A3B8', display: 'flex', alignItems: 'center', gap: 6 }}><span style={{ width: 8, height: 8, background: '#CBD5E1', borderRadius: '50%', display: 'inline-block' }} />Past / session ended</div>
             </div>
-            <button className="btn-primary" style={{ width: '100%', marginTop: 14, opacity: selected.isPast ? 0.45 : 1, cursor: selected.isPast ? 'not-allowed' : 'pointer' }} disabled={selected.isPast} onClick={bookSelectedDay}>
+            <button className="btn-primary" style={{ width: '100%', marginTop: 14, opacity: sameDayLocked ? 0.45 : 1, cursor: sameDayLocked ? 'not-allowed' : 'pointer' }} disabled={sameDayLocked} onClick={bookSelectedDay}>
               {selected.isPast
                 ? <><i className="fa-solid fa-lock" style={{ marginRight: 6 }} />Session Ended</>
-                : <><i className="fa-solid fa-plus" style={{ marginRight: 6 }} />Book Selected Day</>}
+                : sameDayLocked
+                  ? <><i className="fa-solid fa-lock" style={{ marginRight: 6 }} />Book at Least a Day Ahead</>
+                  : <><i className="fa-solid fa-plus" style={{ marginRight: 6 }} />Book Selected Day</>}
             </button>
           </div>
 
@@ -684,7 +790,13 @@ export default function Reservations({ toast }) {
             <div style={{ padding: '0 24px 16px', borderBottom: '1px solid #F1F5F9', display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: 10 }}>
               <div>
                 <div className="section-title">{selected.label + ', ' + selected.year}</div>
-                <div className="section-sub">Click a time slot to book · Showing all therapists and room allocations</div>
+                <div className="section-sub">
+                  {bookingServiceType === 'Initial Assessment'
+                    ? 'Click a time slot to book · 1 Initial Assessment per hour clinic-wide'
+                    : requiredTherapistRole
+                      ? `Click a time slot to book · Pick the ${requiredTherapistRole === 'speech' ? 'Speech-Language' : 'Occupational'} therapist in the booking modal`
+                      : 'Click a time slot to book · Showing all therapists and room allocations'}
+                </div>
               </div>
               <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
                 <span className="sync-badge"><span className="sync-dot" />Live · {liveClock} PHT</span>
@@ -695,6 +807,8 @@ export default function Reservations({ toast }) {
             </div>
           </div>
         </div>
+        </>
+        )}
       </div>
 
       {/* ═══════ ADJUST & CANCEL SCHEDULES ═══════ */}
@@ -739,7 +853,15 @@ export default function Reservations({ toast }) {
         <div className="card" style={{ padding: '22px 0 0', marginBottom: 24 }}>
           <div style={{ padding: '0 24px 16px', borderBottom: '1px solid #F1F5F9', display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: 10 }}>
             <div><div className="section-title">Master Calendar: Therapist Assignments, Rooms &amp; Parent-Booked Slots</div><div className="section-sub">Comprehensive weekly view of all confirmed sessions, room allocations, and pending parent bookings</div></div>
-            <div style={{ display: 'flex', gap: 8 }}><span className="pill pill-blue">{master.weekSelLabel}</span><span className="sync-badge"><span className="sync-dot" />Live</span></div>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+              <button className="topnav-btn" style={{ width: 28, height: 28 }} onClick={() => setMasterWeekOffset(o => o - 1)} title="Previous week"><i className="fa-solid fa-chevron-left" style={{ fontSize: 10 }} /></button>
+              <span className="pill pill-blue">{master.weekSelLabel}</span>
+              <button className="topnav-btn" style={{ width: 28, height: 28 }} onClick={() => setMasterWeekOffset(o => o + 1)} title="Next week"><i className="fa-solid fa-chevron-right" style={{ fontSize: 10 }} /></button>
+              {masterWeekOffset !== 0 && (
+                <button className="btn-secondary" style={{ fontSize: 11.5, padding: '5px 10px' }} onClick={() => setMasterWeekOffset(0)}>This Week</button>
+              )}
+              <span className="sync-badge"><span className="sync-dot" />Live</span>
+            </div>
           </div>
           <div style={{ overflowX: 'auto', padding: '16px 24px' }}>
             <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12, minWidth: 700 }}>
@@ -756,35 +878,81 @@ export default function Reservations({ toast }) {
         </div>
       </div>
 
-      {/* ═══════ PARENT REQUEST QUEUE ═══════ */}
-      <div style={{ display: tab === 'parentqueue' ? '' : 'none' }}>
-        <div style={{ display: 'grid', gridTemplateColumns: '1fr', gap: 16, marginBottom: 24 }}>
-          <div className="card" style={{ padding: '22px 20px' }}>
-            <div className="section-title" style={{ marginBottom: 4 }}><i className="fa-solid fa-inbox" style={{ color: '#818CF8', marginRight: 7 }} />Parent Self-Service Request Queue</div>
-            <div className="section-sub" style={{ marginBottom: 16 }}>Approve or decline parent-submitted booking requests</div>
-            <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
-              {renderParentQueue()}
-            </div>
-            <div style={{ marginTop: 14, paddingTop: 12, borderTop: '1px solid #F1F5F9', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-              <span style={{ fontSize: 12, color: '#64748B' }}>{pendingRequests.length + ' pending · ' + reservations.filter(r => r.channel === 'parent-portal').length + ' total parent requests in range'}</span>
+      {/* ═══════════════ EMPLOYEE SCHEDULING ═══════════════ */}
+      <div style={{ display: tab === 'scheduling' ? '' : 'none' }}>
+        <div className="sched-grid">
+          {/* View intricate therapist shift schedules */}
+          <div className="card" style={{ padding: '22px 0 0' }}>
+            <div style={{ padding: '0 24px 16px', borderBottom: '1px solid #F1F5F9', display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: 10 }}>
+              <div><div className="section-title">Therapist Shift Schedules</div><div className="section-sub">View intricate therapist shift schedules</div></div>
               <div style={{ display: 'flex', gap: 6 }}>
-                <button className="btn-edit" style={{ fontSize: 11 }} disabled={busy || !pendingRequests.length} onClick={approveAllClear}>Approve All Clear</button>
+                <select className="form-select" style={{ width: 'auto', height: 34, fontSize: 12.5 }} defaultValue="All Departments"><option>All Departments</option><option>Occupational Therapy</option><option>Speech Therapy</option></select>
+                <button className="qa-btn" style={{ width: 'auto', padding: '0 14px', height: 34, fontSize: 12.5 }} onClick={exportShiftsCsv}>
+                  <i className="fa-solid fa-file-export" style={{ color: '#0D9488' }} /> Export CSV
+                </button>
               </div>
+            </div>
+            <div style={{ overflowX: 'auto' }}>
+              <table className="data-table">
+                <thead><tr><th style={{ paddingLeft: 24 }}>Therapist</th><th>Shift Start</th><th>Shift End</th><th>Lunch Break</th><th>Status</th><th style={{ paddingRight: 24, textAlign: 'right' }}>Actions</th></tr></thead>
+                <tbody>
+                  {shifts.length === 0 ? (
+                    <tr><td colSpan={6} style={{ textAlign: 'center', padding: '28px 24px', color: '#94A3B8', fontSize: 12.5 }}>No therapist accounts yet, add therapists in User Management to schedule shifts.</td></tr>
+                  ) : shifts.map(s => (
+                    <tr key={s.therapist_id}><td style={{ paddingLeft: 24 }}><div style={{ display: 'flex', alignItems: 'center', gap: 10 }}><div className="act-avatar" style={{ width: 30, height: 30, background: s.bg, color: s.color, fontSize: 11 }}>{s.initials}</div><div style={{ fontSize: 13, fontWeight: 600, color: '#0F172A' }}>{s.name}</div></div></td><td>{s.start}</td><td>{s.end}</td><td style={{ color: s.lunch === '—' ? '#94A3B8' : '#0F172A' }}>{s.lunch}</td><td><span className={s.statusPill}>{s.status}</span></td><td style={{ paddingRight: 24, textAlign: 'right' }}><button className="btn-edit" onClick={() => openModal('edit-shift', { name: s.name, start_hour: s.start_hour, end_hour: s.end_hour, lunch_start_hour: s.lunch_start_hour, lunch_end_hour: s.lunch_end_hour, onSave: patch => saveShift(s.therapist_id, patch) })}>Edit Shift</button></td></tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+            <div style={{ padding: '10px 24px 16px', fontSize: 11.5, color: '#94A3B8' }}>
+              <i className="fa-solid fa-circle-info" style={{ marginRight: 5 }} />Shifts control booking availability: each hour offers as many reservation slots as there are therapists on shift, and sessions are auto-assigned to whoever is free.
             </div>
           </div>
 
-          {/* Honest placeholder, no real conflict-detection logic exists on the backend yet */}
+          {/* Manage therapist availability matrices */}
           <div className="card" style={{ padding: '22px 20px' }}>
-            <div className="section-title" style={{ marginBottom: 4 }}><i className="fa-solid fa-triangle-exclamation" style={{ color: '#94A3B8', marginRight: 7 }} />Schedule Conflict Detection</div>
-            <div className="section-sub" style={{ marginBottom: 16 }}>Automated double-booking / therapist-overlap flagging</div>
-            <div style={{ padding: 16, borderRadius: 10, background: '#F8FAFC', border: '1px dashed #CBD5E1', textAlign: 'center', color: '#94A3B8' }}>
-              <i className="fa-solid fa-hammer" style={{ fontSize: 22, marginBottom: 8, display: 'block' }} />
-              <div style={{ fontSize: 13, fontWeight: 600, color: '#64748B', marginBottom: 4 }}>Not yet implemented</div>
-              <div style={{ fontSize: 12, lineHeight: 1.6 }}>The system already blocks double-booking the exact same date + time slot at the database level.<br />Cross-checks like therapist-double-booked-across-rooms or room-capacity conflicts are not built yet.</div>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16 }}>
+              <div><div className="section-title">Availability Matrix</div><div className="section-sub">Manage therapist availability</div></div>
+              <button className="btn-primary" onClick={saveMatrix} disabled={matrixSaving}><i className={'fa-solid ' + (matrixSaving ? 'fa-spinner fa-spin' : 'fa-floppy-disk')} style={{ marginRight: 4 }} />{matrixSaving ? 'Saving…' : 'Save'}</button>
+            </div>
+            {/* Weekly grid */}
+            <div style={{ overflowX: 'auto', marginBottom: 16 }}>
+              <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 11.5 }}>
+                <thead>
+                  <tr style={{ background: '#F8FAFC' }}>
+                    <th style={{ padding: '8px 10px', textAlign: 'left', color: '#64748B', fontWeight: 600, borderBottom: '1px solid #E2E8F0' }}>Therapist</th>
+                    <th style={{ padding: '8px 6px', textAlign: 'center', color: '#64748B', fontWeight: 600, borderBottom: '1px solid #E2E8F0' }}>Mon</th>
+                    <th style={{ padding: '8px 6px', textAlign: 'center', color: '#64748B', fontWeight: 600, borderBottom: '1px solid #E2E8F0' }}>Tue</th>
+                    <th style={{ padding: '8px 6px', textAlign: 'center', color: '#64748B', fontWeight: 600, borderBottom: '1px solid #E2E8F0' }}>Wed</th>
+                    <th style={{ padding: '8px 6px', textAlign: 'center', color: '#64748B', fontWeight: 600, borderBottom: '1px solid #E2E8F0' }}>Thu</th>
+                    <th style={{ padding: '8px 6px', textAlign: 'center', color: '#64748B', fontWeight: 600, borderBottom: '1px solid #E2E8F0' }}>Fri</th>
+                    <th style={{ padding: '8px 6px', textAlign: 'center', color: '#64748B', fontWeight: 600, borderBottom: '1px solid #E2E8F0' }}>Sat</th>
+                    <th style={{ padding: '8px 6px', textAlign: 'center', color: '#64748B', fontWeight: 600, borderBottom: '1px solid #E2E8F0' }}>Sun</th>
+                  </tr>
+                </thead>
+                <tbody id="avail-matrix">
+                  {shifts.length === 0 ? (
+                    <tr><td colSpan={8} style={{ textAlign: 'center', padding: '24px 10px', color: '#94A3B8', fontSize: 12 }}>No therapist accounts yet.</td></tr>
+                  ) : shifts.map((s, rowIdx) => (
+                    <tr key={s.therapist_id} style={rowIdx % 2 === 1 ? { background: '#F8FAFC' } : undefined}>
+                      <td style={{ padding: '8px 10px', fontWeight: 600, color: '#0F172A', fontSize: 12 }}>{s.name}</td>
+                      {daysFor(s).map((working, dayIdx) => (
+                        <td key={dayIdx} style={{ textAlign: 'center', padding: 6 }}><span className="avail-dot" style={{ background: working ? DOT_COLORS.available : DOT_COLORS.off }} onClick={() => toggleDay(s, dayIdx)} title={working ? 'Available, click to set day off' : 'Day off, click to set available'} /></td>
+                      ))}
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+            <div style={{ display: 'flex', gap: 14, alignItems: 'center', flexWrap: 'wrap' }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 11.5, color: '#64748B' }}><span className="avail-dot" style={{ background: '#22C55E', pointerEvents: 'none', width: 12, height: 12 }} /> Available</div>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 11.5, color: '#64748B' }}><span className="avail-dot" style={{ background: '#E2E8F0', pointerEvents: 'none', width: 12, height: 12 }} /> Day off</div>
+              <span style={{ fontSize: 11, color: '#94A3B8', marginLeft: 4 }}>· Click a dot to toggle, then Save. Day-off therapists add no booking slots that day; affected bookings are flagged and parents notified.</span>
             </div>
           </div>
         </div>
       </div>
+
       </>
       )}
 
@@ -792,16 +960,10 @@ export default function Reservations({ toast }) {
 
       {/* ══════════ Page-local modals ══════════ */}
       {modal && modal.kind === 'booking' && (
-        <BookingModal selected={selected} daySlots={daySlots} slotState={slotState} defaultTime={modal.defaultTime} time={modal.time} clients={clients} clientLabel={clientLabel} busy={busy} onClose={closeModal} onConfirm={confirmBooking} />
+        <BookingModal selected={selected} daySlots={daySlots} slotState={slotState} defaultTime={modal.defaultTime} time={modal.time} clients={clients} clientLabel={clientLabel} serviceType={bookingServiceType} busy={busy} onClose={closeModal} onConfirm={confirmBooking} />
       )}
       {modal && modal.kind === 'slot' && (
         <SlotActionsModal selected={selected} daySlots={daySlots} time={modal.time} reservation={modal.reservation} busy={busy} onClose={closeModal} onReschedule={rescheduleSlot} onCancel={cancelSlot} onNoShow={noShowSlot} onSaveAmount={saveAmount} />
-      )}
-      {modal && modal.kind === 'decline' && (
-        <DeclineModal reservation={modal.reservation} busy={busy} onClose={closeModal} onConfirm={confirmDecline} />
-      )}
-      {modal && modal.kind === 'approve' && (
-        <ApproveModal reservation={modal.reservation} busy={busy} onClose={closeModal} onConfirm={confirmApproveRequest} />
       )}
     </div>
   );

@@ -1,5 +1,6 @@
 import { useState, useRef, useEffect } from 'react';
 import { api } from '../../../api.js';
+import Branding from './Branding.jsx';
 
 /* == page: cms == */
 
@@ -20,8 +21,16 @@ function CharCount({ length, limit }) {
 }
 
 export default function Cms({ go, toast, openModal }) {
-  /* ── Tab switching ── */
-  const [tab, setTab] = useState('articles');
+  /* ── Tab switching, honors a one-shot initial tab set by Settings' "Open Branding & Theme" link ── */
+  const [tab, setTab] = useState(() => {
+    const requested = sessionStorage.getItem('cms_initial_tab');
+    if (requested) { sessionStorage.removeItem('cms_initial_tab'); return requested; }
+    return 'articles';
+  });
+
+  /* ── Branding, used only for the hero kicker in the live preview below, to match the real landing page ── */
+  const [brand, setBrand] = useState(null);
+  useEffect(() => { fetch('/api/settings/branding/public').then(r => r.json()).then(setBrand).catch(() => {}); }, []);
 
   /* ── News post state ── */
   const [postTitle, setPostTitle] = useState('');
@@ -343,7 +352,6 @@ export default function Cms({ go, toast, openModal }) {
       <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', marginBottom: 24, flexWrap: 'wrap', gap: 12 }}>
         <div>
           <h1 style={{ fontSize: 22, fontWeight: 700, color: '#0F172A', margin: '0 0 4px' }}>Website Content</h1>
-          <p style={{ fontSize: 13.5, color: '#64748B', margin: 0 }}>Post news, announcements, and update the public homepage, with a live preview of how it will look.</p>
         </div>
         <a href="index.html" target="_blank" className="qa-btn" style={{ width: 'auto', padding: '10px 16px', fontSize: 13, textDecoration: 'none' }}>
           <i className="fa-solid fa-arrow-up-right-from-square" style={{ color: '#0D9488' }} /> Open Public Website
@@ -355,6 +363,7 @@ export default function Cms({ go, toast, openModal }) {
         <button className={'cms-tab-btn' + (tab === 'articles' ? ' active' : '')} onClick={() => setTab('articles')}><i className="fa-solid fa-newspaper" style={{ marginRight: 6 }} />News Post</button>
         <button className={'cms-tab-btn' + (tab === 'announcements' ? ' active' : '')} onClick={() => setTab('announcements')}><i className="fa-solid fa-bullhorn" style={{ marginRight: 6 }} />Announcement</button>
         <button className={'cms-tab-btn' + (tab === 'homepage' ? ' active' : '')} onClick={() => setTab('homepage')}><i className="fa-solid fa-panorama" style={{ marginRight: 6 }} />Homepage</button>
+        <button className={'cms-tab-btn' + (tab === 'branding' ? ' active' : '')} onClick={() => setTab('branding')}><i className="fa-solid fa-palette" style={{ marginRight: 6 }} />Branding &amp; Theme</button>
       </div>
 
       {/* ══════════ TAB: NEWS POST ══════════ */}
@@ -654,7 +663,7 @@ export default function Cms({ go, toast, openModal }) {
                 </div>
                 <div className="ix-hero">
                   <div>
-                    <div className="ix-kicker">Bloomsdale Therapy Center · Imus, Cavite</div>
+                    <div className="ix-kicker">{brand?.clinic_name || 'Bloomsdale Therapy Center'}{brand?.address ? ' · ' + brand.address : ' · Imus, Cavite'}</div>
                     <div className="ix-h1" id="pv-headline">{pvHeadline}</div>
                     <div className="ix-sub" id="pv-herosub">{pvHeroSub}</div>
                     <span className="ix-btn" id="pv-cta">{pvCta}</span>
@@ -707,6 +716,11 @@ export default function Cms({ go, toast, openModal }) {
             </div>
           </div>
         </div>
+      </div>
+
+      {/* ══════════ TAB: BRANDING & THEME ══════════ */}
+      <div id="tab-branding" style={{ display: tab === 'branding' ? '' : 'none' }}>
+        <Branding toast={toast} embedded />
       </div>
 
       <div className="page-footer"><span style={{ fontSize: 12, color: '#94A3B8' }}>© 2026 KID Clinic Information Management System · Content Management</span></div>

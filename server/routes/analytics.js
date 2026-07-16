@@ -22,7 +22,7 @@ function lastMonths(n) {
 /** GET /api/analytics/summary, dashboard stat cards + 7.1a/7.1b breakdowns */
 router.get('/summary', async (req, res) => {
   const [clientsR, resR, notesR, payR] = await Promise.all([
-    db.from('clients').select('id, diagnosis, status, therapy_type'),
+    db.from('clients').select('id, diagnosis, status, therapy_type').eq('archived', false),
     db.from('reservations').select('id, status, date'),
     db.from('session_notes').select('score'),
     db.from('payments').select('amount, status')
@@ -191,7 +191,7 @@ router.get('/employees', async (req, res) => {
 
 /** GET /api/analytics/demographics, client gender + age breakdown */
 router.get('/demographics', async (req, res) => {
-  const { data: clients, error } = await db.from('clients').select('gender, dob');
+  const { data: clients, error } = await db.from('clients').select('gender, dob').eq('archived', false);
   if (error) return res.status(500).json({ error: error.message });
 
   const gender = { Male: 0, Female: 0, Unspecified: 0 };
@@ -215,7 +215,7 @@ router.get('/demographics', async (req, res) => {
     if (youngest == null || ageYears < youngest) youngest = ageYears;
     if (oldest == null || ageYears > oldest) oldest = ageYears;
   }
-  const fmtAge = y => y == null ? null : Math.floor(y) + 'y' + Math.round((y % 1) * 12) + 'm';
+  const fmtAge = y => y == null ? null : Math.round(y);
 
   res.json({ total: (clients || []).length, gender, ageBrackets, youngest: fmtAge(youngest), oldest: fmtAge(oldest) });
 });

@@ -3,6 +3,7 @@ import { Modal } from '../../../components/ui.jsx';
 import { api } from '../../../api.js';
 import { useAuth } from '../../../auth.jsx';
 import NewSessionEntryModal from './milestones/NewSessionEntryModal.jsx';
+import ScorecardWizardModal from './milestones/ScorecardWizardModal.jsx';
 
 /* == page: milestones == */
 
@@ -12,9 +13,17 @@ const ROLE_DISCIPLINE = { ot: 'Occupational Therapy', speech: 'Speech-Language T
 // clients.therapy_type is stored as the short code ('OT' / 'Speech' / 'Both'), not
 // the full discipline name used here and by GAS questionnaires, this maps between them.
 const DISCIPLINE_THERAPY_CODE = { 'Speech-Language Therapy': 'Speech', 'Occupational Therapy': 'OT' };
-const GAS_LEVELS = [-2, -1, 0, 1, 2];
 const GAS_LEVEL_FIELD = { '-2': 'level_m2', '-1': 'level_m1', '0': 'level_0', '1': 'level_p1', '2': 'level_p2' };
 const emptyGasItemDraft = () => ({ title: '', description: '', level_m2: '', level_m1: '', level_0: '', level_p1: '', level_p2: '', weight: 1 });
+
+/* ── 3-stage scorecard workflow (Before / During / After), shared by both
+   OT and Speech-Language disciplines since it lives inside the same
+   discipline-scoped section as the rest of the GAS tool below. ── */
+const GAS_STEPS = [
+  { n: 1, label: 'Before Session', icon: 'fa-clipboard-list' },
+  { n: 2, label: 'During Session', icon: 'fa-wave-square' },
+  { n: 3, label: 'After Assessment', icon: 'fa-file-signature' }
+];
 
 /** A GAS entry scores a session that already happened, so its date can never be in the future. */
 function todayStr() { return new Date().toISOString().split('T')[0]; }
@@ -31,6 +40,15 @@ function computeGasTScore(scored) {
   const denom = Math.sqrt((1 - RHO) * sumW2 + RHO * sumW * sumW);
   if (!denom) return 50;
   return Math.round((50 + (10 * sumWX) / denom) * 10) / 10;
+}
+// Parent observation is folded into the stored remarks text as its own leading
+// paragraph on submit (see submitEntry), split it back out to show/edit it as its own field.
+function splitGasRemarks(remarks) {
+  const paragraphs = (remarks || '').split('\n\n');
+  const parentIdx = paragraphs.findIndex(p => p.startsWith('Parent observation: '));
+  const parentObservation = parentIdx !== -1 ? paragraphs[parentIdx].slice('Parent observation: '.length) : '';
+  const rest = paragraphs.filter((_, i) => i !== parentIdx).join('\n\n');
+  return { parentObservation, remarks: rest };
 }
 function gasScoreTone(score) {
   if (score == null) return 'gray';
@@ -93,6 +111,66 @@ export default function Milestones({ go, toast, openModal }) {
   const [gasForm, setGasForm] = useState({ client_id: '', session_date: todayStr(), therapist_name: '', remarks: '' });
   const [gasScores, setGasScores] = useState({}); // { [item_id]: level }
   const [gasSubmitting, setGasSubmitting] = useState(false);
+
+  // ── 3-stage workflow state (Before Session / During Session / After Assessment) ──
+  const [gasStep, setGasStep] = useState(1);
+  const [gasParentObservation, setGasParentObservation] = useState('');
+  const [gasSummaryDraft, setGasSummaryDraft] = useState('');
+  // Full profile (with session_notes/attendance/gas_entries) for the child selected in
+  // Step 1's Client Records panel, mirrors Clients.jsx's own client-detail fetch.
+  const [gasClientRecord, setGasClientRecord] = useState(null);
+  const [gasClientRecordLoading, setGasClientRecordLoading] = useState(false);
+
+  useEffect(() => {
+    if (!gasForm.client_id) { setGasClientRecord(null); return; }
+    setGasClientRecordLoading(true);
+    api('/clients/' + gasForm.client_id)
+      .then(setGasClientRecord)
+      .catch(() => setGasClientRecord(null))
+      .finally(() => setGasClientRecordLoading(false));
+  }, [gasForm.client_id]);
+
+  function gasGoToStep(n) { setGasStep(n); }
+
+  function gasNextStep() {
+    if (gasStep === 1 && !gasForm.client_id) { toast('Select a child before continuing', 'fa-triangle-exclamation'); return; }
+    setGasStep(s => Math.min(3, s + 1));
+  }
+  function gasPrevStep() { setGasStep(s => Math.max(1, s - 1)); }
+
+  // Searchable client combobox for Step 1 (text query + dropdown list, mirrors the
+  // therapist search combobox pattern already used below).
+  const [gasClientQuery, setGasClientQuery] = useState('');
+  const [gasClientOpen, setGasClientOpen] = useState(false);
+
+  function selectGasClientOption(c) {
+    setGasForm(f => ({ ...f, client_id: c.id }));
+    setGasClientQuery(c.full_name);
+    setGasClientOpen(false);
+  }
+
+  const [gasRecordExpanded, setGasRecordExpanded] = useState(null); // which Client Records row is expanded
+
+  // Discipline-locked (ot/speech) Scorecard tab shows a client picker first,
+  // like Client Records, clicking a child opens the 3-step wizard modal for
+  // them, rather than the free client/therapist-search flow below (which stays
+  // exactly as-is for admin/staff, who may log a session for any therapist).
+  const [scorecardClient, setScorecardClient] = useState(null);
+  const [scorecardListQuery, setScorecardListQuery] = useState('');
+
+  /** Synthesizes Section 1 + 2 + 3 inputs into a draft clinical summary the therapist can edit before submitting. */
+  function generateGasSummary() {
+    const scoredGoals = gasCurrentItems.filter(it => gasScores[it.id] !== undefined);
+    const lines = [];
+    if (gasParentObservation.trim()) lines.push(`Parent reported: ${gasParentObservation.trim()}`);
+    for (const it of scoredGoals) {
+      const lvl = gasScores[it.id];
+      lines.push(`Goal "${it.title}": scored ${lvl > 0 ? '+' + lvl : lvl} (${it[GAS_LEVEL_FIELD[String(lvl)]]}).`);
+    }
+    if (gasPreviewScore != null) lines.push(`Overall GAS T-score for this session: ${gasPreviewScore}.`);
+    if (gasForm.remarks.trim()) lines.push('Plans, Analysis, and Instructions: ' + gasForm.remarks.trim());
+    setGasSummaryDraft(lines.join('\n'));
+  }
   const [gasTherapistQuery, setGasTherapistQuery] = useState('');
   const [gasTherapistOpen, setGasTherapistOpen] = useState(false);
   // Names of therapists who actually have session history (real, non-cancelled reservations)
@@ -220,8 +298,6 @@ export default function Milestones({ go, toast, openModal }) {
   const gasCurrentSetId = gasSetId[gasDiscipline] || '';
   const gasCurrentSet = gasCurrentSets.find(s => s.id === gasCurrentSetId) || null;
   const gasCurrentItems = gasCurrentSet?.items || [];
-  const gasCurrentEntries = (gasEntries[gasDiscipline] || [])
-    .filter(e => !lockedDiscipline || gasAssignedClientIds.has(e.client_id));
   const gasManageSet = gasCurrentSets.find(s => s.id === gasManageSetId) || null;
 
   // Admin/staff see every child whose therapy_type matches the discipline tab
@@ -241,10 +317,33 @@ export default function Milestones({ go, toast, openModal }) {
     ? computeGasTScore(gasCurrentItems.filter(it => gasScores[it.id] !== undefined).map(it => ({ weight: Number(it.weight) || 1, level: gasScores[it.id] })))
     : null;
 
+  const gasClientMatches = gasFilteredClients.filter(c => c.full_name.toLowerCase().includes(gasClientQuery.toLowerCase()));
+  function blurGasClient() {
+    setTimeout(() => {
+      setGasClientOpen(false);
+      setGasClientQuery(gasSelectedClient?.full_name || '');
+    }, 150);
+  }
+
+  // Every goal defaults to level 0 (expected outcome) as soon as its questionnaire set
+  // loads, so Step 2's sliders always start centered instead of unscored (a slider,
+  // unlike a click-to-score button row, needs a starting position).
+  useEffect(() => {
+    if (!gasCurrentItems.length) return;
+    setGasScores(prev => {
+      let changed = false;
+      const next = { ...prev };
+      for (const it of gasCurrentItems) if (next[it.id] === undefined) { next[it.id] = 0; changed = true; }
+      return changed ? next : prev;
+    });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [gasCurrentItems]);
+
   function setGasDisciplineTab(d) {
     setGasDiscipline(d);
     setGasScores({});
     setGasManageSetId(null);
+    setGasStep(1);
   }
 
   async function createGasSet() {
@@ -339,13 +438,22 @@ export default function Milestones({ go, toast, openModal }) {
     if (!gasCurrentSet) { toast('Select a questionnaire set', 'fa-triangle-exclamation'); return; }
     if (gasScoredCount !== gasCurrentItems.length) { toast('Score every goal before submitting', 'fa-triangle-exclamation'); return; }
 
+    // Parent observation (Section 1) has no dedicated column on gas_entries,
+    // fold it into the remarks text alongside the edited summary draft (Section 3)
+    // so nothing captured across the 3 stages gets lost on submit.
+    const remarksParts = [];
+    if (gasParentObservation.trim()) remarksParts.push(`Parent observation: ${gasParentObservation.trim()}`);
+    if (gasSummaryDraft.trim()) remarksParts.push(gasSummaryDraft.trim());
+    else if (gasForm.remarks.trim()) remarksParts.push(gasForm.remarks.trim());
+    const combinedRemarks = remarksParts.join('\n\n');
+
     setGasSubmitting(true);
     try {
       const entry = await api('/gas/entries', {
         method: 'POST',
         body: {
           client_id: gasForm.client_id, questionnaire_id: gasCurrentSet.id,
-          session_date: gasForm.session_date, therapist_name: gasForm.therapist_name, remarks: gasForm.remarks,
+          session_date: gasForm.session_date, therapist_name: gasForm.therapist_name, remarks: combinedRemarks,
           scores: gasCurrentItems.map(it => ({ item_id: it.id, level: gasScores[it.id] }))
         }
       });
@@ -353,6 +461,9 @@ export default function Milestones({ go, toast, openModal }) {
       setGasEntries(prev => ({ ...prev, [gasDiscipline]: [{ ...entry, client }, ...(prev[gasDiscipline] || [])] }));
       setGasScores({});
       setGasForm(f => ({ ...f, remarks: '' }));
+      setGasParentObservation('');
+      setGasSummaryDraft('');
+      setGasStep(1);
       toast('GAS entry submitted, T-score ' + entry.gas_t_score, 'fa-clipboard-check');
     } catch (e) {
       toast(e.message || 'Failed to submit GAS entry', 'fa-triangle-exclamation');
@@ -363,21 +474,37 @@ export default function Milestones({ go, toast, openModal }) {
 
   /* ── Session Entries: view / edit a submitted GAS entry ── */
   const [gasEntriesFilter, setGasEntriesFilter] = useState('all'); // 'all' | discipline
+  const [gasEntryIdSearch, setGasEntryIdSearch] = useState('');
+  const [gasEntryDateFrom, setGasEntryDateFrom] = useState('');
+  const [gasEntryDateTo, setGasEntryDateTo] = useState('');
+  const [gasEntryPage, setGasEntryPage] = useState(1);
+  const GAS_ENTRIES_PER_PAGE = 10;
   const [gasEntryModal, setGasEntryModal] = useState(null); // { mode: 'view'|'edit', entry }
-  const [gasEditForm, setGasEditForm] = useState({ session_date: '', therapist_name: '', remarks: '' });
+  const [gasEditForm, setGasEditForm] = useState({ session_date: '', therapist_name: '', parentObservation: '', remarks: '' });
   const [gasEditScores, setGasEditScores] = useState({}); // { [item_id]: level }
   const [gasEditSaving, setGasEditSaving] = useState(false);
-  const [gasDeleting, setGasDeleting] = useState(null); // entry id being deleted
+  const [gasArchiving, setGasArchiving] = useState(null); // entry id being archived
   // Same "assigned = real reservation history" scoping as the scorecard form, for the entry's own child.
   const [gasEditAssignedTherapists, setGasEditAssignedTherapists] = useState([]);
   const [gasEntrySelected, setGasEntrySelected] = useState(new Set()); // bulk-select, mirrors Users.jsx
-  const [gasBulkDeleting, setGasBulkDeleting] = useState(false);
+  const [gasBulkArchiving, setGasBulkArchiving] = useState(false);
 
-  const gasVisibleEntries = gasEntriesFilter === 'all' ? gasAllEntries : gasAllEntries.filter(e => e.discipline === gasEntriesFilter);
+  const gasDisciplineEntries = (gasEntriesFilter === 'all' ? gasAllEntries : gasAllEntries.filter(e => e.discipline === gasEntriesFilter))
+    .filter(e => !gasEntryDateFrom || e.session_date >= gasEntryDateFrom)
+    .filter(e => !gasEntryDateTo || e.session_date <= gasEntryDateTo);
+  const gasVisibleEntries = gasEntryIdSearch.trim()
+    ? gasDisciplineEntries.filter(e => {
+        const q = gasEntryIdSearch.trim().toLowerCase();
+        return String(e.id).toLowerCase().includes(q) || String(e.client?.client_code || '').toLowerCase().includes(q);
+      })
+    : gasDisciplineEntries;
+  const gasEntryPageCount = Math.max(1, Math.ceil(gasVisibleEntries.length / GAS_ENTRIES_PER_PAGE));
+  const gasEntryPageSafe = Math.min(gasEntryPage, gasEntryPageCount);
+  const gasPagedEntries = gasVisibleEntries.slice((gasEntryPageSafe - 1) * GAS_ENTRIES_PER_PAGE, gasEntryPageSafe * GAS_ENTRIES_PER_PAGE);
   const gasEditTherapistPool = gasEditAssignedTherapists.length
     ? gasTherapists.filter(t => gasEditAssignedTherapists.includes(t.name))
     : gasTherapists;
-  const gasAllVisibleSelected = gasVisibleEntries.length > 0 && gasVisibleEntries.every(e => gasEntrySelected.has(e.id));
+  const gasAllVisibleSelected = gasPagedEntries.length > 0 && gasPagedEntries.every(e => gasEntrySelected.has(e.id));
 
   function toggleGasEntrySelect(id) {
     setGasEntrySelected(prev => {
@@ -388,14 +515,14 @@ export default function Milestones({ go, toast, openModal }) {
   }
 
   function toggleGasEntrySelectAll() {
-    setGasEntrySelected(gasAllVisibleSelected ? new Set() : new Set(gasVisibleEntries.map(e => e.id)));
+    setGasEntrySelected(gasAllVisibleSelected ? new Set() : new Set(gasPagedEntries.map(e => e.id)));
   }
 
-  async function bulkDeleteGasEntries() {
+  async function bulkArchiveGasEntries() {
     const ids = [...gasEntrySelected];
     if (!ids.length) return;
-    if (!confirm(`Delete ${ids.length} GAS entr${ids.length === 1 ? 'y' : 'ies'}? This action cannot be undone.`)) return;
-    setGasBulkDeleting(true);
+    if (!confirm(`Archive ${ids.length} GAS entr${ids.length === 1 ? 'y' : 'ies'}? Archived entries drop off this list and out of progress charts, but stay on record.`)) return;
+    setGasBulkArchiving(true);
     try {
       await Promise.all(ids.map(id => api('/gas/entries/' + id, { method: 'DELETE' })));
       setGasEntries(prev => {
@@ -403,12 +530,12 @@ export default function Milestones({ go, toast, openModal }) {
         for (const d of GAS_DISCIPLINES) next[d] = (prev[d] || []).filter(e => !gasEntrySelected.has(e.id));
         return next;
       });
-      toast(ids.length + ' GAS entr' + (ids.length === 1 ? 'y' : 'ies') + ' deleted', 'fa-trash');
+      toast(ids.length + ' GAS entr' + (ids.length === 1 ? 'y' : 'ies') + ' archived', 'fa-box-archive');
       setGasEntrySelected(new Set());
     } catch (e) {
-      toast(e.message || 'Failed to delete entries', 'fa-triangle-exclamation');
+      toast(e.message || 'Failed to archive entries', 'fa-triangle-exclamation');
     } finally {
-      setGasBulkDeleting(false);
+      setGasBulkArchiving(false);
     }
   }
 
@@ -418,7 +545,8 @@ export default function Milestones({ go, toast, openModal }) {
 
   function openGasEdit(entry) {
     setGasEntryModal({ mode: 'edit', entry });
-    setGasEditForm({ session_date: entry.session_date, therapist_name: entry.therapist_name || '', remarks: entry.remarks || '' });
+    const { parentObservation, remarks } = splitGasRemarks(entry.remarks);
+    setGasEditForm({ session_date: entry.session_date, therapist_name: entry.therapist_name || '', parentObservation, remarks });
     const scores = {};
     for (const s of entry.scores || []) if (s.item_id) scores[s.item_id] = s.level;
     setGasEditScores(scores);
@@ -432,9 +560,9 @@ export default function Milestones({ go, toast, openModal }) {
     setGasEntryModal(null);
   }
 
-  async function deleteGasEntry(entry) {
-    if (!confirm('Delete this GAS entry? This action cannot be undone.')) return;
-    setGasDeleting(entry.id);
+  async function archiveGasEntry(entry) {
+    if (!confirm('Archive this GAS entry? It drops off this list and out of progress charts, but stays on record.')) return;
+    setGasArchiving(entry.id);
     try {
       await api('/gas/entries/' + entry.id, { method: 'DELETE' });
       setGasEntries(prev => ({
@@ -442,11 +570,11 @@ export default function Milestones({ go, toast, openModal }) {
         [entry.discipline]: (prev[entry.discipline] || []).filter(e => e.id !== entry.id)
       }));
       setGasEntrySelected(prev => { const next = new Set(prev); next.delete(entry.id); return next; });
-      toast('GAS entry deleted', 'fa-trash');
+      toast('GAS entry archived', 'fa-box-archive');
     } catch (e) {
-      toast(e.message || 'Failed to delete entry', 'fa-triangle-exclamation');
+      toast(e.message || 'Failed to archive entry', 'fa-triangle-exclamation');
     } finally {
-      setGasDeleting(null);
+      setGasArchiving(null);
     }
   }
 
@@ -457,6 +585,24 @@ export default function Milestones({ go, toast, openModal }) {
     ? (gasSets[gasEntryModal.entry.discipline] || []).find(s => s.id === gasEntryModal.entry.questionnaire_id)?.items || []
     : [];
 
+  function generateGasEditSummary() {
+    const entry = gasEntryModal.entry;
+    const lines = [];
+    if (gasEditForm.parentObservation.trim()) lines.push(`Parent reported: ${gasEditForm.parentObservation.trim()}`);
+    for (const s of entry.scores || []) {
+      const liveItem = s.item_id ? gasEditQuestionnaireItems.find(it => it.id === s.item_id) : null;
+      const level = s.item_id ? gasEditScores[s.item_id] : s.level;
+      const levelLabel = liveItem ? liveItem[GAS_LEVEL_FIELD[String(level)]] : s.level_label;
+      lines.push(`Goal "${s.item_title}": scored ${level > 0 ? '+' + level : level} (${levelLabel}).`);
+    }
+    const scored = (entry.scores || [])
+      .filter(s => s.item_id && gasEditScores[s.item_id] !== undefined)
+      .map(s => ({ weight: Number(s.weight) || 1, level: gasEditScores[s.item_id] }));
+    const tScore = scored.length ? computeGasTScore(scored) : null;
+    if (tScore != null) lines.push(`Overall GAS T-score for this session: ${tScore}.`);
+    setGasEditForm(f => ({ ...f, remarks: lines.join('\n') }));
+  }
+
   async function saveGasEdit() {
     if (!gasEditForm.session_date) { toast('Select a session date', 'fa-triangle-exclamation'); return; }
     if (gasEditForm.session_date > todayStr()) { toast('Session date cannot be in the future', 'fa-triangle-exclamation'); return; }
@@ -466,11 +612,16 @@ export default function Milestones({ go, toast, openModal }) {
       .filter(s => s.item_id && gasEditScores[s.item_id] !== undefined)
       .map(s => ({ item_id: s.item_id, level: gasEditScores[s.item_id] }));
 
+    const remarksParts = [];
+    if (gasEditForm.parentObservation.trim()) remarksParts.push(`Parent observation: ${gasEditForm.parentObservation.trim()}`);
+    if (gasEditForm.remarks.trim()) remarksParts.push(gasEditForm.remarks.trim());
+    const combinedRemarks = remarksParts.join('\n\n');
+
     setGasEditSaving(true);
     try {
       const updated = await api('/gas/entries/' + entry.id, {
         method: 'PUT',
-        body: { session_date: gasEditForm.session_date, therapist_name: gasEditForm.therapist_name, remarks: gasEditForm.remarks, scores }
+        body: { session_date: gasEditForm.session_date, therapist_name: gasEditForm.therapist_name, remarks: combinedRemarks, scores }
       });
       setGasEntries(prev => ({
         ...prev,
@@ -490,8 +641,7 @@ export default function Milestones({ go, toast, openModal }) {
       {/* Page header */}
       <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', marginBottom: 24, flexWrap: 'wrap', gap: 12 }}>
         <div>
-          <h1 style={{ fontSize: 22, fontWeight: 700, color: '#0F172A', margin: '0 0 4px' }}>Post-Session Milestone Scoreboard</h1>
-          <p style={{ fontSize: 13.5, color: '#64748B', margin: 0 }}>Score GAS (Goal Attainment Scaling) assessments and review submitted session entries.</p>
+          <h1 style={{ fontSize: 22, fontWeight: 700, color: '#0F172A', margin: '0 0 4px' }}>Milestone Scorecard</h1>
         </div>
         {!lockedDiscipline && (
           <div style={{ display: 'flex', gap: 8 }}>
@@ -516,7 +666,6 @@ export default function Milestones({ go, toast, openModal }) {
           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', flexWrap: 'wrap', gap: 10, marginBottom: 4 }}>
             <div>
               <div className="section-title"><i className="fa-solid fa-bullseye" style={{ color: '#4F46E5', marginRight: 7 }} />GAS Assessment Questionnaire</div>
-              <div className="section-sub">Goal Attainment Scaling, score a client's session against an admin-defined goal set</div>
             </div>
             {isGasAdmin && (
               <button className="qa-btn" style={{ width: 'auto', padding: '9px 14px', fontSize: 12.5 }} onClick={() => { setGasManageOpen(true); setGasManageSetId(null); }}>
@@ -538,176 +687,321 @@ export default function Milestones({ go, toast, openModal }) {
             <div style={{ padding: '30px 0', textAlign: 'center', color: '#94A3B8', fontSize: 13 }}><i className="fa-solid fa-spinner fa-spin" style={{ marginRight: 8 }} />Loading questionnaire data…</div>
           ) : (
             <>
-              {/* Set selector */}
-              <div style={{ display: 'flex', gap: 10, alignItems: 'flex-end', flexWrap: 'wrap', marginBottom: 18 }}>
-                <div style={{ flex: '1 1 260px' }}>
-                  <label className="form-label">Questionnaire Set</label>
-                  <select className="form-select" value={gasCurrentSetId} onChange={e => { setGasSetId(prev => ({ ...prev, [gasDiscipline]: e.target.value })); setGasScores({}); }}>
-                    <option value="">- Select a questionnaire set -</option>
-                    {gasCurrentSets.map(s => (
-                      <option key={s.id} value={s.id}>{s.name}, {s.status} ({(s.items || []).length} goals)</option>
-                    ))}
-                  </select>
-                </div>
-                {!gasCurrentSets.length && (
-                  <div style={{ fontSize: 12.5, color: '#94A3B8', paddingBottom: 10 }}>
-                    No questionnaire sets yet for {gasDiscipline}.{isGasAdmin ? ' Use "Manage Questionnaire Sets" to create one.' : ''}
+              {/* ── Discipline-locked therapist: client picker, like Client Records, clicking a child opens the wizard modal ── */}
+              {lockedDiscipline && (
+                <div>
+                  <div style={{ position: 'relative', marginBottom: 14 }}>
+                    <i className="fa-solid fa-magnifying-glass" style={{ position: 'absolute', left: 12, top: '50%', transform: 'translateY(-50%)', color: '#94A3B8', fontSize: 12 }} />
+                    <input
+                      className="form-input" style={{ paddingLeft: 32, maxWidth: 340 }}
+                      placeholder="Search your clients…" autoComplete="off"
+                      value={scorecardListQuery} onChange={e => setScorecardListQuery(e.target.value)}
+                    />
                   </div>
-                )}
-              </div>
-
-              {gasCurrentSet && (
-                <div style={{ display: 'grid', gridTemplateColumns: '1.1fr 1fr', gap: 16 }}>
-                  {/* Scoring form */}
-                  <div>
-                    <div style={{ display: 'grid', gridTemplateColumns: lockedDiscipline ? '1fr' : '1fr 1fr', gap: 10, marginBottom: 14 }}>
-                      <div style={{ gridColumn: '1/-1' }}>
-                        <label className="form-label">Child{lockedDiscipline ? ', your caseload' : ''} *</label>
-                        <select className="form-select" value={gasForm.client_id} disabled={lockedDiscipline && gasAssignedClientsLoading} onChange={e => setGasForm(f => ({ ...f, client_id: e.target.value }))}>
-                          <option value="">{lockedDiscipline && gasAssignedClientsLoading ? 'Loading your caseload…' : '- Select child -'}</option>
-                          {gasFilteredClients.map(c => <option key={c.id} value={c.id}>{c.full_name}, {c.client_code} ({c.therapy_type || 'Unassigned'})</option>)}
-                        </select>
-                        {lockedDiscipline && !gasAssignedClientsLoading && !gasFilteredClients.length && (
-                          <div style={{ fontSize: 11, color: '#94A3B8', marginTop: 4 }}>No children with session history assigned to you yet.</div>
-                        )}
-                      </div>
-                      <div><label className="form-label">Session Date *</label><input className="form-input" type="date" max={todayStr()} value={gasForm.session_date} onChange={e => setGasForm(f => ({ ...f, session_date: e.target.value }))} /></div>
-                      {/* An ot/speech account IS the therapist submitting this entry, no one else to pick. */}
-                      {!lockedDiscipline && (
-                      <div style={{ position: 'relative' }}>
-                        <label className="form-label">Therapist{gasSelectedClient?.assigned_therapist_name ? ', assigned in Client Records' : (gasForm.client_id && gasAssignedTherapists.length ? ', assigned to this child' : '')}</label>
-                        {gasSelectedClient?.assigned_therapist_name ? (
-                          // Client Records already designates one therapist for this child, 
-                          // use it automatically instead of making the admin pick among others.
-                          <input className="form-input" value={gasSelectedClient.assigned_therapist_name} disabled />
-                        ) : (
-                        <>
-                        <input
-                          className="form-input"
-                          placeholder={!gasForm.client_id ? 'Select a child first…' : gasAssignedLoading ? 'Loading assigned therapists…' : 'Search registered therapists…'}
-                          autoComplete="off"
-                          disabled={!gasForm.client_id || gasAssignedLoading}
-                          value={gasTherapistQuery}
-                          onChange={e => { setGasTherapistQuery(e.target.value); setGasForm(f => ({ ...f, therapist_name: '' })); setGasTherapistOpen(true); }}
-                          onFocus={() => setGasTherapistOpen(true)}
-                          onBlur={blurGasTherapist}
-                        />
-                        {gasTherapistOpen && (
-                          <div style={{ position: 'absolute', top: '100%', left: 0, right: 0, zIndex: 20, marginTop: 4, maxHeight: 190, overflowY: 'auto', background: '#fff', border: '1px solid #E2E8F0', borderRadius: 9, boxShadow: '0 8px 20px rgba(15,23,42,.12)' }}>
-                            {gasTherapistMatches.map(t => (
-                              <div key={t.therapist_id} onMouseDown={() => selectGasTherapist(t.name)}
-                                style={{ padding: '8px 12px', fontSize: 12.5, color: '#334155', cursor: 'pointer' }}
-                                onMouseEnter={e => e.currentTarget.style.background = '#F1F5F9'} onMouseLeave={e => e.currentTarget.style.background = 'transparent'}>
-                                {t.name}
-                              </div>
-                            ))}
-                            {!gasTherapistMatches.length && (
-                              <div style={{ padding: '8px 12px', fontSize: 12, color: '#94A3B8' }}>
-                                {gasAssignedTherapists.length ? `No assigned therapists match "${gasTherapistQuery}"` : `No registered therapists match "${gasTherapistQuery}"`}
-                              </div>
-                            )}
+                  {gasAssignedClientsLoading ? (
+                    <div style={{ padding: '24px 0', textAlign: 'center', color: '#94A3B8', fontSize: 13 }}><i className="fa-solid fa-spinner fa-spin" style={{ marginRight: 8 }} />Loading your clients…</div>
+                  ) : (
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+                      {gasFilteredClients.filter(c => c.full_name.toLowerCase().includes(scorecardListQuery.toLowerCase())).map(c => (
+                        <div
+                          key={c.id} onClick={() => setScorecardClient(c)}
+                          style={{ display: 'flex', alignItems: 'center', gap: 12, padding: '10px 14px', borderRadius: 10, border: '1px solid #E2E8F0', cursor: 'pointer', transition: 'background .15s' }}
+                          onMouseEnter={e => e.currentTarget.style.background = '#F8FAFC'} onMouseLeave={e => e.currentTarget.style.background = 'transparent'}
+                        >
+                          <div style={{ width: 36, height: 36, borderRadius: 9, background: 'linear-gradient(135deg,#0EA5E9,#0D9488)', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 12.5, fontWeight: 700, color: '#fff', flexShrink: 0 }}>
+                            {(c.full_name || '').split(' ').map(w => w[0]).join('').toUpperCase().slice(0, 2)}
                           </div>
-                        )}
-                        {gasForm.client_id && !gasAssignedLoading && !gasAssignedTherapists.length && (
-                          <div style={{ fontSize: 11, color: '#94A3B8', marginTop: 4 }}>No session history yet for this child, showing all registered therapists.</div>
-                        )}
-                        </>
-                        )}
-                      </div>
-                      )}
-                    </div>
-
-                    <div style={{ display: 'flex', flexDirection: 'column', gap: 10, maxHeight: 360, overflowY: 'auto', paddingRight: 4 }}>
-                      {gasCurrentItems.map(it => (
-                        <div key={it.id} style={{ padding: 12, borderRadius: 10, border: '1px solid #E2E8F0', background: '#FAFBFC' }}>
-                          <div style={{ display: 'flex', justifyContent: 'space-between', gap: 8, marginBottom: 6 }}>
-                            <div style={{ fontSize: 13, fontWeight: 600, color: '#0F172A' }}>{it.title}</div>
-                            <span style={{ fontSize: 10.5, color: '#94A3B8', whiteSpace: 'nowrap' }}>weight ×{it.weight}</span>
+                          <div style={{ flex: 1, minWidth: 0 }}>
+                            <div style={{ fontSize: 13.5, fontWeight: 600, color: '#0F172A' }}>{c.full_name}</div>
+                            <div style={{ fontSize: 11.5, color: '#94A3B8' }}>{c.client_code}</div>
                           </div>
-                          {it.description && <div style={{ fontSize: 11.5, color: '#64748B', marginBottom: 8 }}>{it.description}</div>}
-                          <div style={{ display: 'flex', gap: 6 }}>
-                            {GAS_LEVELS.map(lvl => (
-                              <button key={lvl} className={'btag' + (gasScores[it.id] === lvl ? ' selected' : '')}
-                                onClick={() => setGasScores(prev => ({ ...prev, [it.id]: lvl }))}>
-                                {lvl > 0 ? '+' + lvl : lvl}
-                              </button>
-                            ))}
-                          </div>
-                          {gasScores[it.id] !== undefined && (
-                            <div style={{ marginTop: 8, fontSize: 11.5, color: '#334155', background: '#EFF6FF', border: '1px solid #BFDBFE', borderRadius: 7, padding: '6px 9px' }}>
-                              {it[GAS_LEVEL_FIELD[String(gasScores[it.id])]]}
-                            </div>
-                          )}
+                          <i className="fa-solid fa-chevron-right" style={{ color: '#94A3B8', fontSize: 12 }} />
                         </div>
                       ))}
-                      {!gasCurrentItems.length && (
-                        <div style={{ fontSize: 12.5, color: '#94A3B8' }}>This questionnaire set has no goals yet.{isGasAdmin ? ' Add goals via "Manage Questionnaire Sets".' : ''}</div>
+                      {!gasFilteredClients.length && (
+                        <div style={{ padding: '24px 0', textAlign: 'center', color: '#94A3B8', fontSize: 12.5 }}>No children with session history assigned to you yet.</div>
                       )}
                     </div>
-
-                    <div><label className="form-label" style={{ marginTop: 12, display: 'block' }}>Remarks</label>
-                      <textarea className="form-input" rows="2" style={{ height: 'auto', padding: '8px 12px', resize: 'vertical' }} placeholder="Optional notes about this GAS assessment…" value={gasForm.remarks} onChange={e => setGasForm(f => ({ ...f, remarks: e.target.value }))} />
-                    </div>
-
-                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginTop: 14 }}>
-                      <span style={{ fontSize: 12, color: '#64748B' }}>{gasScoredCount} / {gasCurrentItems.length} goals scored</span>
-                      <button className="btn-primary" disabled={gasSubmitting} onClick={submitGasEntry}>
-                        <i className="fa-solid fa-paper-plane" style={{ marginRight: 5 }} />{gasSubmitting ? 'Submitting…' : 'Submit GAS Entry'}
-                      </button>
-                    </div>
-
-                    <div style={{ marginTop: 14, padding: 14, borderRadius: 10, background: '#F5F3FF', border: '1px solid #DDD6FE', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                      <span style={{ fontSize: 12.5, color: '#4F46E5', fontWeight: 600 }}>Live GAS T-Score Preview</span>
-                      <span style={{ fontSize: 20, fontWeight: 700, color: '#4F46E5' }}>{gasPreviewScore ?? '-'}</span>
-                    </div>
-                  </div>
-
-                  {/* Entries list for this discipline */}
-                  <div>
-                    <div className="section-title" style={{ fontSize: 13, marginBottom: 8 }}>Submitted GAS Entries, {gasDiscipline}</div>
-                    <div style={{ overflowX: 'auto', maxHeight: 470, overflowY: 'auto' }}>
-                      <table className="data-table">
-                        <thead><tr><th>Child</th><th>Date</th><th>Set</th><th>T-Score</th></tr></thead>
-                        <tbody>
-                          {gasCurrentEntries.map(e => (
-                            <tr key={e.id} title={e.remarks || ''}>
-                              <td><div style={{ fontWeight: 600, color: '#0F172A', fontSize: 12.5 }}>{e.client?.full_name || 'Unknown child'}</div><div style={{ fontSize: 10.5, color: '#94A3B8' }}>{e.client?.client_code}</div></td>
-                              <td style={{ fontSize: 12 }}>{e.session_date}</td>
-                              <td style={{ fontSize: 12 }}>{e.questionnaire_name}</td>
-                              <td><span className={'pill pill-' + gasScoreTone(e.gas_t_score)}>{e.gas_t_score}</span></td>
-                            </tr>
-                          ))}
-                          {!gasCurrentEntries.length && (
-                            <tr><td colSpan={4} style={{ textAlign: 'center', color: '#94A3B8', fontSize: 12.5, padding: '16px 0' }}>No GAS entries submitted yet for this discipline.</td></tr>
-                          )}
-                        </tbody>
-                      </table>
-                    </div>
-                  </div>
+                  )}
                 </div>
+              )}
+
+              {!lockedDiscipline && !gasCurrentSets.length && (
+                <div style={{ fontSize: 12.5, color: '#94A3B8', padding: '10px 0 18px' }}>
+                  No questionnaire sets yet for {gasDiscipline}.{isGasAdmin ? ' Use "Manage Questionnaire Sets" to create one.' : ''}
+                </div>
+              )}
+
+              {!lockedDiscipline && gasCurrentSets.length > 0 && (
+                <>
+                  {/* Step stepper */}
+                  <div className="gas-stepper">
+                    {GAS_STEPS.map((s, i) => (
+                      <span key={s.n} style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                        <span
+                          className={'gas-step-pill' + (gasStep === s.n ? ' current' : gasStep > s.n ? ' done' : '')}
+                          onClick={() => gasGoToStep(s.n)}
+                        >
+                          <span className="num">{gasStep > s.n ? <i className="fa-solid fa-check" /> : s.n}</span>
+                          Step {s.n}: {s.label}
+                        </span>
+                        {i < GAS_STEPS.length - 1 && <i className="fa-solid fa-angle-right gas-step-arrow" />}
+                      </span>
+                    ))}
+                  </div>
+
+                  {/* ── Step 1: Before Session ── */}
+                  {gasStep === 1 && (
+                    <div className="gas-two-col">
+                      {/* Left: inputs */}
+                      <div>
+                        <div style={{ position: 'relative', marginBottom: 14 }}>
+                          <label className="form-label">Client Selection{lockedDiscipline ? ', your caseload' : ''} *</label>
+                          <div style={{ position: 'relative' }}>
+                            <i className="fa-solid fa-magnifying-glass" style={{ position: 'absolute', left: 12, top: '50%', transform: 'translateY(-50%)', color: '#94A3B8', fontSize: 12 }} />
+                            <input
+                              className="form-input" style={{ paddingLeft: 32 }}
+                              placeholder={lockedDiscipline && gasAssignedClientsLoading ? 'Loading your caseload…' : 'Search Therapist\'s Clients…'}
+                              autoComplete="off"
+                              disabled={lockedDiscipline && gasAssignedClientsLoading}
+                              value={gasClientQuery || gasSelectedClient?.full_name || ''}
+                              onChange={e => { setGasClientQuery(e.target.value); setGasForm(f => ({ ...f, client_id: '' })); setGasClientOpen(true); }}
+                              onFocus={() => setGasClientOpen(true)}
+                              onBlur={blurGasClient}
+                            />
+                          </div>
+                          {gasClientOpen && (
+                            <div style={{ position: 'absolute', top: '100%', left: 0, right: 0, zIndex: 20, marginTop: 4, maxHeight: 190, overflowY: 'auto', background: '#fff', border: '1px solid #E2E8F0', borderRadius: 9, boxShadow: '0 8px 20px rgba(15,23,42,.12)' }}>
+                              {gasClientMatches.map(c => (
+                                <div key={c.id} onMouseDown={() => selectGasClientOption(c)}
+                                  style={{ padding: '8px 12px', fontSize: 12.5, color: '#334155', cursor: 'pointer' }}
+                                  onMouseEnter={e => e.currentTarget.style.background = '#F1F5F9'} onMouseLeave={e => e.currentTarget.style.background = 'transparent'}>
+                                  {c.full_name} <span style={{ color: '#94A3B8' }}>· {c.client_code}</span>
+                                </div>
+                              ))}
+                              {!gasClientMatches.length && (
+                                <div style={{ padding: '8px 12px', fontSize: 12, color: '#94A3B8' }}>No clients match "{gasClientQuery}"</div>
+                              )}
+                            </div>
+                          )}
+                          {lockedDiscipline && !gasAssignedClientsLoading && !gasFilteredClients.length && (
+                            <div style={{ fontSize: 11, color: '#94A3B8', marginTop: 4 }}>No children with session history assigned to you yet.</div>
+                          )}
+                        </div>
+
+                        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10, marginBottom: 14 }}>
+                          <div><label className="form-label">Session Date *</label><input className="form-input" type="date" max={todayStr()} value={gasForm.session_date} onChange={e => setGasForm(f => ({ ...f, session_date: e.target.value }))} /></div>
+                          {!lockedDiscipline ? (
+                            <div style={{ position: 'relative' }}>
+                              <label className="form-label">Therapist</label>
+                              {gasSelectedClient?.assigned_therapist_name ? (
+                                <input className="form-input" value={gasSelectedClient.assigned_therapist_name} disabled />
+                              ) : (
+                                <>
+                                  <input
+                                    className="form-input"
+                                    placeholder={!gasForm.client_id ? 'Select a child first…' : gasAssignedLoading ? 'Loading…' : 'Search therapists…'}
+                                    autoComplete="off"
+                                    disabled={!gasForm.client_id || gasAssignedLoading}
+                                    value={gasTherapistQuery}
+                                    onChange={e => { setGasTherapistQuery(e.target.value); setGasForm(f => ({ ...f, therapist_name: '' })); setGasTherapistOpen(true); }}
+                                    onFocus={() => setGasTherapistOpen(true)}
+                                    onBlur={blurGasTherapist}
+                                  />
+                                  {gasTherapistOpen && (
+                                    <div style={{ position: 'absolute', top: '100%', left: 0, right: 0, zIndex: 20, marginTop: 4, maxHeight: 190, overflowY: 'auto', background: '#fff', border: '1px solid #E2E8F0', borderRadius: 9, boxShadow: '0 8px 20px rgba(15,23,42,.12)' }}>
+                                      {gasTherapistMatches.map(t => (
+                                        <div key={t.therapist_id} onMouseDown={() => selectGasTherapist(t.name)}
+                                          style={{ padding: '8px 12px', fontSize: 12.5, color: '#334155', cursor: 'pointer' }}
+                                          onMouseEnter={e => e.currentTarget.style.background = '#F1F5F9'} onMouseLeave={e => e.currentTarget.style.background = 'transparent'}>
+                                          {t.name}
+                                        </div>
+                                      ))}
+                                      {!gasTherapistMatches.length && (
+                                        <div style={{ padding: '8px 12px', fontSize: 12, color: '#94A3B8' }}>No therapists match "{gasTherapistQuery}"</div>
+                                      )}
+                                    </div>
+                                  )}
+                                </>
+                              )}
+                            </div>
+                          ) : (
+                            <div><label className="form-label">Therapist</label><input className="form-input" value={user?.name || ''} disabled /></div>
+                          )}
+                        </div>
+
+                        <div>
+                          <label className="form-label">Parent Observation</label>
+                          <textarea className="form-input" rows="4" style={{ height: 'auto', padding: '10px 12px', resize: 'vertical' }}
+                            placeholder="Parent observation text notes…" value={gasParentObservation} onChange={e => setGasParentObservation(e.target.value)} />
+                        </div>
+                      </div>
+
+                      {/* Right: Client Records (read-only historical context) */}
+                      <div>
+                        <label className="form-label">Client Records</label>
+                        {!gasForm.client_id ? (
+                          <div style={{ fontSize: 12.5, color: '#94A3B8', padding: '30px 0', textAlign: 'center' }}>Select a client to view their records.</div>
+                        ) : gasClientRecordLoading ? (
+                          <div style={{ fontSize: 12.5, color: '#94A3B8', padding: '30px 0', textAlign: 'center' }}><i className="fa-solid fa-spinner fa-spin" style={{ marginRight: 6 }} />Loading records…</div>
+                        ) : (
+                          <div style={{ maxHeight: 420, overflowY: 'auto', paddingRight: 2 }}>
+                            {[
+                              { key: 'medical', label: 'Medical History Summary', body: gasClientRecord?.diagnosis || 'No medical history on file.' },
+                              { key: 'notes', label: 'Recent Session Notes', body: (gasClientRecord?.session_notes || []).slice(-5).reverse().map(n => `${n.session_date} · ${n.domain}: ${n.score}${n.remark ? ' — ' + n.remark : ''}`).join('\n') || 'No session notes yet.' },
+                              { key: 'allergies', label: 'Allergies', body: gasClientRecord?.allergies || 'None recorded.' },
+                              { key: 'meds', label: 'Medical Alerts / Medication', body: gasClientRecord?.daily_medication || 'None recorded.' },
+                              { key: 'gas', label: 'Recent GAS Summary', body: (gasClientRecord?.gas_entries || []).filter(e => e.discipline === gasDiscipline).slice(-5).reverse().map(e => `${e.session_date} · T-score ${e.gas_t_score}`).join('\n') || 'No GAS entries yet for this discipline.' }
+                            ].map(row => (
+                              <div key={row.key} className="gas-record-row" onClick={() => setGasRecordExpanded(x => x === row.key ? null : row.key)} style={{ flexDirection: 'column', alignItems: 'stretch' }}>
+                                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                                  <span>{row.label}</span>
+                                  <i className={'fa-solid ' + (gasRecordExpanded === row.key ? 'fa-chevron-up' : 'fa-chevron-down')} style={{ fontSize: 10, color: '#94A3B8' }} />
+                                </div>
+                                {gasRecordExpanded === row.key && <div className="body">{row.body}</div>}
+                              </div>
+                            ))}
+                          </div>
+                        )}
+                      </div>
+
+                      {/* Navigation */}
+                      <div style={{ gridColumn: '1/-1', display: 'flex', justifyContent: 'flex-end' }}>
+                        <button className="btn-primary" onClick={gasNextStep}>Next <i className="fa-solid fa-angle-right" style={{ marginLeft: 6 }} /></button>
+                      </div>
+                    </div>
+                  )}
+
+                  {/* ── Step 2: During Session ── */}
+                  {gasStep === 2 && (
+                    <div>
+                      {/* GAS Assessment Questionnaire Set */}
+                      <div style={{ marginBottom: 18 }}>
+                        <div style={{ marginBottom: 14 }}>
+                          <label className="form-label">GAS Assessment Questionnaire Set</label>
+                          <select className="form-select" value={gasCurrentSetId} onChange={e => { setGasSetId(prev => ({ ...prev, [gasDiscipline]: e.target.value })); setGasScores({}); }}>
+                            <option value="">- Select a questionnaire set -</option>
+                            {gasCurrentSets.map(s => (
+                              <option key={s.id} value={s.id}>{s.name}, {s.status} ({(s.items || []).length} goals)</option>
+                            ))}
+                          </select>
+                        </div>
+
+                        {gasCurrentSet ? (
+                          <div style={{ display: 'flex', flexDirection: 'column', gap: 14, maxHeight: 560, overflowY: 'auto', paddingRight: 4 }}>
+                            {gasCurrentItems.map(it => {
+                              const lvl = gasScores[it.id] ?? 0;
+                              return (
+                                <div key={it.id} style={{ padding: 12, borderRadius: 10, border: '1px solid #E2E8F0', background: '#FAFBFC' }}>
+                                  <div style={{ display: 'flex', justifyContent: 'space-between', gap: 8, marginBottom: 2 }}>
+                                    <div style={{ fontSize: 13, fontWeight: 600, color: '#0F172A' }}>Goal: {it.title}</div>
+                                    <span style={{ fontSize: 10.5, color: '#94A3B8', whiteSpace: 'nowrap' }}>weight ×{it.weight}</span>
+                                  </div>
+                                  {it.description && <div style={{ fontSize: 11.5, color: '#64748B', marginBottom: 4 }}>{it.description}</div>}
+                                  <input
+                                    type="range" min={-2} max={2} step={1} value={lvl}
+                                    className="gas-goal-slider"
+                                    onChange={e => setGasScores(prev => ({ ...prev, [it.id]: Number(e.target.value) }))}
+                                  />
+                                  <div className="gas-slider-scale">
+                                    <span>[-2]</span><span>-1</span><span>0</span><span>+1</span><span>[+2]</span>
+                                  </div>
+                                  <div style={{ marginTop: 8, fontSize: 11.5, color: '#334155', background: '#EFF6FF', border: '1px solid #BFDBFE', borderRadius: 7, padding: '6px 9px' }}>
+                                    {it[GAS_LEVEL_FIELD[String(lvl)]]}
+                                  </div>
+                                </div>
+                              );
+                            })}
+                            {!gasCurrentItems.length && (
+                              <div style={{ fontSize: 12.5, color: '#94A3B8' }}>This questionnaire set has no goals yet.{isGasAdmin ? ' Add goals via "Manage Questionnaire Sets".' : ''}</div>
+                            )}
+                          </div>
+                        ) : (
+                          <div style={{ fontSize: 12.5, color: '#94A3B8', padding: '20px 0' }}>Select a questionnaire set to begin scoring goals.</div>
+                        )}
+                      </div>
+
+                      {/* GAS Score Trend, below the questionnaire */}
+                      <div style={{ marginBottom: 18 }}>
+                        <label className="form-label">GAS Score Trend (Inputted on Scale)</label>
+                        <div style={{ padding: 12, borderRadius: 10, background: '#F5F3FF', border: '1px solid #DDD6FE', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                          <span style={{ fontSize: 12.5, color: '#4F46E5', fontWeight: 600 }}>Live GAS T-Score Preview</span>
+                          <span style={{ fontSize: 20, fontWeight: 700, color: '#4F46E5' }}>{gasPreviewScore ?? '-'}</span>
+                        </div>
+                      </div>
+
+                      {/* Navigation */}
+                      <div style={{ display: 'flex', justifyContent: 'space-between' }}>
+                        <button className="btn-secondary" onClick={gasPrevStep}><i className="fa-solid fa-angle-left" style={{ marginRight: 6 }} />Back</button>
+                        <button className="btn-primary" onClick={gasNextStep}>Next <i className="fa-solid fa-angle-right" style={{ marginLeft: 6 }} /></button>
+                      </div>
+                    </div>
+                  )}
+
+                  {/* ── Step 3: After Assessment ── */}
+                  {gasStep === 3 && (
+                    <div className="gas-two-col">
+                      {/* Left: Documentation & Actions */}
+                      <div>
+                        <label className="form-label">Remarks: Plans, Analysis, and Instructions</label>
+                        <textarea className="form-input" rows="10" style={{ height: 'auto', padding: '10px 12px', resize: 'vertical', marginBottom: 12 }}
+                          placeholder="Remarks: Plans, Analysis, and Instructions" value={gasForm.remarks} onChange={e => setGasForm(f => ({ ...f, remarks: e.target.value }))} />
+                        <button className="btn-secondary" style={{ width: '100%' }} onClick={generateGasSummary}>
+                          <i className="fa-solid fa-file-lines" style={{ marginRight: 6 }} />Generate Summary
+                        </button>
+                      </div>
+
+                      {/* Right: Summary Preview & Submit */}
+                      <div>
+                        <label className="form-label">Summary Preview</label>
+                        <textarea className="form-input" rows="10" style={{ height: 'auto', padding: '10px 12px', resize: 'vertical', marginBottom: 12 }}
+                          placeholder="Click “Generate Summary” to draft a note from Sections 1–3, then edit as needed…"
+                          value={gasSummaryDraft} onChange={e => setGasSummaryDraft(e.target.value)} />
+                        <button className="btn-primary" style={{ width: '100%' }} disabled={gasSubmitting} onClick={submitGasEntry}>
+                          <i className="fa-solid fa-paper-plane" style={{ marginRight: 6 }} />{gasSubmitting ? 'Submitting…' : 'Submit Session'}
+                        </button>
+                        <div style={{ marginTop: 10, fontSize: 12, color: '#64748B', textAlign: 'right' }}>{gasScoredCount} / {gasCurrentItems.length} goals scored</div>
+                      </div>
+
+                      {/* Navigation */}
+                      <div style={{ gridColumn: '1/-1' }}>
+                        <button className="btn-secondary" onClick={gasPrevStep}><i className="fa-solid fa-angle-left" style={{ marginRight: 6 }} />Back</button>
+                      </div>
+                    </div>
+                  )}
+                </>
               )}
             </>
           )}
         </div>
+
       </div>
 
       {/* ═══════ TAB: SESSION ENTRIES ═══════ */}
       <div id="tab-entries" style={{ display: tab === 'entries' ? '' : 'none' }}>
         <div className="card" style={{ padding: '22px 0 0', marginBottom: 24 }}>
           <div style={{ padding: '0 24px 16px', borderBottom: '1px solid #F1F5F9', display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: 10 }}>
-            <div><div className="section-title">All Session Entries</div><div className="section-sub">Submitted GAS assessments across Speech-Language and Occupational Therapy</div></div>
-            {visibleDisciplines.length > 1 && (
-              <select className="form-select" style={{ width: 'auto', height: 34, fontSize: 12.5 }} value={gasEntriesFilter} onChange={e => { setGasEntriesFilter(e.target.value); setGasEntrySelected(new Set()); }}>
-                <option value="all">All Disciplines</option>
-                {GAS_DISCIPLINES.map(d => <option key={d} value={d}>{d}</option>)}
-              </select>
-            )}
+            <div><div className="section-title">All Session Entries</div></div>
+            <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+              <div className="dir-search"><i className="fa-solid fa-magnifying-glass" /><input type="text" className="filter-input" placeholder="Search entry or client ID…" style={{ paddingLeft: 30, height: 34, fontSize: 12.5, width: 170 }} value={gasEntryIdSearch} onChange={e => { setGasEntryIdSearch(e.target.value); setGasEntryPage(1); setGasEntrySelected(new Set()); }} /></div>
+              <input type="date" className="form-input" title="From date" style={{ width: 'auto', height: 34, fontSize: 12.5 }} value={gasEntryDateFrom} max={gasEntryDateTo || undefined} onChange={e => { setGasEntryDateFrom(e.target.value); setGasEntryPage(1); setGasEntrySelected(new Set()); }} />
+              <input type="date" className="form-input" title="To date" style={{ width: 'auto', height: 34, fontSize: 12.5 }} value={gasEntryDateTo} min={gasEntryDateFrom || undefined} onChange={e => { setGasEntryDateTo(e.target.value); setGasEntryPage(1); setGasEntrySelected(new Set()); }} />
+              {(gasEntryDateFrom || gasEntryDateTo) && (
+                <button className="btn-secondary" style={{ height: 34, fontSize: 12.5 }} onClick={() => { setGasEntryDateFrom(''); setGasEntryDateTo(''); setGasEntryPage(1); }}>Clear dates</button>
+              )}
+              {visibleDisciplines.length > 1 && (
+                <select className="form-select" style={{ width: 'auto', height: 34, fontSize: 12.5 }} value={gasEntriesFilter} onChange={e => { setGasEntriesFilter(e.target.value); setGasEntryPage(1); setGasEntrySelected(new Set()); }}>
+                  <option value="all">All Disciplines</option>
+                  {GAS_DISCIPLINES.map(d => <option key={d} value={d}>{d}</option>)}
+                </select>
+              )}
+            </div>
           </div>
           {/* Bulk actions apply to 2+ entries, a single entry has its own row buttons. */}
           {gasEntrySelected.size > 1 && (
             <div style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '10px 24px', background: '#F0F9FF', borderBottom: '1px solid #BAE6FD', flexWrap: 'wrap' }}>
               <span style={{ fontSize: 12.5, fontWeight: 600, color: '#0284C7' }}><i className="fa-solid fa-check-square" style={{ marginRight: 6 }} />{gasEntrySelected.size} selected</span>
-              <button className="btn-danger" disabled={gasBulkDeleting} onClick={bulkDeleteGasEntries}><i className="fa-solid fa-trash" style={{ marginRight: 4 }} />{gasBulkDeleting ? 'Deleting…' : 'Delete'}</button>
+              <button className="btn-danger" disabled={gasBulkArchiving} onClick={bulkArchiveGasEntries}><i className="fa-solid fa-box-archive" style={{ marginRight: 4 }} />{gasBulkArchiving ? 'Archiving…' : 'Archive'}</button>
               <span style={{ fontSize: 12, color: '#64748B', cursor: 'pointer', marginLeft: 'auto', fontWeight: 500 }} onClick={() => setGasEntrySelected(new Set())}>Clear selection</span>
             </div>
           )}
@@ -716,17 +1010,16 @@ export default function Milestones({ go, toast, openModal }) {
               <thead>
                 <tr>
                   <th style={{ paddingLeft: 24 }}><input type="checkbox" style={{ accentColor: '#0EA5E9', width: 14, height: 14, cursor: 'pointer' }} checked={gasAllVisibleSelected} onChange={toggleGasEntrySelectAll} title="Select all" /></th>
-                  <th>Child</th>
+                  <th>Client</th>
                   <th>Discipline</th>
                   <th>Date</th>
                   <th>Therapist</th>
-                  <th>Questionnaire Set</th>
                   <th>T-Score</th>
                   <th style={{ textAlign: 'right', paddingRight: 24 }}>Actions</th>
                 </tr>
               </thead>
               <tbody>
-                {gasVisibleEntries.map(e => (
+                {gasPagedEntries.map(e => (
                   <tr key={e.id}>
                     <td style={{ paddingLeft: 24 }}><input type="checkbox" style={{ accentColor: '#0EA5E9', width: 14, height: 14, cursor: 'pointer' }} checked={gasEntrySelected.has(e.id)} onChange={() => toggleGasEntrySelect(e.id)} /></td>
                     <td>
@@ -736,64 +1029,103 @@ export default function Milestones({ go, toast, openModal }) {
                     <td style={{ fontSize: 12 }}>{e.discipline}</td>
                     <td style={{ fontSize: 12.5 }}>{e.session_date}</td>
                     <td style={{ fontSize: 12.5 }}>{e.therapist_name || '-'}</td>
-                    <td style={{ fontSize: 12 }}>{e.questionnaire_name}</td>
                     <td><span className={'pill pill-' + gasScoreTone(e.gas_t_score)}>{e.gas_t_score}</span></td>
                     <td style={{ textAlign: 'right', paddingRight: 24 }}>
                       <div style={{ display: 'flex', gap: 5, justifyContent: 'flex-end' }}>
                         <button className="btn-edit" onClick={() => openGasEdit(e)}>Edit</button>
                         <button className="btn-edit" onClick={() => openGasView(e)}>View</button>
-                        <button className="btn-danger" disabled={gasDeleting === e.id} onClick={() => deleteGasEntry(e)}>{gasDeleting === e.id ? 'Deleting…' : 'Delete'}</button>
+                        <button className="btn-danger" disabled={gasArchiving === e.id} onClick={() => archiveGasEntry(e)}>{gasArchiving === e.id ? 'Archiving…' : 'Archive'}</button>
                       </div>
                     </td>
                   </tr>
                 ))}
-                {!gasVisibleEntries.length && (
-                  <tr><td colSpan={8} style={{ textAlign: 'center', color: '#94A3B8', fontSize: 12.5, padding: '24px 0' }}>{lockedDiscipline ? 'No GAS entries submitted yet for your caseload.' : 'No GAS entries submitted yet.'}</td></tr>
+                {!gasPagedEntries.length && (
+                  <tr><td colSpan={7} style={{ textAlign: 'center', color: '#94A3B8', fontSize: 12.5, padding: '24px 0' }}>{gasEntryIdSearch.trim() || gasEntryDateFrom || gasEntryDateTo ? 'No GAS entries match those filters.' : lockedDiscipline ? 'No GAS entries submitted yet for your caseload.' : 'No GAS entries submitted yet.'}</td></tr>
                 )}
               </tbody>
             </table>
           </div>
+          <div className="dir-foot">
+            <span style={{ fontSize: 12, color: '#64748B' }}>Showing {gasPagedEntries.length} of {gasVisibleEntries.length} entries</span>
+            <div className="pagination">
+              <button className="page-btn" disabled={gasEntryPageSafe <= 1} onClick={() => setGasEntryPage(p => Math.max(1, p - 1))}>← Prev</button>
+              {Array.from({ length: gasEntryPageCount }, (_, i) => i + 1).map(p => (
+                <button key={p} className={'page-btn' + (p === gasEntryPageSafe ? ' active' : '')} onClick={() => setGasEntryPage(p)}>{p}</button>
+              ))}
+              <button className="page-btn" disabled={gasEntryPageSafe >= gasEntryPageCount} onClick={() => setGasEntryPage(p => Math.min(gasEntryPageCount, p + 1))}>Next →</button>
+            </div>
+          </div>
         </div>
       </div>
 
-      <div className="page-footer"><span style={{ fontSize: 12, color: '#94A3B8' }}>© 2026 KID Clinic Information Management System · Post-Session Milestone Scoreboard</span></div>
+      <div className="page-footer"><span style={{ fontSize: 12, color: '#94A3B8' }}>© 2026 KID Clinic Information Management System · Milestone Scorecard</span></div>
 
       {/* ═══════ Page-local modals ═══════ */}
       {msModal && msModal.type === 'new-entry' && (
         <NewSessionEntryModal onClose={closeModal} toast={toast} />
       )}
 
+      {scorecardClient && (
+        <ScorecardWizardModal
+          client={scorecardClient}
+          therapistName={user?.name || ''}
+          discipline={lockedDiscipline}
+          onClose={() => setScorecardClient(null)}
+          toast={toast}
+          onSubmitted={() => loadGasData(gasDiscipline)}
+        />
+      )}
+
       {gasEntryModal && gasEntryModal.mode === 'view' && (
         <Modal title="GAS Entry: View" onClose={closeGasEntryModal} width={620}>
           <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12, marginBottom: 18 }}>
+            <div><div className="form-label">Entry ID</div><div style={{ fontSize: 11.5, color: '#64748B', fontFamily: 'monospace' }}>{gasEntryModal.entry.id}</div></div>
+            <div><div className="form-label">Client ID</div><div style={{ fontSize: 11.5, color: '#64748B', fontFamily: 'monospace' }}>{gasEntryModal.entry.client?.client_code || gasEntryModal.entry.client_id}</div></div>
             <div><div className="form-label">Child</div><div style={{ fontSize: 13.5, fontWeight: 600, color: '#0F172A' }}>{gasEntryModal.entry.client?.full_name || 'Unknown child'}</div><div style={{ fontSize: 11.5, color: '#94A3B8' }}>{gasEntryModal.entry.client?.client_code}</div></div>
             <div><div className="form-label">Discipline</div><div style={{ fontSize: 13.5, color: '#334155' }}>{gasEntryModal.entry.discipline}</div></div>
             <div><div className="form-label">Session Date</div><div style={{ fontSize: 13.5, color: '#334155' }}>{gasEntryModal.entry.session_date}</div></div>
             <div><div className="form-label">Therapist</div><div style={{ fontSize: 13.5, color: '#334155' }}>{gasEntryModal.entry.therapist_name || '-'}</div></div>
-            <div><div className="form-label">Questionnaire Set</div><div style={{ fontSize: 13.5, color: '#334155' }}>{gasEntryModal.entry.questionnaire_name}</div></div>
             <div><div className="form-label">GAS T-Score</div><span className={'pill pill-' + gasScoreTone(gasEntryModal.entry.gas_t_score)} style={{ fontSize: 13 }}>{gasEntryModal.entry.gas_t_score}</span></div>
           </div>
-          <div className="section-title" style={{ fontSize: 13, marginBottom: 8 }}>Goals Scored</div>
-          <div style={{ display: 'flex', flexDirection: 'column', gap: 8, marginBottom: 18 }}>
-            {(gasEntryModal.entry.scores || []).map(s => (
-              <div key={s.id} style={{ padding: 10, borderRadius: 9, border: '1px solid #E2E8F0', background: '#FAFBFC' }}>
-                <div style={{ display: 'flex', justifyContent: 'space-between', gap: 8 }}>
-                  <span style={{ fontSize: 12.5, fontWeight: 600, color: '#0F172A' }}>{s.item_title}</span>
-                  <span style={{ fontSize: 11.5, fontWeight: 700, color: '#4F46E5' }}>{s.level > 0 ? '+' + s.level : s.level} · weight ×{s.weight}</span>
+          {(() => {
+            const { parentObservation, remarks } = splitGasRemarks(gasEntryModal.entry.remarks);
+            return (
+              <>
+                {parentObservation && (
+                  <div style={{ marginBottom: 18 }}>
+                    <div className="form-label">Parent Observation</div>
+                    <div style={{ fontSize: 12.5, color: '#334155', lineHeight: 1.6, whiteSpace: 'pre-wrap', padding: 10, borderRadius: 9, border: '1px solid #E2E8F0', background: '#FAFBFC' }}>{parentObservation}</div>
+                  </div>
+                )}
+                <div className="section-title" style={{ fontSize: 13, marginBottom: 8 }}>Goals Scored</div>
+                <div style={{ display: 'flex', flexDirection: 'column', gap: 8, marginBottom: 18 }}>
+                  {(gasEntryModal.entry.scores || []).map(s => (
+                    <div key={s.id} style={{ padding: 12, borderRadius: 10, border: '1px solid #E2E8F0', background: '#FAFBFC' }}>
+                      <div style={{ display: 'flex', justifyContent: 'space-between', gap: 8, marginBottom: 2 }}>
+                        <div style={{ fontSize: 13, fontWeight: 600, color: '#0F172A' }}>Goal: {s.item_title}</div>
+                        <span style={{ fontSize: 10.5, color: '#94A3B8', whiteSpace: 'nowrap' }}>weight ×{s.weight}</span>
+                      </div>
+                      <input type="range" min={-2} max={2} step={1} value={s.level} disabled className="gas-goal-slider" />
+                      <div className="gas-slider-scale">
+                        <span>[-2]</span><span>-1</span><span>0</span><span>+1</span><span>[+2]</span>
+                      </div>
+                      <div style={{ marginTop: 8, fontSize: 11.5, color: '#334155', background: '#EFF6FF', border: '1px solid #BFDBFE', borderRadius: 7, padding: '6px 9px' }}>
+                        {s.level_label}
+                      </div>
+                    </div>
+                  ))}
                 </div>
-                <div style={{ fontSize: 11.5, color: '#64748B', marginTop: 4 }}>{s.level_label}</div>
-              </div>
-            ))}
-          </div>
-          {gasEntryModal.entry.remarks && (
-            <div style={{ marginBottom: 18 }}>
-              <div className="form-label">Remarks</div>
-              <div style={{ fontSize: 12.5, color: '#334155', lineHeight: 1.6 }}>{gasEntryModal.entry.remarks}</div>
-            </div>
-          )}
+                {remarks && (
+                  <div style={{ marginBottom: 18 }}>
+                    <div className="form-label">Remarks</div>
+                    <div style={{ fontSize: 12.5, color: '#334155', lineHeight: 1.6, whiteSpace: 'pre-wrap' }}>{remarks}</div>
+                  </div>
+                )}
+              </>
+            );
+          })()}
           <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 10 }}>
             <button className="btn-secondary" onClick={closeGasEntryModal}>Close</button>
-            <button className="btn-primary" onClick={() => openGasEdit(gasEntryModal.entry)}><i className="fa-solid fa-pen" style={{ marginRight: 5 }} />Edit</button>
           </div>
         </Modal>
       )}
@@ -821,6 +1153,11 @@ export default function Milestones({ go, toast, openModal }) {
           </div>
 
           <div className="section-title" style={{ fontSize: 13, marginBottom: 8 }}>Re-score Goals</div>
+
+          <div style={{ marginBottom: 14 }}><label className="form-label" style={{ marginBottom: 6, display: 'block' }}>Parent Observation</label>
+            <textarea className="form-input" rows="3" style={{ height: 'auto', padding: '8px 12px', resize: 'vertical' }} placeholder="Parent observation text notes…" value={gasEditForm.parentObservation} onChange={e => setGasEditForm(f => ({ ...f, parentObservation: e.target.value }))} />
+          </div>
+
           <div style={{ display: 'flex', flexDirection: 'column', gap: 10, maxHeight: 320, overflowY: 'auto', paddingRight: 4, marginBottom: 14 }}>
             {(gasEntryModal.entry.scores || []).map(s => {
               const liveItem = s.item_id ? gasEditQuestionnaireItems.find(it => it.id === s.item_id) : null;
@@ -828,19 +1165,16 @@ export default function Milestones({ go, toast, openModal }) {
               const levelLabel = liveItem ? liveItem[GAS_LEVEL_FIELD[String(level)]] : (level === s.level ? s.level_label : null);
               return (
                 <div key={s.id} style={{ padding: 12, borderRadius: 10, border: '1px solid #E2E8F0', background: '#FAFBFC' }}>
-                  <div style={{ display: 'flex', justifyContent: 'space-between', gap: 8, marginBottom: 6 }}>
-                    <span style={{ fontSize: 13, fontWeight: 600, color: '#0F172A' }}>{s.item_title}</span>
-                    <span style={{ fontSize: 10.5, color: '#94A3B8' }}>weight ×{s.weight}</span>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', gap: 8, marginBottom: 2 }}>
+                    <div style={{ fontSize: 13, fontWeight: 600, color: '#0F172A' }}>Goal: {s.item_title}</div>
+                    <span style={{ fontSize: 10.5, color: '#94A3B8', whiteSpace: 'nowrap' }}>weight ×{s.weight}</span>
                   </div>
                   {s.item_id ? (
                     <>
-                      <div style={{ display: 'flex', gap: 6 }}>
-                        {GAS_LEVELS.map(lvl => (
-                          <button key={lvl} className={'btag' + (level === lvl ? ' selected' : '')}
-                            onClick={() => setGasEditScores(prev => ({ ...prev, [s.item_id]: lvl }))}>
-                            {lvl > 0 ? '+' + lvl : lvl}
-                          </button>
-                        ))}
+                      <input type="range" min={-2} max={2} step={1} value={level} className="gas-goal-slider"
+                        onChange={e => setGasEditScores(prev => ({ ...prev, [s.item_id]: Number(e.target.value) }))} />
+                      <div className="gas-slider-scale">
+                        <span>[-2]</span><span>-1</span><span>0</span><span>+1</span><span>[+2]</span>
                       </div>
                       {levelLabel && (
                         <div style={{ marginTop: 8, fontSize: 11.5, color: '#334155', background: '#EFF6FF', border: '1px solid #BFDBFE', borderRadius: 7, padding: '6px 9px' }}>
@@ -859,7 +1193,10 @@ export default function Milestones({ go, toast, openModal }) {
           </div>
 
           <div><label className="form-label" style={{ marginBottom: 6, display: 'block' }}>Remarks</label>
-            <textarea className="form-input" rows="2" style={{ height: 'auto', padding: '8px 12px', resize: 'vertical' }} value={gasEditForm.remarks} onChange={e => setGasEditForm(f => ({ ...f, remarks: e.target.value }))} />
+            <textarea className="form-input" rows="3" style={{ height: 'auto', padding: '8px 12px', resize: 'vertical', marginBottom: 8 }} value={gasEditForm.remarks} onChange={e => setGasEditForm(f => ({ ...f, remarks: e.target.value }))} />
+            <button className="btn-secondary" style={{ width: '100%' }} onClick={generateGasEditSummary}>
+              <i className="fa-solid fa-file-lines" style={{ marginRight: 6 }} />Generate Summary
+            </button>
           </div>
 
           <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 10, marginTop: 18 }}>

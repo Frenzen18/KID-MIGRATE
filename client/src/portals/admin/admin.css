@@ -118,6 +118,24 @@ textarea.big-input{resize:vertical;line-height:1.6}
 .tab-pill.active{background:#0EA5E9;color:#fff;border-color:#0EA5E9}
 .tab-pill:hover:not(.active){background:#EFF6FF;color:#0284C7;border-color:#BAE6FD}
 
+/* == milestones: 3-stage scorecard workflow stepper (Before / During / After) == */
+.gas-stepper{display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:18px}
+.gas-step-pill{display:flex;align-items:center;gap:8px;padding:9px 16px;border-radius:10px;border:1.5px solid #E2E8F0;background:#F8FAFC;font-size:13px;font-weight:600;color:#94A3B8;cursor:pointer;transition:all .18s;white-space:nowrap}
+.gas-step-pill.done{border-color:#BBF7D0;background:#ECFDF5;color:#059669}
+.gas-step-pill.current{border-color:#0EA5E9;background:#EFF6FF;color:#0284C7;box-shadow:0 0 0 3px rgba(14,165,233,.12)}
+.gas-step-pill .num{width:20px;height:20px;border-radius:50%;display:flex;align-items:center;justify-content:center;font-size:11px;background:#E2E8F0;color:#64748B;flex-shrink:0}
+.gas-step-pill.done .num{background:#10B981;color:#fff}
+.gas-step-pill.current .num{background:#0EA5E9;color:#fff}
+.gas-step-arrow{color:#CBD5E1;font-size:13px}
+.gas-two-col{display:grid;grid-template-columns:1fr 1fr;gap:18px}
+.gas-record-row{display:flex;align-items:center;justify-content:space-between;gap:8px;padding:11px 14px;border-radius:9px;border:1px solid #E2E8F0;background:#FAFBFC;cursor:pointer;transition:all .15s;margin-bottom:8px;font-size:12.5px;font-weight:600;color:#334155}
+.gas-record-row:hover{background:#F0F9FF;border-color:#BAE6FD;color:#0284C7}
+.gas-record-row .body{margin-top:8px;font-size:11.5px;font-weight:400;color:#64748B;line-height:1.6;white-space:pre-wrap}
+.gas-goal-slider{width:100%;-webkit-appearance:none;appearance:none;height:6px;border-radius:10px;background:linear-gradient(to right,#EF4444,#F59E0B,#94A3B8,#0EA5E9,#10B981);outline:none;cursor:pointer;margin:10px 0 4px}
+.gas-goal-slider::-webkit-slider-thumb{-webkit-appearance:none;appearance:none;width:20px;height:20px;border-radius:50%;background:#fff;border:3px solid #0EA5E9;box-shadow:0 1px 4px rgba(15,23,42,.25);cursor:pointer}
+.gas-goal-slider::-moz-range-thumb{width:20px;height:20px;border-radius:50%;background:#fff;border:3px solid #0EA5E9;box-shadow:0 1px 4px rgba(15,23,42,.25);cursor:pointer}
+.gas-slider-scale{display:flex;justify-content:space-between;font-size:10px;color:#94A3B8;font-weight:600;padding:0 1px}
+
 /* == reservations == */
 .cal-grid{display:grid;grid-template-columns:repeat(7,1fr);gap:3px}
 .cal-day{text-align:center;font-size:11px;font-weight:600;color:#94A3B8;padding:6px 0}

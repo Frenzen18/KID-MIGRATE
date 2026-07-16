@@ -1,4 +1,5 @@
 import express from 'express';
+import 'express-async-errors'; // patches Express so a throw/reject inside an async route handler reaches the error middleware below instead of crashing the process or dropping the connection
 import cors from 'cors';
 import dotenv from 'dotenv';
 import authRoutes from './routes/auth.js';
@@ -14,8 +15,10 @@ import auditRoutes from './routes/audit.js';
 import reportRoutes from './routes/reports.js';
 import gasRoutes from './routes/gas.js';
 import devFunctionalFieldsRoutes from './routes/devFunctionalFields.js';
+import settingsRoutes from './routes/settings.js';
 import { handlePaymongoWebhook } from './lib/paymongoWebhook.js';
 import { runReminderSweep } from './lib/reminders.js';
+import { expireUnpaidBookingHolds } from './lib/bookingHolds.js';
 
 dotenv.config();
 const app = express();
@@ -55,6 +58,7 @@ app.use('/api/audit', auditRoutes);
 app.use('/api/reports', reportRoutes);
 app.use('/api/gas', gasRoutes);
 app.use('/api/dev-functional-fields', devFunctionalFieldsRoutes);
+app.use('/api/settings', settingsRoutes);
 
 // central error fallback
 app.use((err, req, res, next) => {
@@ -71,3 +75,11 @@ app.listen(port, () => console.log(`KID clinic API running on http://localhost:$
 const REMINDER_SWEEP_INTERVAL_MS = 15 * 60 * 1000;
 setInterval(runReminderSweep, REMINDER_SWEEP_INTERVAL_MS);
 runReminderSweep();
+
+// Releases guardian booking holds left unpaid past their deadline (see
+// server/lib/bookingHolds.js). A short interval since the hold itself is
+// short (15 min, BOOKING_HOLD_MINUTES in routes/reservations.js), otherwise
+// an abandoned slot could sit unreleased for most of the sweep period.
+const BOOKING_HOLD_SWEEP_INTERVAL_MS = 2 * 60 * 1000;
+setInterval(expireUnpaidBookingHolds, BOOKING_HOLD_SWEEP_INTERVAL_MS);
+expireUnpaidBookingHolds();

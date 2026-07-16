@@ -3,7 +3,9 @@ import { useNavigate } from 'react-router-dom';
 import { useAuth } from '../../auth.jsx';
 import { api } from '../../api.js';
 import { useToast, Modal } from '../../components/ui.jsx';
+import BrandLogo from '../../components/BrandLogo.jsx';
 import GasProgressChart from '../../components/GasProgressChart.jsx';
+import DevFunctionalField, { devFieldHidden } from '../../components/DevFunctionalField.jsx';
 import './parent.css';
 
 /* ── Constants ── */
@@ -20,10 +22,16 @@ function fmtShortDate(dateStr) {
   const d = new Date(dateStr + 'T00:00:00');
   return d.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
 }
+/** Calendar age (not a 365.25-day average, that rounds down near a birthday and
+ *  could reject someone turning exactly 18/3/21 today). Expects "YYYY-MM-DD". */
 function getAge(dob) {
   if (!dob) return null;
-  const diff = Date.now() - new Date(dob).getTime();
-  return Math.floor(diff / (365.25 * 24 * 60 * 60 * 1000));
+  const [y, m, d] = String(dob).slice(0, 10).split('-').map(Number);
+  if (!y || !m || !d) return null;
+  const today = new Date();
+  let age = today.getFullYear() - y;
+  if (today.getMonth() + 1 < m || (today.getMonth() + 1 === m && today.getDate() < d)) age--;
+  return age;
 }
 
 /* ── Child intake form constants ──
@@ -32,8 +40,8 @@ function getAge(dob) {
    collected from the parent at registration. */
 const EMPTY_LINK_FORM = {
   first_name: '', middle_name: '', last_name: '', dob: '', gender: '', allergies: '', daily_medication: '',
-  guardian_relationship: 'Parent', guardian_dob: '', guardian_phone: '+63',
-  other_guardian_name: '', other_guardian_phone: '+63',
+  guardian_relationship: 'Parent', guardian_dob: '',
+  other_guardian_phone: '+63',
   // Development & Functional Information, optional, admin-configurable form;
   // keyed by dev_functional_fields.id (see EMPTY_LINK_FORM usage + dev-functional-fields fetch).
   dev_functional_data: {}
@@ -76,6 +84,21 @@ function todayStr() {
   const d = new Date(Date.now() + 8 * 60 * 60 * 1000);
   return d.getUTCFullYear() + '-' + String(d.getUTCMonth() + 1).padStart(2, '0') + '-' + String(d.getUTCDate()).padStart(2, '0');
 }
+/** Earliest bookable date, bookings must be made at least a day ahead, same-day isn't allowed. */
+function minBookableDateStr() {
+  const d = new Date(Date.now() + 8 * 60 * 60 * 1000 + 24 * 60 * 60 * 1000);
+  return d.getUTCFullYear() + '-' + String(d.getUTCMonth() + 1).padStart(2, '0') + '-' + String(d.getUTCDate()).padStart(2, '0');
+}
+/** Session types a child is currently eligible to book: intake (no therapy type
+ *  and no assigned therapist yet) means only an Initial Assessment can be
+ *  requested, once assigned, only sessions matching that discipline (or both,
+ *  for a Combined program) become available. */
+function sessionTypesFor(child) {
+  if (!child) return [];
+  if (!child.assigned_therapist_name && !child.therapy_type) return ['Initial Assessment'];
+  const map = { OT: ['Occupational Therapy'], Speech: ['Speech Therapy'], Both: ['Occupational Therapy', 'Speech Therapy'] };
+  return map[child.therapy_type] || ['Initial Assessment'];
+}
 /** Current time in the Philippines (UTC+8), regardless of the device's local timezone. */
 function nowPH() {
   return new Date(Date.now() + 8 * 60 * 60 * 1000);
@@ -106,6 +129,10 @@ export default function ParentPortal() {
   const [notifOpen, setNotifOpen] = useState(false);
   const [profileOpen, setProfileOpen] = useState(false);
 
+  /* ── Branding, used on the printable invoice letterhead below ── */
+  const [brand, setBrand] = useState(null);
+  useEffect(() => { fetch('/api/settings/branding/public').then(r => r.json()).then(setBrand).catch(() => {}); }, []);
+
   /* ── My Profile modal, self-service contact number edit ── */
   const [profileModal, setProfileModal] = useState(false);
   const [contactInput, setContactInput] = useState('+63');
@@ -124,11 +151,12 @@ export default function ParentPortal() {
   const [devFields, setDevFields] = useState([]);
 
   /* ── Booking page state ── */
-  const [reservationDate, setReservationDate] = useState(todayStr());
+  const [reservationDate, setReservationDate] = useState(minBookableDateStr());
   const [selectedSlot, setSelectedSlot] = useState('');
   const [slotsForDate, setSlotsForDate] = useState([]);
   const [bookingBusy, setBookingBusy] = useState(false);
   const [slotError, setSlotError] = useState(false);
+  const [bookingSessionType, setBookingSessionType] = useState('');
 
   /* ── Progress page state ── */
 
@@ -163,9 +191,14 @@ export default function ParentPortal() {
         const res = await api(`/payments/${qrModal.payment.id}/qrph/status`);
         if (res.status === 'paid') {
           setQrModal(m => (m ? { ...m, status: 'paid' } : m));
-          toast('Payment received via QRPh', 'fa-circle-check');
+          toast('Payment received, your booking is confirmed', 'fa-circle-check');
           const fresh = await api('/payments').catch(() => null);
           if (fresh) setPayments(fresh);
+          // The held slot only becomes 'confirmed' once payment succeeds (see
+          // markPaidByIntentId, server/lib/paymongoWebhook.js), refresh so the
+          // booking list drops the "Awaiting Payment" state immediately.
+          const freshRes = await api('/reservations').catch(() => null);
+          if (freshRes) setReservations(freshRes);
         }
       } catch { /* transient poll failure, try again next tick */ }
     }, 4000);
@@ -176,6 +209,9 @@ export default function ParentPortal() {
   const [linkForm, setLinkForm] = useState(EMPTY_LINK_FORM);
   const [linkBusy, setLinkBusy] = useState(false);
   const [linkErr, setLinkErr] = useState('');
+  // The intake form is broken into steps (Child → Guardian → Development &
+  // Functional) so it doesn't read as one huge scroll, still one submission at the end.
+  const [linkStep, setLinkStep] = useState(1);
   // Live per-field notes for the phone inputs (e.g. "numbers only" when letters are typed)
   const [phoneNotes, setPhoneNotes] = useState({});
   // First-login onboarding: when the parent has no child linked yet, the
@@ -260,6 +296,15 @@ export default function ParentPortal() {
     return () => { cancelled = true; };
   }, [reservationDate, activeChild, children]);
 
+  /* ── Keep the selected session type in sync with what the child is actually
+     eligible for, defaulting to the only option, or the first, whenever the
+     eligible set changes (e.g. staff just assigned a therapy type). ── */
+  useEffect(() => {
+    const child = activeChild || children?.[0];
+    const options = sessionTypesFor(child);
+    setBookingSessionType(prev => (options.includes(prev) ? prev : (options[0] || '')));
+  }, [activeChild, children]);
+
   /* ── Close dropdown panels on outside click ── */
   useEffect(() => {
     function onDoc(e) {
@@ -294,14 +339,14 @@ export default function ParentPortal() {
   }
 
   async function saveContact() {
-    if (!PH_PHONE.test(contactInput)) { setContactErr('Contact number must be +63 followed by 10 digits (e.g. +639171234567).'); return; }
+    if (!PH_PHONE.test(contactInput)) { setContactErr('Phone number must be +63 followed by 10 digits (e.g. +639171234567).'); return; }
     setContactSaving(true);
     try {
       await updateProfile({ contact: contactInput });
-      toast('Contact number updated', 'fa-circle-check');
+      toast('Phone number updated', 'fa-circle-check');
       setProfileModal(false);
     } catch (e) {
-      setContactErr(e.message || 'Failed to update contact number');
+      setContactErr(e.message || 'Failed to update phone number');
     } finally {
       setContactSaving(false);
     }
@@ -314,13 +359,8 @@ export default function ParentPortal() {
   const pendingPayments = (payments || []).filter(p => p.status === 'pending' || p.status === 'overdue');
   const paidPayments = (payments || []).filter(p => p.status === 'paid');
   const refundedPayments = (payments || []).filter(p => p.status === 'refunded');
-  const outstandingTotal = pendingPayments.reduce((sum, p) => sum + Number(p.amount), 0);
-  const upcomingReservations = (reservations || []).filter(r => r.date >= todayStr() && ['pending', 'confirmed', 'rescheduled'].includes(r.status));
+  const upcomingReservations = (reservations || []).filter(r => r.date >= todayStr() && ['awaiting_payment', 'pending', 'confirmed', 'rescheduled'].includes(r.status));
   const nextSession = upcomingReservations.find(r => r.status === 'confirmed') || upcomingReservations[0];
-
-  const attendance = activeChild?.attendance || [];
-  const attendedCount = attendance.filter(a => a.attended).length;
-  const attendanceRate = attendance.length ? Math.round((attendedCount / attendance.length) * 100) : 0;
 
   /* ── Booking handlers ── */
   function pickSlot(label) { setSelectedSlot(label); setSlotError(false); }
@@ -345,18 +385,23 @@ export default function ParentPortal() {
       toast('No child linked to your account yet', 'fa-circle-exclamation');
       return;
     }
+    if (!bookingSessionType) {
+      toast('Please select a session type before submitting.', 'fa-triangle-exclamation');
+      return;
+    }
     if (upcomingReservations.length > 0) {
       toast('You already have an upcoming booking for this child. You can only book one at a time, cancel it under "My Booking Requests", or wait until its date has passed, before submitting a new one.', 'fa-triangle-exclamation');
       return;
     }
     setBookingBusy(true);
     try {
-      const res = await api('/reservations', {
+      const { payment, ...res } = await api('/reservations', {
         method: 'POST',
         body: {
           date: reservationDate,
           time_slot: selectedSlot,
-          client_id: children[0].id
+          client_id: children[0].id,
+          session_type: bookingSessionType
         }
       });
       setReservations(prev => [...(prev || []), res]);
@@ -364,7 +409,10 @@ export default function ParentPortal() {
       // Refresh slots, same client_id as the booking above, so the list stays
       // narrowed to that child's Assigned Therapist if one is set.
       api('/reservations/slots?date=' + reservationDate + '&client_id=' + children[0].id).then(setSlotsForDate).catch(() => {});
-      toast('Booking request submitted, awaiting staff approval', 'fa-calendar-check');
+      toast('Slot held, complete payment to confirm your booking', 'fa-calendar-check');
+      // No more staff-approved "request", the slot is held and this goes
+      // straight to QRPh checkout, paying is what actually confirms it.
+      if (payment) generateQr(payment);
     } catch (e) {
       toast(e.message || 'Failed to submit booking', 'fa-circle-exclamation');
     } finally {
@@ -396,23 +444,63 @@ export default function ParentPortal() {
     }
   }
 
-  async function submitLinkChild(e) {
-    e.preventDefault();
-    setLinkErr('');
-    if (!linkForm.first_name.trim() || !linkForm.last_name.trim()) return setLinkErr('Child\'s first name and last name are required.');
-    if (!linkForm.dob) return setLinkErr('Date of birth is required.');
+  /** Step 1 (Child's Information) validation, returns an error string or null. */
+  function validateChildStep() {
+    if (!linkForm.first_name.trim() || !linkForm.last_name.trim()) return 'Child\'s first name and last name are required.';
+    if (!linkForm.dob) return 'Date of birth is required.';
     const childAge = getAge(linkForm.dob);
-    if (childAge < 0) return setLinkErr('Date of birth cannot be in the future.');
-    if (childAge < 3 || childAge > 21) return setLinkErr('Patients must be between 3 and 21 years old.');
-    if (!linkForm.gender) return setLinkErr('Please select a gender.');
-    if (!linkForm.guardian_dob) return setLinkErr('Please enter your date of birth.');
+    if (childAge < 0) return 'Date of birth cannot be in the future.';
+    if (childAge < 3 || childAge > 21) return 'Patients must be between 3 and 21 years old.';
+    if (!linkForm.gender) return 'Please select a gender.';
+    return null;
+  }
+
+  /** Step 2 (Guardian/Caretaker Information) validation, returns an error string or null. */
+  function validateGuardianStep() {
+    if (!linkForm.guardian_dob) return 'Please enter your date of birth.';
     const gAge = getAge(linkForm.guardian_dob);
-    if (gAge < 0) return setLinkErr('Date of birth cannot be in the future.');
-    if (gAge < 18 || gAge > 120) return setLinkErr('Parent/guardian must be an adult (18 years old and above).');
-    const guardPhone = linkForm.guardian_phone === '+63' ? '' : linkForm.guardian_phone;
+    if (gAge < 0) return 'Date of birth cannot be in the future.';
+    if (gAge < 18 || gAge > 120) return 'Parent/guardian must be an adult (18 years old and above).';
     const altPhone = linkForm.other_guardian_phone === '+63' ? '' : linkForm.other_guardian_phone;
-    if (guardPhone && !PH_PHONE.test(guardPhone)) return setLinkErr('Cell phone must be +63 followed by 10 digits (e.g. +639171234567).');
-    if (altPhone && !PH_PHONE.test(altPhone)) return setLinkErr('Alternate contact number must be +63 followed by 10 digits (e.g. +639171234567).');
+    if (altPhone && !PH_PHONE.test(altPhone)) return 'Alternate phone number must be +63 followed by 10 digits (e.g. +639171234567).';
+    return null;
+  }
+
+  /** Step 3 (Development & Functional Information) validation: only admin-marked required fields, skips ones hidden by devFieldHidden. Returns an error string or null. */
+  function validateDevFunctionalStep() {
+    for (const f of devFields) {
+      if (!f.required || devFieldHidden(f, devFields, linkForm.dev_functional_data)) continue;
+      const val = linkForm.dev_functional_data[f.id];
+      if (val == null || String(val).trim() === '') return `"${f.label}" is required.`;
+    }
+    return null;
+  }
+
+  function nextLinkStep() {
+    setLinkErr('');
+    const err = linkStep === 1 ? validateChildStep() : linkStep === 2 ? validateGuardianStep() : null;
+    if (err) return setLinkErr(err);
+    setLinkStep(s => s + 1);
+  }
+  function prevLinkStep() {
+    setLinkErr('');
+    setLinkStep(s => s - 1);
+  }
+
+  async function submitLinkChild() {
+    // Extra safety net: the "Register Child" button only renders on step 3,
+    // so this shouldn't be reachable any earlier, but bail rather than run
+    // validation against fields the user hasn't even seen yet.
+    if (linkStep !== 3) return;
+    setLinkErr('');
+    const childErr = validateChildStep();
+    if (childErr) { setLinkStep(1); return setLinkErr(childErr); }
+    const guardianErr = validateGuardianStep();
+    if (guardianErr) { setLinkStep(2); return setLinkErr(guardianErr); }
+    const devErr = validateDevFunctionalStep();
+    if (devErr) { setLinkStep(3); return setLinkErr(devErr); }
+    const guardPhone = user?.contact || '';
+    const altPhone = linkForm.other_guardian_phone === '+63' ? '' : linkForm.other_guardian_phone;
 
     setLinkBusy(true);
     try {
@@ -440,6 +528,7 @@ export default function ParentPortal() {
       setConsentChecked(false);
       setLinkForm(EMPTY_LINK_FORM);
       setPhoneNotes({});
+      setLinkStep(1);
       toast('Child profile registered successfully!', 'fa-check');
     } catch (ex) {
       setLinkErr(ex.message || 'Failed to register child.');
@@ -507,15 +596,9 @@ export default function ParentPortal() {
 
     return (
       <div className="spa-page" id="spa-dashboard">
-        <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', marginBottom: 24, flexWrap: 'wrap', gap: 12 }}>
-          <div>
-            <h1 style={{ fontSize: 22, fontWeight: 700, color: '#0F172A', margin: '0 0 4px' }}>Welcome back, {user?.name ? user.name.split(' ')[0] : 'there'} 👋</h1>
-            <p style={{ fontSize: 13.5, color: '#64748B', margin: 0 }}><i className="fa-regular fa-calendar" style={{ marginRight: 5 }} />{dateStr} &nbsp;·&nbsp; Here's an overview of {child.full_name}'s therapy journey.</p>
-          </div>
-          <div style={{ display: 'flex', gap: 8 }}>
-            <a href="#" onClick={e => { e.preventDefault(); goPage('booking'); }} className="qa-btn" style={{ width: 'auto', padding: '10px 16px', fontSize: 13, textDecoration: 'none' }}><i className="fa-solid fa-calendar-plus" style={{ color: '#0EA5E9' }} /> Book Session</a>
-            <a href="#" onClick={e => { e.preventDefault(); goPage('payment'); }} className="qa-btn" style={{ width: 'auto', padding: '10px 16px', fontSize: 13, textDecoration: 'none' }}><i className="fa-solid fa-credit-card" style={{ color: '#0D9488' }} /> Pay Balance</a>
-          </div>
+        <div style={{ marginBottom: 24 }}>
+          <h1 style={{ fontSize: 22, fontWeight: 700, color: '#0F172A', margin: '0 0 4px' }}>Welcome back, {user?.name ? user.name.split(' ')[0] : 'there'} 👋</h1>
+          <p style={{ fontSize: 13.5, color: '#64748B', margin: 0 }}><i className="fa-regular fa-calendar" style={{ marginRight: 5 }} />{dateStr} &nbsp;·&nbsp; Here's an overview of {child.full_name}'s therapy journey.</p>
         </div>
 
         {/* Active child banner */}
@@ -528,92 +611,40 @@ export default function ParentPortal() {
           <div style={{ textAlign: 'right', fontSize: 12.5, opacity: .95 }}>{child.client_code} · {child.therapy_type ? child.therapy_type + ' Program' : 'For assessment'}{age ? ' · Age ' + age : ''}</div>
         </div>
 
-        {/* Stat cards */}
-        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit,minmax(190px,1fr))', gap: 16, marginBottom: 24 }}>
-          <div className="card stat-card" style={{ borderTop: '3px solid #0EA5E9' }}>
-            <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', marginBottom: 14 }}>
-              <div>
-                <div className="stat-label">Next Session</div>
-                <div className="stat-value" style={{ fontSize: 22 }}>{nextSession ? fmtShortDate(nextSession.date) : '-'}</div>
-                <div className="stat-change up">{nextSession ? <><i className="fa-regular fa-clock" style={{ marginRight: 3 }} />{nextSession.time_slot}{nextSession.therapist_name ? ' · ' + nextSession.therapist_name : ''}</> : 'No upcoming session'}</div>
-              </div>
-              <div className="stat-icon" style={{ background: '#E0F2FE', color: '#0EA5E9' }}><i className="fa-solid fa-calendar-day" /></div>
+        {/* Progress overview */}
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 16, marginBottom: 24 }}>
+          <div className="card" style={{ padding: '22px 24px' }}>
+            <div className="section-title" style={{ marginBottom: 4 }}>{child.full_name}'s Record</div>
+            <div className="section-sub" style={{ marginBottom: 16 }}>{child.client_code} · {child.therapy_type ? child.therapy_type + ' Program' : 'Awaiting assessment'}</div>
+            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10, marginBottom: 14 }}>
+              <div><div style={{ fontSize: 10.5, color: '#94A3B8', fontWeight: 600, textTransform: 'uppercase', letterSpacing: '.3px', marginBottom: 2 }}>Diagnosis</div><div style={{ fontSize: 13, color: '#0F172A', fontWeight: 500 }}>{child.diagnosis || '-'}</div></div>
+              <div><div style={{ fontSize: 10.5, color: '#94A3B8', fontWeight: 600, textTransform: 'uppercase', letterSpacing: '.3px', marginBottom: 2 }}>Assigned Therapist</div><div style={{ fontSize: 13, color: '#0F172A', fontWeight: 500 }}>{child.assigned_therapist_name || 'Not yet assigned'}</div></div>
             </div>
-          </div>
-          <div className="card stat-card" style={{ borderTop: '3px solid #F59E0B' }}>
-            <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', marginBottom: 14 }}>
-              <div>
-                <div className="stat-label">Outstanding Balance</div>
-                <div className="stat-value" style={{ fontSize: 22 }}>₱{outstandingTotal.toLocaleString()}</div>
-                <div className={outstandingTotal > 0 ? 'stat-change down' : 'stat-change up'}>{pendingPayments.length > 0 ? <><i className="fa-solid fa-circle-exclamation" style={{ marginRight: 3 }} />{pendingPayments.length} unpaid session{pendingPayments.length > 1 ? 's' : ''}</> : 'All paid up!'}</div>
-              </div>
-              <div className="stat-icon" style={{ background: '#FEF3C7', color: '#F59E0B' }}><i className="fa-solid fa-peso-sign" /></div>
-            </div>
-          </div>
-          <div className="card stat-card" style={{ borderTop: '3px solid #818CF8' }}>
-            <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', marginBottom: 14 }}>
-              <div>
-                <div className="stat-label">Receipts Ready</div>
-                <div className="stat-value">{paidPayments.length}</div>
-                <div className="stat-change up">{paidPayments.length > 0 ? 'Download available' : 'No receipts yet'}</div>
-              </div>
-              <div className="stat-icon" style={{ background: '#EDE9FE', color: '#818CF8' }}><i className="fa-solid fa-receipt" /></div>
-            </div>
-          </div>
-        </div>
-
-        {/* Progress overview + quick actions */}
-        <div style={{ display: 'grid', gridTemplateColumns: '1.4fr 1fr', gap: 16, marginBottom: 24 }}>
-          <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
-            <div className="card" style={{ padding: '22px 24px' }}>
-              <div className="section-title" style={{ marginBottom: 4 }}>{child.full_name}'s Record</div>
-              <div className="section-sub" style={{ marginBottom: 16 }}>{child.client_code} · {child.therapy_type ? child.therapy_type + ' Program' : 'Awaiting assessment'}</div>
-              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10, marginBottom: 14 }}>
-                <div><div style={{ fontSize: 10.5, color: '#94A3B8', fontWeight: 600, textTransform: 'uppercase', letterSpacing: '.3px', marginBottom: 2 }}>Diagnosis</div><div style={{ fontSize: 13, color: '#0F172A', fontWeight: 500 }}>{child.diagnosis || 'Pending assessment'}</div></div>
-                <div><div style={{ fontSize: 10.5, color: '#94A3B8', fontWeight: 600, textTransform: 'uppercase', letterSpacing: '.3px', marginBottom: 2 }}>Assigned Therapist</div><div style={{ fontSize: 13, color: '#0F172A', fontWeight: 500 }}>{child.assigned_therapist_name || 'Not yet assigned'}</div></div>
-              </div>
-              <div style={{ paddingTop: 12, borderTop: '1px solid #F1F5F9' }}>
-                <div style={{ fontSize: 12, fontWeight: 700, color: '#334155', marginBottom: 10 }}>Development &amp; Functional Information</div>
-                {devFields.length === 0 ? (
-                  <div style={{ fontSize: 12, color: '#94A3B8' }}>Nothing recorded yet.</div>
-                ) : (
-                  <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
-                    {devFields.map(f => (
-                      <div key={f.id}>
-                        <div style={{ fontSize: 10.5, color: '#94A3B8', fontWeight: 600, textTransform: 'uppercase', letterSpacing: '.3px', marginBottom: 2 }}>{f.label}</div>
-                        <div style={{ fontSize: 12.5, color: '#0F172A' }}>{(child.dev_functional_data || {})[f.id] || '-'}</div>
-                      </div>
-                    ))}
-                  </div>
-                )}
-              </div>
-            </div>
-
-            <div className="card" style={{ padding: '22px 24px' }}>
-              <div className="section-title" style={{ marginBottom: 4 }}>Progress Trends</div>
-              <div className="section-sub" style={{ marginBottom: 16 }}>GAS (Goal Attainment Scaling) trend from therapy sessions</div>
-              {(child.gas_entries || []).length > 0 ? (
-                <GasProgressChart entries={child.gas_entries} />
+            <div style={{ paddingTop: 12, borderTop: '1px solid #F1F5F9' }}>
+              <div style={{ fontSize: 12, fontWeight: 700, color: '#334155', marginBottom: 10 }}>Development &amp; Functional Information</div>
+              {devFields.length === 0 ? (
+                <div style={{ fontSize: 12, color: '#94A3B8' }}>Nothing recorded yet.</div>
               ) : (
-                <div style={{ textAlign: 'center', padding: '30px 0', color: '#94A3B8', fontSize: 13 }}><i className="fa-solid fa-chart-line" style={{ fontSize: 24, marginBottom: 8, display: 'block' }} />No progress trend data recorded yet. This appears after your child's therapist logs GAS assessments.</div>
+                <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
+                  {devFields.map(f => (
+                    <div key={f.id}>
+                      <div style={{ fontSize: 10.5, color: '#94A3B8', fontWeight: 600, textTransform: 'uppercase', letterSpacing: '.3px', marginBottom: 2 }}>{f.label}</div>
+                      <div style={{ fontSize: 12.5, color: '#0F172A' }}>{(child.dev_functional_data || {})[f.id] || '-'}</div>
+                    </div>
+                  ))}
+                </div>
               )}
             </div>
           </div>
 
-          <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
-            <div className="card" style={{ padding: '22px 20px' }}>
-              <div className="section-title" style={{ marginBottom: 14 }}>Quick Actions</div>
-              <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-                <a href="#" onClick={e => { e.preventDefault(); goPage('booking'); }} className="qa-btn" style={{ textDecoration: 'none' }}><div className="qa-icon" style={{ background: '#E0F2FE', color: '#0EA5E9' }}><i className="fa-solid fa-calendar-plus" /></div>Book Therapy Session</a>
-                <a href="#" onClick={e => { e.preventDefault(); goPage('payment'); }} className="qa-btn" style={{ textDecoration: 'none' }}><div className="qa-icon" style={{ background: '#CCFBF1', color: '#0D9488' }}><i className="fa-solid fa-credit-card" /></div>Pay Outstanding Balances</a>
-              </div>
-            </div>
-            <div className="card" style={{ padding: '22px 20px' }}>
-              <div className="section-title" style={{ marginBottom: 14 }}>Session Summary</div>
-              <div className="status-row"><span style={{ fontSize: 13, color: '#475569' }}>Sessions attended</span><span style={{ fontWeight: 700, color: '#0F172A' }}>{attendedCount}</span></div>
-              <div className="status-row"><span style={{ fontSize: 13, color: '#475569' }}>Attendance rate</span><span style={{ fontWeight: 700, color: '#10B981' }}>{attendanceRate}%</span></div>
-              <div className="status-row" style={{ borderBottom: 'none' }}><span style={{ fontSize: 13, color: '#475569' }}>Upcoming bookings</span><span style={{ fontWeight: 700, color: '#0EA5E9' }}>{upcomingReservations.length}</span></div>
-            </div>
+          <div className="card" style={{ padding: '22px 24px' }}>
+            <div className="section-title" style={{ marginBottom: 4 }}>Progress Trends</div>
+            <div className="section-sub" style={{ marginBottom: 16 }}>GAS (Goal Attainment Scaling) trend from therapy sessions</div>
+            {(child.gas_entries || []).length > 0 ? (
+              <GasProgressChart entries={child.gas_entries} />
+            ) : (
+              <div style={{ textAlign: 'center', padding: '30px 0', color: '#94A3B8', fontSize: 13 }}><i className="fa-solid fa-chart-line" style={{ fontSize: 24, marginBottom: 8, display: 'block' }} />No progress trend data recorded yet. This appears after your child's therapist logs GAS assessments.</div>
+            )}
           </div>
         </div>
 
@@ -630,11 +661,10 @@ export default function ParentPortal() {
   function renderBooking() {
     const hasChildren = children && children.length > 0;
     const myReservations = (reservations || []).slice().sort((a, b) => (b.date || '').localeCompare(a.date || ''));
-    const confirmed = myReservations.filter(r => r.status === 'confirmed').length;
-    const pending = myReservations.filter(r => r.status === 'pending').length;
-    const declined = myReservations.filter(r => r.status === 'declined').length;
     const hasActiveBooking = upcomingReservations.length > 0;
     const activeBooking = upcomingReservations[0];
+    const bookingChild = activeChild || (hasChildren ? children[0] : null);
+    const sessionOptions = sessionTypesFor(bookingChild);
 
     return (
       <div className="spa-page" id="spa-booking">
@@ -649,21 +679,46 @@ export default function ParentPortal() {
           </div>
         ) : (
           <>
-            <div style={{ display: 'grid', gridTemplateColumns: '1.3fr 1fr', gap: 16, marginBottom: 24 }}>
+            <div style={{ display: 'grid', gridTemplateColumns: '1fr', gap: 16, marginBottom: 24 }}>
               <div className="card" style={{ padding: '22px 24px' }}>
                 <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 10, flexWrap: 'wrap', marginBottom: 16 }}>
                   <div><div className="section-title">New Reservation</div><div className="section-sub">Choose a date and an available time slot</div></div>
                   <span className="pill pill-blue">{selectedSlot ? selectedSlot + ' selected' : 'No time selected'}</span>
                 </div>
-                {hasActiveBooking && (
+                {hasActiveBooking && activeBooking.status === 'awaiting_payment' && (
+                  <div style={{ background: '#FFFBEB', border: '1px solid #FDE68A', borderRadius: 9, padding: '12px 14px', marginBottom: 16, fontSize: 12.5, color: '#92400E', display: 'flex', alignItems: 'flex-start', gap: 8, flexWrap: 'wrap' }}>
+                    <i className="fa-solid fa-hourglass-half" style={{ marginTop: 1 }} />
+                    <span style={{ flex: 1 }}>Your slot on {fmtDate(activeBooking.date)} · {activeBooking.time_slot} is held, awaiting your payment. Complete it soon, unpaid holds are released automatically.</span>
+                    <button className="btn-primary" style={{ fontSize: 11.5, padding: '6px 12px' }} onClick={() => {
+                      const p = (payments || []).find(pm => pm.reservation_id === activeBooking.id);
+                      if (p) generateQr(p);
+                    }}>Complete Payment</button>
+                  </div>
+                )}
+                {hasActiveBooking && activeBooking.status !== 'awaiting_payment' && (
                   <div style={{ background: '#FFFBEB', border: '1px solid #FDE68A', borderRadius: 9, padding: '12px 14px', marginBottom: 16, fontSize: 12.5, color: '#92400E', display: 'flex', alignItems: 'flex-start', gap: 8 }}>
                     <i className="fa-solid fa-circle-info" style={{ marginTop: 1 }} />
                     <span>You already have an upcoming booking, {fmtDate(activeBooking.date)} · {activeBooking.time_slot} ({activeBooking.status}). Only one booking per child is allowed at a time. Cancel it under "My Booking Requests", or wait until its date has passed, before submitting a new one.</span>
                   </div>
                 )}
                 <div style={{ marginBottom: 14, opacity: hasActiveBooking ? .55 : 1, pointerEvents: hasActiveBooking ? 'none' : 'auto' }}>
+                  <label className="form-label">Session Type</label>
+                  {sessionOptions.length <= 1 ? (
+                    <div className="form-input" style={{ display: 'flex', alignItems: 'center', color: '#475569', background: '#F8FAFC', fontWeight: 600 }}>
+                      {sessionOptions[0] || 'No eligible session type'}
+                    </div>
+                  ) : (
+                    <select className="form-select" value={bookingSessionType} onChange={e => setBookingSessionType(e.target.value)}>
+                      {sessionOptions.map(t => <option key={t} value={t}>{t}</option>)}
+                    </select>
+                  )}
+                  {!bookingChild?.assigned_therapist_name && !bookingChild?.therapy_type && (
+                    <div style={{ fontSize: 11.5, color: '#64748B', marginTop: 5 }}><i className="fa-solid fa-circle-info" style={{ marginRight: 5 }} />Only an Initial Assessment can be booked until the clinic assigns a therapy type and therapist.</div>
+                  )}
+                </div>
+                <div style={{ marginBottom: 14, opacity: hasActiveBooking ? .55 : 1, pointerEvents: hasActiveBooking ? 'none' : 'auto' }}>
                   <label className="form-label">Requested Date</label>
-                  <input type="date" className="form-input" value={reservationDate} min={todayStr()} onChange={e => changeDate(e.target.value)} disabled={hasActiveBooking} />
+                  <input type="date" className="form-input" value={reservationDate} min={minBookableDateStr()} onChange={e => changeDate(e.target.value)} disabled={hasActiveBooking} />
                 </div>
                 <div style={{ marginBottom: 14, opacity: hasActiveBooking ? .55 : 1, pointerEvents: hasActiveBooking ? 'none' : 'auto' }}>
                   <label className="form-label" style={slotError ? { color: '#DC2626' } : undefined}>Available Time Slots {slotError && <span style={{ fontWeight: 400 }}>- please pick one</span>}</label>
@@ -682,9 +737,10 @@ export default function ParentPortal() {
                       return (
                         <button key={t} className={cls} style={style} disabled={blocked} onClick={blocked ? undefined : () => pickSlot(t)}>
                           {t}
-                          {full && <span style={{ fontSize: 10, fontWeight: 400 }}> (Full)</span>}
-                          {!full && past && <span style={{ fontSize: 10, fontWeight: 400 }}> (Past)</span>}
-                          {!full && !past && s.capacity > 1 && <span style={{ fontSize: 10, fontWeight: 400 }}> · {s.available} left</span>}
+                          {s.lunch_break && <span style={{ fontSize: 10, fontWeight: 400 }}> (Lunch Break)</span>}
+                          {!s.lunch_break && full && <span style={{ fontSize: 10, fontWeight: 400 }}> (Full)</span>}
+                          {!s.lunch_break && !full && past && <span style={{ fontSize: 10, fontWeight: 400 }}> (Past)</span>}
+                          {!s.lunch_break && !full && !past && s.capacity > 1 && <span style={{ fontSize: 10, fontWeight: 400 }}> · {s.available} left</span>}
                         </button>
                       );
                     })}
@@ -696,19 +752,6 @@ export default function ParentPortal() {
                     {bookingBusy ? <><i className="fa-solid fa-spinner fa-spin" style={{ marginRight: 6 }} />Submitting…</> : 'Submit Booking Request'}
                   </button>
                 </div>
-              </div>
-
-              <div className="card" style={{ padding: '22px 20px' }}>
-                <div className="section-title" style={{ marginBottom: 14 }}>Booking Summary</div>
-                <div className="status-row"><span style={{ fontSize: 13, color: '#475569' }}>Confirmed sessions</span><span className="pill pill-green">{confirmed}</span></div>
-                <div className="status-row"><span style={{ fontSize: 13, color: '#475569' }}>Pending staff review</span><span className="pill pill-amber">{pending}</span></div>
-                <div className="status-row" style={{ borderBottom: 'none' }}><span style={{ fontSize: 13, color: '#475569' }}>Declined requests</span><span className="pill pill-red">{declined}</span></div>
-                {nextSession && (
-                  <div style={{ marginTop: 16, padding: 14, borderRadius: 12, background: '#F0FDF4', border: '1px solid #DCFCE7' }}>
-                    <div style={{ fontSize: 12, fontWeight: 600, color: '#166534', marginBottom: 4 }}><i className="fa-solid fa-calendar-day" style={{ marginRight: 5 }} />Next Confirmed Session</div>
-                    <div style={{ fontSize: 13, color: '#475569' }}>{fmtDate(nextSession.date)} · {nextSession.time_slot}, {nextSession.session_type}{nextSession.therapist_name ? ' with ' + nextSession.therapist_name : ''}</div>
-                  </div>
-                )}
               </div>
             </div>
 
@@ -722,6 +765,7 @@ export default function ParentPortal() {
                   <div style={{ fontSize: 12.5, color: '#94A3B8', textAlign: 'center', padding: '20px 0' }}><i className="fa-solid fa-inbox" style={{ marginRight: 7 }} />No booking requests yet. Submit one above!</div>
                 ) : myReservations.slice(0, 10).map(r => {
                   const badge = r.status === 'confirmed' ? <span className="pill pill-green">Confirmed</span>
+                    : r.status === 'awaiting_payment' ? <span className="pill pill-amber">Awaiting Payment</span>
                     : r.status === 'declined' ? <span className="pill pill-red">Declined</span>
                     : r.status === 'cancelled' ? <span className="pill pill-gray">Cancelled</span>
                     : r.status === 'rescheduled' ? <span className="pill pill-blue">Rescheduled</span>
@@ -736,6 +780,12 @@ export default function ParentPortal() {
                         <div style={{ marginTop: 6, padding: '7px 10px', borderRadius: 7, background: '#FEF2F2', border: '1px solid #FECACA', fontSize: 12, color: '#DC2626' }}>
                           <i className="fa-solid fa-comment-slash" style={{ marginRight: 5 }} />{r.notes}
                         </div>
+                      )}
+                      {r.status === 'awaiting_payment' && (
+                        <button className="btn-primary" style={{ fontSize: 11, padding: '5px 10px', marginTop: 6 }} onClick={() => {
+                          const p = (payments || []).find(pm => pm.reservation_id === r.id);
+                          if (p) generateQr(p);
+                        }}>Complete Payment</button>
                       )}
                     </div>
                   );
@@ -757,14 +807,13 @@ export default function ParentPortal() {
      ═══════════════════════════════════════════════════════════ */
   function renderPayment() {
     const hasChildren = children && children.length > 0;
-    const child = activeChild || (hasChildren ? children[0] : null);
 
     if (!hasChildren) {
       return (
         <div className="spa-page" id="spa-payment">
           <div style={{ marginBottom: 24 }}>
             <h1 style={{ fontSize: 22, fontWeight: 700, color: '#0F172A', margin: '0 0 4px' }}>Payments</h1>
-            <p style={{ fontSize: 13.5, color: '#64748B', margin: 0 }}>Manage session payments and download receipts.</p>
+            <p style={{ fontSize: 13.5, color: '#64748B', margin: 0 }}>Manage session payments and download invoices.</p>
           </div>
           <div className="card" style={{ padding: '40px 20px' }}>
             <EmptyState icon="fa-credit-card" title="No Payment Records" description="Once your child's profile is linked, you'll see outstanding balances and payment history here." />
@@ -773,26 +822,17 @@ export default function ParentPortal() {
       );
     }
 
-    const paidTotal = paidPayments.reduce((s, p) => s + Number(p.amount), 0);
-
     return (
       <div className="spa-page" id="spa-payment">
         <div style={{ marginBottom: 24 }}>
           <h1 style={{ fontSize: 22, fontWeight: 700, color: '#0F172A', margin: '0 0 4px' }}>Secure Payment Checkout</h1>
-          <p style={{ fontSize: 13.5, color: '#64748B', margin: 0 }}>Gateway integration · Itemized balances · Download receipts</p>
-        </div>
-
-        {/* KPI cards */}
-        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit,minmax(165px,1fr))', gap: 16, marginBottom: 22 }}>
-          <div className="card stat-card" style={{ borderTop: '3px solid #EF4444' }}><div style={{ display: 'flex', justifyContent: 'space-between' }}><div><div className="stat-label">Outstanding Balance</div><div className="stat-value" style={{ fontSize: 20 }}>₱{outstandingTotal.toLocaleString()}</div><div className="stat-change down">{pendingPayments.length} session{pendingPayments.length !== 1 ? 's' : ''} due</div></div><div className="stat-icon" style={{ background: '#FEE2E2', color: '#EF4444' }}><i className="fa-solid fa-file-invoice-dollar" /></div></div></div>
-          <div className="card stat-card" style={{ borderTop: '3px solid #10B981' }}><div style={{ display: 'flex', justifyContent: 'space-between' }}><div><div className="stat-label">Total Paid</div><div className="stat-value" style={{ fontSize: 20 }}>₱{paidTotal.toLocaleString()}</div><div className="stat-change up">{paidPayments.length} session{paidPayments.length !== 1 ? 's' : ''}</div></div><div className="stat-icon" style={{ background: '#DCFCE7', color: '#10B981' }}><i className="fa-solid fa-circle-check" /></div></div></div>
-          <div className="card stat-card" style={{ borderTop: '3px solid #818CF8' }}><div style={{ display: 'flex', justifyContent: 'space-between' }}><div><div className="stat-label">Receipts Available</div><div className="stat-value">{paidPayments.length}</div><div className="stat-change up">{paidPayments.length > 0 ? 'Download ready' : 'None yet'}</div></div><div className="stat-icon" style={{ background: '#EDE9FE', color: '#818CF8' }}><i className="fa-solid fa-receipt" /></div></div></div>
+          <p style={{ fontSize: 13.5, color: '#64748B', margin: 0 }}>Gateway integration · Itemized balances · Download invoices</p>
         </div>
 
         {/* Tabs */}
         <div style={{ display: 'flex', gap: 6, marginBottom: 22, flexWrap: 'wrap' }}>
           <button className={'pay-tab' + (payTab === 'checkout' ? ' active' : '')} onClick={() => setPayTab('checkout')}><i className="fa-solid fa-credit-card" style={{ marginRight: 6 }} />Pay Now</button>
-          <button className={'pay-tab' + (payTab === 'receipts' ? ' active' : '')} onClick={() => setPayTab('receipts')}><i className="fa-solid fa-receipt" style={{ marginRight: 6 }} />Receipts</button>
+          <button className={'pay-tab' + (payTab === 'receipts' ? ' active' : '')} onClick={() => setPayTab('receipts')}><i className="fa-solid fa-file-invoice" style={{ marginRight: 6 }} />Invoice</button>
         </div>
 
         {/* Checkout tab, real, self-serve QRPh via PayMongo, one invoice at a time */}
@@ -802,10 +842,10 @@ export default function ParentPortal() {
               <EmptyState icon="fa-circle-check" title="All Paid Up!" description="You have no outstanding balances. Great job keeping your payments current!" />
             </div>
           ) : (
-            <div style={{ display: 'grid', gridTemplateColumns: '1.3fr 1fr', gap: 16 }}>
+            <div style={{ display: 'grid', gridTemplateColumns: '1fr', gap: 16 }}>
               <div className="card" style={{ padding: '22px 0 0' }}>
                 <div style={{ padding: '0 20px 14px', borderBottom: '1px solid #F1F5F9' }}>
-                  <div className="section-title"><i className="fa-solid fa-qrcode" style={{ color: '#0EA5E9', marginRight: 7 }} />Outstanding Balances</div>
+                  <div className="section-title"><i className="fa-solid fa-qrcode" style={{ color: '#0EA5E9', marginRight: 7 }} />Pay Pending Balance</div>
                   <div className="section-sub">Pay any session instantly with a real QRPh code, scan with GCash, Maya, or any bank app</div>
                 </div>
                 <div>
@@ -828,38 +868,25 @@ export default function ParentPortal() {
                   <i className="fa-solid fa-lock" /> Payments are processed securely by PayMongo, KID Clinic never sees your bank or wallet details.
                 </div>
               </div>
-
-              {child && (
-                <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
-                  <div className="card" style={{ padding: '22px 20px' }}>
-                    <div className="section-title" style={{ marginBottom: 14 }}>Child Account</div>
-                    <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 12 }}>
-                      <div className="act-avatar" style={{ background: '#DBEAFE', color: '#2563EB', fontSize: 13, width: 40, height: 40 }}>{initials(child.full_name)}</div>
-                      <div><div style={{ fontWeight: 600, color: '#0F172A' }}>{child.full_name}</div><div style={{ fontSize: 12, color: '#64748B' }}>{child.client_code} · {child.therapy_type || 'For assessment'}</div></div>
-                    </div>
-                    <div className="status-row" style={{ borderBottom: 'none' }}><span style={{ fontSize: 13, color: '#475569' }}>Total outstanding</span><span style={{ fontWeight: 700, color: '#EF4444' }}>₱{outstandingTotal.toLocaleString()}</span></div>
-                  </div>
-                </div>
-              )}
             </div>
           )}
         </div>
 
-        {/* Receipts tab */}
+        {/* Invoice tab */}
         <div style={{ display: payTab === 'receipts' ? 'block' : 'none' }}>
           {paidPayments.length === 0 && refundedPayments.length === 0 ? (
             <div className="card" style={{ padding: '40px 20px' }}>
-              <EmptyState icon="fa-receipt" title="No Receipts Yet" description="Receipts will appear here once you've made payments for therapy sessions." />
+              <EmptyState icon="fa-file-invoice" title="No Invoices Yet" description="Invoices will appear here once you've made payments for therapy sessions." />
             </div>
           ) : (
             <div className="card" style={{ padding: '22px 0 0' }}>
               <div style={{ padding: '0 24px 16px', borderBottom: '1px solid #F1F5F9' }}>
-                <div className="section-title">Digital Billing Receipts</div>
+                <div className="section-title">Digital Billing Invoices</div>
                 <div className="section-sub">Payment records with reference keys</div>
               </div>
               <div style={{ overflowX: 'auto' }}>
                 <table className="data-table">
-                  <thead><tr><th style={{ paddingLeft: 24 }}>Invoice</th><th>Date</th><th>Amount</th><th>Method</th><th>Reference</th><th>Status</th><th style={{ textAlign: 'right', paddingRight: 24 }}>Receipt</th></tr></thead>
+                  <thead><tr><th style={{ paddingLeft: 24 }}>Invoice</th><th>Date</th><th>Amount</th><th>Method</th><th>Reference</th><th>Status</th><th style={{ textAlign: 'right', paddingRight: 24 }}>Actions</th></tr></thead>
                   <tbody>
                     {paidPayments.map(p => (
                       <tr key={p.id}>
@@ -975,17 +1002,7 @@ export default function ParentPortal() {
   return (
     <>
       <aside id="sidebar" className={sidebarOpen ? 'open' : ''}>
-        <div className="logo-area">
-          <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-            <div style={{ width: 38, height: 38, borderRadius: 10, background: 'linear-gradient(135deg,#0EA5E9,#0D9488)', display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}>
-              <i className="fa-solid fa-child-reaching" style={{ color: '#fff', fontSize: 17 }} />
-            </div>
-            <div>
-              <div style={{ fontFamily: "'Poppins',sans-serif", fontWeight: 700, fontSize: 16, color: '#0F172A', lineHeight: 1.1 }}>KID</div>
-              <div style={{ fontSize: 10.5, color: '#64748B', fontWeight: 500 }}>Guardian/Caretaker Portal</div>
-            </div>
-          </div>
-        </div>
+        <BrandLogo subtitle="Guardian/Caretaker Portal" />
         <nav>
           <div className="nav-label">Overview</div>
           <a className={'nav-item' + (page === 'dashboard' ? ' active' : '')} onClick={() => goPage('dashboard')}><span className="icon"><i className="fa-solid fa-chart-pie" /></span> Dashboard</a>
@@ -1002,7 +1019,6 @@ export default function ParentPortal() {
           <button id="hamburger" className="topnav-btn" onClick={() => setSidebarOpen(s => !s)}><i className="fa-solid fa-bars" /></button>
           <div style={{ flex: 1 }} />
           <div style={{ display: 'flex', alignItems: 'center', gap: 10, position: 'relative' }}>
-            <button className="topnav-btn" title="Help"><i className="fa-regular fa-circle-question" /></button>
             <div style={{ position: 'relative' }}>
               <button className="topnav-btn" id="notif-btn" onClick={toggleNotif}><i className="fa-regular fa-bell" />{unreadCount > 0 && <span className="notif-dot" />}</button>
               <div id="notif-panel" className={notifOpen ? 'open' : ''}>
@@ -1064,7 +1080,7 @@ export default function ParentPortal() {
                 <div style={{ width: 64, height: 64, borderRadius: '50%', background: '#DCFCE7', display: 'flex', alignItems: 'center', justifyContent: 'center', margin: '0 auto 16px' }}><i className="fa-solid fa-check" style={{ fontSize: 28, color: '#16A34A' }} /></div>
                 <div style={{ fontSize: 18, fontWeight: 700, color: '#0F172A', marginBottom: 16 }}>Payment Confirmed</div>
                 <button className="btn-primary" style={{ width: '100%' }} onClick={() => { const p = qrModal.payment; setQrModal(null); setInvoice(p); }}>
-                  <i className="fa-solid fa-file-invoice" style={{ marginRight: 6 }} />View Receipt
+                  <i className="fa-solid fa-file-invoice" style={{ marginRight: 6 }} />View Invoice
                 </button>
               </>
             ) : qrModal.image ? (
@@ -1103,13 +1119,15 @@ export default function ParentPortal() {
             {/* Letterhead */}
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', paddingBottom: 18, borderBottom: '3px solid #1F4E9E' }}>
               <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
-                <div style={{ width: 46, height: 46, borderRadius: 10, background: 'linear-gradient(135deg,#1F4E9E,#0D9488)', display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}>
-                  <i className="fa-solid fa-child-reaching" style={{ color: '#fff', fontSize: 19 }} />
-                </div>
+                {brand?.logo_url
+                  ? <img src={brand.logo_url} alt={brand.clinic_name} style={{ width: 46, height: 46, borderRadius: 10, objectFit: 'cover', flexShrink: 0 }} />
+                  : <div style={{ width: 46, height: 46, borderRadius: 10, background: 'linear-gradient(135deg,#1F4E9E,#0D9488)', display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}>
+                      <i className="fa-solid fa-child-reaching" style={{ color: '#fff', fontSize: 19 }} />
+                    </div>}
                 <div>
-                  <div style={{ fontFamily: "'Poppins',sans-serif", fontSize: 18, fontWeight: 700, color: '#0F172A', lineHeight: 1.2 }}>Bloomsdale Therapy Center</div>
+                  <div style={{ fontFamily: "'Poppins',sans-serif", fontSize: 18, fontWeight: 700, color: '#0F172A', lineHeight: 1.2 }}>{brand?.clinic_name || 'Bloomsdale Therapy Center'}</div>
                   <div style={{ fontSize: 11.5, color: '#64748B', marginTop: 2 }}>Pediatric Speech &amp; Occupational Therapy</div>
-                  <div style={{ fontSize: 11, color: '#94A3B8', marginTop: 1 }}>Imus, Cavite, Philippines</div>
+                  <div style={{ fontSize: 11, color: '#94A3B8', marginTop: 1 }}>{brand?.address || 'Imus, Cavite, Philippines'}</div>
                 </div>
               </div>
               <div style={{ textAlign: 'right' }}>
@@ -1125,8 +1143,8 @@ export default function ParentPortal() {
             <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 16, padding: '18px 0', borderBottom: '1px solid #F1F5F9' }}>
               <div>
                 <div style={{ fontSize: 10.5, fontWeight: 700, color: '#94A3B8', textTransform: 'uppercase', letterSpacing: '.06em', marginBottom: 6 }}>Pay To</div>
-                <div style={{ fontSize: 14, fontWeight: 700, color: '#0F172A' }}>Bloomsdale Therapy Center</div>
-                <div style={{ fontSize: 11.5, color: '#64748B', marginTop: 2 }}>Imus, Cavite, Philippines</div>
+                <div style={{ fontSize: 14, fontWeight: 700, color: '#0F172A' }}>{brand?.clinic_name || 'Bloomsdale Therapy Center'}</div>
+                <div style={{ fontSize: 11.5, color: '#64748B', marginTop: 2 }}>{brand?.address || 'Imus, Cavite, Philippines'}</div>
               </div>
               <div>
                 <div style={{ fontSize: 10.5, fontWeight: 700, color: '#94A3B8', textTransform: 'uppercase', letterSpacing: '.06em', marginBottom: 6 }}>Billed To</div>
@@ -1190,7 +1208,7 @@ export default function ParentPortal() {
 
             {/* Footer note */}
             <div style={{ marginTop: 22, paddingTop: 14, borderTop: '1px solid #E2E8F0', textAlign: 'center' }}>
-              <div style={{ fontSize: 12, color: '#475569', fontWeight: 600 }}>Thank you for trusting Bloomsdale Therapy Center with your child's care.</div>
+              <div style={{ fontSize: 12, color: '#475569', fontWeight: 600 }}>Thank you for trusting {brand?.clinic_name || 'Bloomsdale Therapy Center'} with your child's care.</div>
               <div style={{ fontSize: 10.5, color: '#94A3B8', marginTop: 4 }}>This is a system-generated invoice and does not require a signature.</div>
             </div>
           </div>
@@ -1213,7 +1231,7 @@ export default function ParentPortal() {
               <input className="form-input" value={user?.email || ''} disabled style={{ background: '#F1F5F9' }} />
             </div>
             <div>
-              <label className="form-label">Contact Number *</label>
+              <label className="form-label">Phone Number *</label>
               <input className="form-input" type="tel" value={contactInput} onChange={handleContactInput} placeholder="+639XXXXXXXXX" maxLength={13} />
               {contactErr && <div style={{ fontSize: 11.5, color: '#DC2626', fontWeight: 600, marginTop: 4 }}>{contactErr}</div>}
             </div>
@@ -1229,7 +1247,7 @@ export default function ParentPortal() {
 
       {linkChildModal && (
         <Modal
-          onClose={() => { setLinkChildModal(false); setLinkErr(''); setLinkConsent(false); setConsentChecked(false); }}
+          onClose={() => { setLinkChildModal(false); setLinkErr(''); setLinkConsent(false); setConsentChecked(false); setLinkStep(1); }}
           title={!(linkConsent || user?.privacy_consent_at) ? 'Data Privacy Consent' : onboarding ? 'Welcome to KID Clinic!' : 'Link Your Child'}
         >
           {!(linkConsent || user?.privacy_consent_at) ? (
@@ -1263,130 +1281,177 @@ export default function ParentPortal() {
             </div>
           </div>
           ) : (
-          <form onSubmit={submitLinkChild}>
+          <div
+            onKeyDown={e => {
+              // Plain <div>, not <form>, on purpose: a native <form> can be
+              // submitted by the browser itself (Enter in a field, autofill,
+              // extensions, ...), which was reaching "Register Child" without
+              // ever going through the Next button's step-by-step validation.
+              // Enter is handled by hand instead: advance a step, or submit
+              // for real only once actually on the last one.
+              if (e.key === 'Enter' && e.target.tagName !== 'TEXTAREA') {
+                e.preventDefault();
+                if (linkStep < 3) nextLinkStep(); else submitLinkChild();
+              }
+            }}
+          >
             {onboarding && (
               <div style={{ background: '#EFF6FF', border: '1px solid #BFDBFE', borderRadius: 8, padding: '12px 16px', fontSize: 13.5, color: '#1E40AF', marginBottom: 16, lineHeight: 1.6 }}>
                 <i className="fa-solid fa-hand-sparkles" style={{ marginRight: 8 }} />
                 Let's set up your child's profile first, booking sessions and tracking progress all start here. It only takes a minute.
               </div>
             )}
+
+            {/* Step indicator, three connected sections presented one at a time. */}
+            <div style={{ display: 'flex', alignItems: 'center', marginBottom: 22 }}>
+              {[{ n: 1, label: 'Child' }, { n: 2, label: 'Guardian' }, { n: 3, label: 'Development' }].map((s, i, arr) => (
+                <div key={s.n} style={{ display: 'flex', alignItems: 'center', flex: i < arr.length - 1 ? 1 : undefined }}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 7, flexShrink: 0 }}>
+                    <div style={{
+                      width: 24, height: 24, borderRadius: '50%', display: 'flex', alignItems: 'center', justifyContent: 'center',
+                      fontSize: 11, fontWeight: 700, flexShrink: 0,
+                      background: linkStep === s.n ? '#1F4E9E' : linkStep > s.n ? '#0D9488' : '#E2E8F0',
+                      color: linkStep >= s.n ? '#fff' : '#94A3B8'
+                    }}>
+                      {linkStep > s.n ? <i className="fa-solid fa-check" style={{ fontSize: 10 }} /> : s.n}
+                    </div>
+                    <span style={{ fontSize: 12, fontWeight: 600, color: linkStep === s.n ? '#0F172A' : '#94A3B8', whiteSpace: 'nowrap' }}>{s.label}</span>
+                  </div>
+                  {i < arr.length - 1 && <div style={{ flex: 1, height: 2, background: linkStep > s.n ? '#0D9488' : '#E2E8F0', margin: '0 10px' }} />}
+                </div>
+              ))}
+            </div>
+
             {linkErr && (
               <div style={{ background: '#FEF2F2', border: '1px solid #FECACA', borderRadius: 8, padding: '10px 14px', fontSize: 13, color: '#C4302B', marginBottom: 16, fontWeight: 600 }}>
                 <i className="fa-solid fa-circle-exclamation" style={{ marginRight: 6 }} />{linkErr}
               </div>
             )}
 
-            <div style={{ fontSize: 14, fontWeight: 700, color: '#0F172A', marginBottom: 12, paddingBottom: 8, borderBottom: '1px solid #E2E8F0' }}>
-              <i className="fa-solid fa-child" style={{ marginRight: 8, color: '#0EA5E9' }} />Child's Information
-            </div>
+            {linkStep === 1 && (
+              <>
+                <div style={{ fontSize: 14, fontWeight: 700, color: '#0F172A', marginBottom: 12, paddingBottom: 8, borderBottom: '1px solid #E2E8F0' }}>
+                  <i className="fa-solid fa-child" style={{ marginRight: 8, color: '#0EA5E9' }} />Child's Information
+                </div>
 
-            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12, marginBottom: 12 }}>
-              <div>
-                <label className="form-label">First Name *</label>
-                <input className="form-input" value={linkForm.first_name} onChange={e => setLinkForm(f => ({ ...f, first_name: e.target.value }))} placeholder="Child's first name" required />
-              </div>
-              <div>
-                <label className="form-label">Middle Name <span style={{ fontWeight: 400, color: '#94A3B8' }}>(optional)</span></label>
-                <input className="form-input" value={linkForm.middle_name} onChange={e => setLinkForm(f => ({ ...f, middle_name: e.target.value }))} placeholder="Child's middle name" />
-              </div>
-              <div>
-                <label className="form-label">Last Name *</label>
-                <input className="form-input" value={linkForm.last_name} onChange={e => setLinkForm(f => ({ ...f, last_name: e.target.value }))} placeholder="Child's last name" required />
-              </div>
-              <div>
-                <label className="form-label">Date of Birth *</label>
-                <input className="form-input" type="date" value={linkForm.dob} min={minPatientDob()} max={maxPatientDob()} onChange={e => setLinkForm(f => ({ ...f, dob: e.target.value }))} required />
-                <div style={{ fontSize: 11.5, color: '#94A3B8', marginTop: 4 }}>Patient must be 3–21 years old</div>
-              </div>
-              <div>
-                <label className="form-label">Gender *</label>
-                <select className="form-select" value={linkForm.gender} onChange={e => setLinkForm(f => ({ ...f, gender: e.target.value }))} required>
-                  <option value="">Select...</option>
-                  <option value="Male">Male</option>
-                  <option value="Female">Female</option>
-                </select>
-              </div>
-              <div>
-                <label className="form-label">Allergies <span style={{ fontWeight: 400, color: '#94A3B8' }}>(optional)</span></label>
-                <input className="form-input" value={linkForm.allergies} onChange={e => setLinkForm(f => ({ ...f, allergies: e.target.value }))} placeholder="Food, medicine, etc." />
-              </div>
-              <div>
-                <label className="form-label">Daily Medication <span style={{ fontWeight: 400, color: '#94A3B8' }}>(optional)</span></label>
-                <input className="form-input" value={linkForm.daily_medication} onChange={e => setLinkForm(f => ({ ...f, daily_medication: e.target.value }))} placeholder="Only if relevant to therapy sessions" />
-              </div>
-            </div>
-
-            <div style={{ fontSize: 14, fontWeight: 700, color: '#0F172A', marginBottom: 12, marginTop: 20, paddingBottom: 8, borderBottom: '1px solid #E2E8F0' }}>
-              <i className="fa-solid fa-user-shield" style={{ marginRight: 8, color: '#0D9488' }} />Guardian/Caretaker Information
-            </div>
-
-            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12, marginBottom: 12 }}>
-              <div>
-                <label className="form-label">Relationship to Child *</label>
-                <select className="form-select" value={linkForm.guardian_relationship} onChange={e => setLinkForm(f => ({ ...f, guardian_relationship: e.target.value }))} required>
-                  <option value="Parent">Parent</option>
-                  <option value="Guardian">Guardian</option>
-                  <option value="Caretaker">Caretaker</option>
-                </select>
-              </div>
-              <div>
-                <label className="form-label">Date of Birth *</label>
-                <input className="form-input" type="date" value={linkForm.guardian_dob} min={minGuardianDob()} max={maxGuardianDob()} onChange={e => setLinkForm(f => ({ ...f, guardian_dob: e.target.value }))} required />
-                <div style={{ fontSize: 11.5, color: '#94A3B8', marginTop: 4 }}>Must be 18 years old or above</div>
-              </div>
-              <div>
-                <label className="form-label">Cell Phone</label>
-                <input className="form-input" type="tel" value={linkForm.guardian_phone} onChange={handlePhoneInput('guardian_phone')} placeholder="+639XXXXXXXXX" maxLength={13} />
-                {phoneNotes.guardian_phone && <div style={{ fontSize: 11.5, color: '#DC2626', fontWeight: 600, marginTop: 4 }}>{phoneNotes.guardian_phone}</div>}
-              </div>
-              <div>
-                <label className="form-label">Alternate Contact Person <span style={{ fontWeight: 400, color: '#94A3B8' }}>(optional)</span></label>
-                <input className="form-input" value={linkForm.other_guardian_name} onChange={e => setLinkForm(f => ({ ...f, other_guardian_name: e.target.value }))} placeholder="Name of another guardian/caretaker" />
-              </div>
-              <div>
-                <label className="form-label">Alternate Contact Number</label>
-                <input className="form-input" type="tel" value={linkForm.other_guardian_phone} onChange={handlePhoneInput('other_guardian_phone')} placeholder="+639XXXXXXXXX" maxLength={13} />
-                {phoneNotes.other_guardian_phone && <div style={{ fontSize: 11.5, color: '#DC2626', fontWeight: 600, marginTop: 4 }}>{phoneNotes.other_guardian_phone}</div>}
-              </div>
-            </div>
-
-            <div style={{ fontSize: 14, fontWeight: 700, color: '#0F172A', marginBottom: 4, marginTop: 20, paddingBottom: 8, borderBottom: '1px solid #E2E8F0' }}>
-              <i className="fa-solid fa-child-reaching" style={{ marginRight: 8, color: '#4F46E5' }} />Development &amp; Functional Information
-            </div>
-            <div style={{ fontSize: 11.5, color: '#94A3B8', marginBottom: 12 }}>Optional, helps the clinic prepare for your child's first assessment.</div>
-
-            {(() => {
-              const bySection = {};
-              devFields.forEach(f => { (bySection[f.section] ||= []).push(f); });
-              return Object.entries(bySection).map(([section, fields]) => (
-                <div key={section}>
-                  <div style={{ fontSize: 12.5, fontWeight: 700, color: '#334155', marginBottom: 8 }}>{section}</div>
-                  <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12, marginBottom: 12 }}>
-                    {fields.map(f => (
-                      <div key={f.id} style={f.field_type === 'text' && f.label.length > 30 ? { gridColumn: '1/-1' } : undefined}>
-                        <label className="form-label">{f.label}</label>
-                        {f.field_type === 'select' ? (
-                          <select className="form-select" value={linkForm.dev_functional_data[f.id] || ''} onChange={e => setLinkForm(form => ({ ...form, dev_functional_data: { ...form.dev_functional_data, [f.id]: e.target.value } }))}>
-                            <option value="">- Select -</option>
-                            {(f.options || []).map(opt => <option key={opt} value={opt}>{opt}</option>)}
-                          </select>
-                        ) : (
-                          <input className="form-input" value={linkForm.dev_functional_data[f.id] || ''} onChange={e => setLinkForm(form => ({ ...form, dev_functional_data: { ...form.dev_functional_data, [f.id]: e.target.value } }))} placeholder="Optional" />
-                        )}
-                      </div>
-                    ))}
+                <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12, marginBottom: 12 }}>
+                  <div>
+                    <label className="form-label">Last Name *</label>
+                    <input className="form-input" value={linkForm.last_name} onChange={e => setLinkForm(f => ({ ...f, last_name: e.target.value }))} placeholder="Child's last name" required />
+                  </div>
+                  <div>
+                    <label className="form-label">First Name *</label>
+                    <input className="form-input" value={linkForm.first_name} onChange={e => setLinkForm(f => ({ ...f, first_name: e.target.value }))} placeholder="Child's first name" required />
+                  </div>
+                  <div>
+                    <label className="form-label">Middle Name <span style={{ fontWeight: 400, color: '#94A3B8' }}>(optional)</span></label>
+                    <input className="form-input" value={linkForm.middle_name} onChange={e => setLinkForm(f => ({ ...f, middle_name: e.target.value }))} placeholder="Child's middle name" />
+                  </div>
+                  <div>
+                    <label className="form-label">Date of Birth *</label>
+                    <input className="form-input" type="date" value={linkForm.dob} min={minPatientDob()} max={maxPatientDob()} onChange={e => setLinkForm(f => ({ ...f, dob: e.target.value }))} required />
+                    <div style={{ fontSize: 11.5, color: '#94A3B8', marginTop: 4 }}>Patient must be 3–21 years old</div>
+                  </div>
+                  <div>
+                    <label className="form-label">Gender *</label>
+                    <select className="form-select" value={linkForm.gender} onChange={e => setLinkForm(f => ({ ...f, gender: e.target.value }))} required>
+                      <option value="">Select...</option>
+                      <option value="Male">Male</option>
+                      <option value="Female">Female</option>
+                    </select>
+                  </div>
+                  <div>
+                    <label className="form-label">Allergies <span style={{ fontWeight: 400, color: '#94A3B8' }}>(optional)</span></label>
+                    <input className="form-input" value={linkForm.allergies} onChange={e => setLinkForm(f => ({ ...f, allergies: e.target.value }))} placeholder="Food, medicine, etc." />
+                  </div>
+                  <div>
+                    <label className="form-label">Daily Medication <span style={{ fontWeight: 400, color: '#94A3B8' }}>(optional)</span></label>
+                    <input className="form-input" value={linkForm.daily_medication} onChange={e => setLinkForm(f => ({ ...f, daily_medication: e.target.value }))} placeholder="Only if relevant to therapy sessions" />
                   </div>
                 </div>
-              ));
-            })()}
+              </>
+            )}
 
-            <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 10, marginTop: 20, paddingTop: 16, borderTop: '1px solid #E2E8F0' }}>
-              <button type="button" onClick={() => { setLinkChildModal(false); setLinkErr(''); setLinkConsent(false); setConsentChecked(false); }} style={{ padding: '10px 20px', background: '#F1F5F9', color: '#475569', border: 'none', borderRadius: 8, fontSize: 13, fontWeight: 600, cursor: 'pointer' }}>Cancel</button>
-              <button type="submit" disabled={linkBusy} style={{ padding: '10px 24px', background: '#1F4E9E', color: '#fff', border: 'none', borderRadius: 8, fontSize: 13, fontWeight: 700, cursor: 'pointer', opacity: linkBusy ? .7 : 1 }}>
-                {linkBusy ? 'Submitting...' : 'Register Child'}
-              </button>
+            {linkStep === 2 && (
+              <>
+                <div style={{ fontSize: 14, fontWeight: 700, color: '#0F172A', marginBottom: 12, paddingBottom: 8, borderBottom: '1px solid #E2E8F0' }}>
+                  <i className="fa-solid fa-user-shield" style={{ marginRight: 8, color: '#0D9488' }} />Guardian/Caretaker Information
+                </div>
+
+                <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12, marginBottom: 12 }}>
+                  <div>
+                    <label className="form-label">Relationship to Child *</label>
+                    <select className="form-select" value={linkForm.guardian_relationship} onChange={e => setLinkForm(f => ({ ...f, guardian_relationship: e.target.value }))} required>
+                      <option value="Parent">Parent</option>
+                      <option value="Guardian">Guardian</option>
+                      <option value="Caretaker">Caretaker</option>
+                    </select>
+                  </div>
+                  <div>
+                    <label className="form-label">Date of Birth *</label>
+                    <input className="form-input" type="date" value={linkForm.guardian_dob} min={minGuardianDob()} max={maxGuardianDob()} onChange={e => setLinkForm(f => ({ ...f, guardian_dob: e.target.value }))} required />
+                    <div style={{ fontSize: 11.5, color: '#94A3B8', marginTop: 4 }}>Must be 18 years old or above</div>
+                  </div>
+                  <div>
+                    <label className="form-label">Phone Number</label>
+                    <input className="form-input" type="tel" value={user?.contact || ''} disabled style={{ background: '#F1F5F9' }} />
+                    <div style={{ fontSize: 11.5, color: '#94A3B8', marginTop: 4 }}>From your account, update it in My Profile if it's changed.</div>
+                  </div>
+                  <div>
+                    <label className="form-label">Alternate Phone Number <span style={{ fontWeight: 400, color: '#94A3B8' }}>(optional)</span></label>
+                    <input className="form-input" type="tel" value={linkForm.other_guardian_phone} onChange={handlePhoneInput('other_guardian_phone')} placeholder="+639XXXXXXXXX" maxLength={13} />
+                    {phoneNotes.other_guardian_phone && <div style={{ fontSize: 11.5, color: '#DC2626', fontWeight: 600, marginTop: 4 }}>{phoneNotes.other_guardian_phone}</div>}
+                  </div>
+                </div>
+              </>
+            )}
+
+            {linkStep === 3 && (
+              <>
+                <div style={{ fontSize: 14, fontWeight: 700, color: '#0F172A', marginBottom: 4, paddingBottom: 8, borderBottom: '1px solid #E2E8F0' }}>
+                  <i className="fa-solid fa-child-reaching" style={{ marginRight: 8, color: '#4F46E5' }} />Development &amp; Functional Information
+                </div>
+                <div style={{ fontSize: 11.5, color: '#94A3B8', marginBottom: 12 }}>Helps the clinic prepare for your child's first assessment. Fields marked * are required.</div>
+
+                {(() => {
+                  const bySection = {};
+                  devFields.forEach(f => { (bySection[f.section] ||= []).push(f); });
+                  return Object.entries(bySection).map(([section, fields]) => (
+                    <div key={section}>
+                      <div style={{ fontSize: 12.5, fontWeight: 700, color: '#334155', marginBottom: 8 }}>{section}</div>
+                      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12, marginBottom: 12 }}>
+                        {fields.filter(f => !devFieldHidden(f, devFields, linkForm.dev_functional_data)).map(f => (
+                          <div key={f.id} style={f.field_type === 'text' && f.label.length > 30 ? { gridColumn: '1/-1' } : undefined}>
+                            <label className="form-label">{f.label}{f.required ? ' *' : <span style={{ fontWeight: 400, color: '#94A3B8' }}> (optional)</span>}</label>
+                            <DevFunctionalField
+                              field={f}
+                              data={linkForm.dev_functional_data}
+                              onChange={(id, val) => setLinkForm(form => ({ ...form, dev_functional_data: { ...form.dev_functional_data, [id]: val } }))}
+                            />
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  ));
+                })()}
+              </>
+            )}
+
+            <div style={{ display: 'flex', justifyContent: 'space-between', gap: 10, marginTop: 20, paddingTop: 16, borderTop: '1px solid #E2E8F0' }}>
+              {linkStep === 1 ? (
+                <button type="button" onClick={() => { setLinkChildModal(false); setLinkErr(''); setLinkConsent(false); setConsentChecked(false); setLinkStep(1); }} style={{ padding: '10px 20px', background: '#F1F5F9', color: '#475569', border: 'none', borderRadius: 8, fontSize: 13, fontWeight: 600, cursor: 'pointer' }}>Cancel</button>
+              ) : (
+                <button type="button" onClick={prevLinkStep} style={{ padding: '10px 20px', background: '#F1F5F9', color: '#475569', border: 'none', borderRadius: 8, fontSize: 13, fontWeight: 600, cursor: 'pointer' }}><i className="fa-solid fa-arrow-left" style={{ marginRight: 6 }} />Back</button>
+              )}
+              {linkStep < 3 ? (
+                <button type="button" onClick={nextLinkStep} style={{ padding: '10px 24px', background: '#1F4E9E', color: '#fff', border: 'none', borderRadius: 8, fontSize: 13, fontWeight: 700, cursor: 'pointer' }}>Next<i className="fa-solid fa-arrow-right" style={{ marginLeft: 6 }} /></button>
+              ) : (
+                <button type="button" disabled={linkBusy} onClick={submitLinkChild} style={{ padding: '10px 24px', background: '#1F4E9E', color: '#fff', border: 'none', borderRadius: 8, fontSize: 13, fontWeight: 700, cursor: 'pointer', opacity: linkBusy ? .7 : 1 }}>
+                  {linkBusy ? 'Submitting...' : 'Register Child'}
+                </button>
+              )}
             </div>
-          </form>
+          </div>
           )}
         </Modal>
       )}

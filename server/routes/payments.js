@@ -4,7 +4,7 @@ import { requireAuth, requireRole } from '../middleware/auth.js';
 import { logAudit } from '../lib/audit.js';
 import { notifyEvent, channelEnabled } from '../lib/notify.js';
 import { genInvoiceNo } from '../lib/billing.js';
-import { generateQrph, retrievePaymentIntent } from '../lib/paymongo.js';
+import { generateQrph, retrievePaymentIntent, retryQrphOnIntent } from '../lib/paymongo.js';
 import { markPaidByIntentId } from '../lib/paymongoWebhook.js';
 import { sendMail } from '../mailer.js';
 
@@ -199,20 +199,35 @@ router.post('/:id/qrph', async (req, res) => {
   }
   if (payment.status === 'paid') return res.status(400).json({ error: 'This invoice is already paid' });
 
-  // Reuse an existing unexpired QR instead of generating a new one every click.
+  // Reuse an existing unexpired QR, but only if it's still actually payable,
+  // an unexpired-but-failed source (e.g. a simulated failed test payment)
+  // would otherwise keep getting handed back forever, unpayable.
+  let staleIntentId = null;
   if (payment.pm_payment_intent_id && payment.qr_image_url && payment.qr_expires_at && new Date(payment.qr_expires_at) > new Date()) {
-    return res.json({
-      qr_image_url: payment.qr_image_url, expires_at: payment.qr_expires_at,
-      payment_intent_id: payment.pm_payment_intent_id, test_url: payment.qr_test_url
-    });
+    try {
+      const intent = await retrievePaymentIntent(payment.pm_payment_intent_id);
+      if (intent.attributes?.status !== 'awaiting_payment_method') {
+        return res.json({
+          qr_image_url: payment.qr_image_url, expires_at: payment.qr_expires_at,
+          payment_intent_id: payment.pm_payment_intent_id, test_url: payment.qr_test_url
+        });
+      }
+      // Status flipped back to awaiting_payment_method, the previous source
+      // failed, retry on this same intent instead of starting a whole new one.
+      staleIntentId = payment.pm_payment_intent_id;
+    } catch {
+      // Lookup itself failed, fall through and just generate a brand new one.
+    }
   }
 
   try {
-    const qr = await generateQrph({
-      amount: payment.amount,
-      description: `KID Clinic invoice ${payment.invoice_no || payment.id}`,
-      metadata: { payment_id: payment.id, invoice_no: payment.invoice_no || '' }
-    });
+    const qr = staleIntentId
+      ? await retryQrphOnIntent(staleIntentId, payment.pm_client_key)
+      : await generateQrph({
+        amount: payment.amount,
+        description: `KID Clinic invoice ${payment.invoice_no || payment.id}`,
+        metadata: { payment_id: payment.id, invoice_no: payment.invoice_no || '' }
+      });
     const { error: upErr } = await db.from('payments').update({
       pm_payment_intent_id: qr.intentId,
       pm_client_key: qr.clientKey,

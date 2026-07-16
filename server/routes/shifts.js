@@ -45,6 +45,12 @@ export function worksOn(shift, dateStr) {
   return normalizeWorkDays(shift.work_days)[idx] !== false;
 }
 
+/** True if hour `h` falls within this shift's lunch break, if it has one. */
+export function isLunchHour(shift, h) {
+  return shift.lunch_start_hour != null && shift.lunch_end_hour != null
+    && h >= shift.lunch_start_hour && h < shift.lunch_end_hour;
+}
+
 /**
  * All active therapists with their shift. Therapists without a shift row yet
  * get the clinic default (8 AM – 5 PM) created on the spot, so the schedule
@@ -77,6 +83,8 @@ export async function getTherapistShifts() {
       role: t.role,
       start_hour: s.start_hour,
       end_hour: s.end_hour,
+      lunch_start_hour: s.lunch_start_hour ?? null,
+      lunch_end_hour: s.lunch_end_hour ?? null,
       work_days: normalizeWorkDays(s.work_days)
     });
   }
@@ -124,11 +132,29 @@ router.put('/:therapistId', requireRole('admin', 'staff'), async (req, res) => {
     work_days = wd;
   }
 
+  // Optional lunch break, an hour range within the shift with no bookings.
+  // Sending either field as null/empty clears the break entirely.
+  const body = req.body || {};
+  let lunch_start_hour = 'lunch_start_hour' in body ? body.lunch_start_hour : (current?.lunch_start_hour ?? null);
+  let lunch_end_hour = 'lunch_end_hour' in body ? body.lunch_end_hour : (current?.lunch_end_hour ?? null);
+  if (lunch_start_hour === '' || lunch_start_hour == null) lunch_start_hour = null;
+  if (lunch_end_hour === '' || lunch_end_hour == null) lunch_end_hour = null;
+  if (lunch_start_hour != null || lunch_end_hour != null) {
+    lunch_start_hour = parseInt(lunch_start_hour, 10);
+    lunch_end_hour = parseInt(lunch_end_hour, 10);
+    if (isNaN(lunch_start_hour) || isNaN(lunch_end_hour) || lunch_start_hour >= lunch_end_hour
+      || lunch_start_hour < start || lunch_end_hour > end) {
+      return res.status(400).json({ error: 'Lunch break must fall within the shift hours, with start before end.' });
+    }
+  }
+
   const { error: upErr } = await db.from('shifts').upsert(
     {
       therapist_id: therapist.id,
       start_hour: start,
       end_hour: end,
+      lunch_start_hour,
+      lunch_end_hour,
       work_days,
       updated_at: new Date().toISOString()
     },
@@ -153,7 +179,8 @@ router.put('/:therapistId', requireRole('admin', 'staff'), async (req, res) => {
   const affected = (bookings || []).filter(r => {
     const h = labelToHour(r.time_slot);
     if (h == null || h < start || h >= end) return true;
-    return !worksOn({ work_days }, r.date);
+    if (!worksOn({ work_days }, r.date)) return true;
+    return isLunchHour({ lunch_start_hour, lunch_end_hour }, h);
   });
 
   for (const r of affected) {
@@ -219,6 +246,8 @@ router.put('/:therapistId', requireRole('admin', 'staff'), async (req, res) => {
     therapist: therapist.full_name,
     start_hour: start,
     end_hour: end,
+    lunch_start_hour,
+    lunch_end_hour,
     work_days,
     affected: affected.length
   });

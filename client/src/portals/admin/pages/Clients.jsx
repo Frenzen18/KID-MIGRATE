@@ -1,7 +1,6 @@
 import { useState, useEffect, useCallback } from 'react';
 import { api } from '../../../api.js';
 import { Modal } from '../../../components/ui.jsx';
-import ProgressChart from '../../../components/ProgressChart.jsx';
 import GasProgressChart from '../../../components/GasProgressChart.jsx';
 
 /* == page: clients == */
@@ -45,8 +44,8 @@ function mapClient(c, idx) {
   const ageLabel = calcAge(c.dob);
   const statusKey = (c.status || 'active').toLowerCase();
   const st = STATUS_PILLS[statusKey] || STATUS_PILLS.active;
-  const therapyType = c.therapy_type || 'OT';
-  const thxPill = therapyType === 'Speech' ? 'pill pill-teal' : 'pill pill-blue';
+  const therapyType = c.therapy_type || null;
+  const thxPill = therapyType === 'Speech' ? 'pill pill-teal' : therapyType ? 'pill pill-blue' : '';
 
   return {
     ...c,
@@ -75,53 +74,6 @@ function clientRowText(c) {
   return [c.name, c.client_code, c.ageLabel, c.guardian, c.thxName, c.thxType, c.status]
     .join(' ')
     .toLowerCase();
-}
-
-/* ── Availability matrix (3.2.2), real working days from shifts.work_days ── */
-const DOT_COLORS = { available: '#22C55E', off: '#E2E8F0' };
-// Mon..Sun. Sunday defaults to closed, mirrors server/routes/shifts.js.
-const ALL_WORK_DAYS = [true, true, true, true, true, true, false];
-
-/* ── Shift schedules (3.2.1), real data from /api/shifts ── */
-export function hourLabel(h) {
-  const hr = h % 12 === 0 ? 12 : h % 12;
-  return hr + ':00 ' + (h >= 12 ? 'PM' : 'AM');
-}
-
-/** Current hour in PH time (UTC+8), used to show On Shift / Off Duty. */
-function currentHourPH() {
-  return new Date(Date.now() + 8 * 60 * 60 * 1000).getUTCHours();
-}
-
-/** Today's date string in PH time (UTC+8), used to check today's working day. */
-function todayPH() {
-  return new Date(Date.now() + 8 * 60 * 60 * 1000).toISOString().slice(0, 10);
-}
-/** "YYYY-MM-DD" → work_days index (Mon=0 … Sat=5, Sun=6). Mirrors server/routes/shifts.js. */
-function workDayIndexPH(dateStr) {
-  return (new Date(dateStr + 'T00:00:00Z').getUTCDay() + 6) % 7;
-}
-/** True if this shift covers today (PH time). */
-function worksToday(shift) {
-  const idx = workDayIndexPH(todayPH());
-  const wd = Array.isArray(shift.work_days) && shift.work_days.length === 7 ? shift.work_days : ALL_WORK_DAYS;
-  return wd[idx] !== false;
-}
-
-function mapShift(s, idx) {
-  const initials = (s.name || '').split(' ').map(w => w[0]).join('').toUpperCase().slice(0, 2);
-  const av = AVATAR_COLORS[idx % AVATAR_COLORS.length];
-  const onShift = currentHourPH() >= s.start_hour && currentHourPH() < s.end_hour;
-  return {
-    ...s,
-    initials,
-    bg: av.bg,
-    color: av.color,
-    start: hourLabel(s.start_hour),
-    end: hourLabel(s.end_hour),
-    status: onShift ? 'On Shift' : 'Off Duty',
-    statusPill: onShift ? 'pill pill-green' : 'pill pill-gray',
-  };
 }
 
 /* ── Financial transactions (3.3), real data from /api/payments ── */
@@ -182,11 +134,8 @@ export default function Clients({ go, toast, openModal, role = 'admin', scopeToT
   const [profileVisible, setProfileVisible] = useState(false);
   const [profile, setProfile] = useState(null);
   const [historyName, setHistoryName] = useState('');
-  const [progress, setProgress] = useState(null);
-  const [progressLoading, setProgressLoading] = useState(false);
   const [gasEntries, setGasEntries] = useState([]);
   const [gasLoading, setGasLoading] = useState(false);
-  const [apptCount, setApptCount] = useState(0);
   // Development & Functional Information, the admin-configurable field list
   // used to render/edit this section of the Client Clinical Record.
   const [devFields, setDevFields] = useState([]);
@@ -203,7 +152,6 @@ export default function Clients({ go, toast, openModal, role = 'admin', scopeToT
       if (scopeToTherapist) {
         const res = await api('/reservations?therapist_name=' + encodeURIComponent(therapistName));
         const activeAppts = (res || []).filter(r => !['cancelled', 'declined'].includes(r.status));
-        setApptCount(activeAppts.length);
         const myIds = new Set(activeAppts.map(r => r.client_id));
         for (const c of data) if (c.assigned_therapist_name === therapistName) myIds.add(c.id);
         rows = data.filter(c => myIds.has(c.id));
@@ -218,22 +166,11 @@ export default function Clients({ go, toast, openModal, role = 'admin', scopeToT
 
   useEffect(() => { fetchClients(); }, [fetchClients]);
 
-  /* availability matrix, unsaved day toggles, keyed by therapist_id */
-  const [dayEdits, setDayEdits] = useState({});
-  const [matrixSaving, setMatrixSaving] = useState(false);
-
-  /* employee shifts, fetched from API */
-  const [shifts, setShifts] = useState([]);
-  const fetchShifts = useCallback(async () => {
-    try {
-      const data = await api('/shifts');
-      setShifts(data.map((s, i) => mapShift(s, i)));
-      setDayEdits({});
-    } catch (err) {
-      toast('Failed to load shifts: ' + err.message, 'fa-triangle-exclamation');
-    }
-  }, [toast]);
-  useEffect(() => { if (!scopeToTherapist) fetchShifts(); }, [fetchShifts, scopeToTherapist]);
+  /* Therapist list for the "Edit Client" assign-therapist dropdown only, the
+     full shift-schedule/availability-matrix UI moved to Booking and
+     Appointment's Employee Scheduling tab, this is just name+role. */
+  const [therapistList, setTherapistList] = useState([]);
+  useEffect(() => { if (!scopeToTherapist) api('/shifts').then(setTherapistList).catch(() => {}); }, [scopeToTherapist]);
 
   /* financial rows, fetched from /api/payments */
   const [finQuery, setFinQuery] = useState('');
@@ -262,25 +199,6 @@ export default function Clients({ go, toast, openModal, role = 'admin', scopeToT
     return matchSearch && matchTherapy;
   });
 
-  /* ── Employee Scheduling (3.2) stat cards, derived from real /api/shifts data ── */
-  const activeTherapistsCount = shifts.length;
-  const shiftsTodayCount = shifts.filter(worksToday).length;
-  const offTodayCount = activeTherapistsCount - shiftsTodayCount;
-  // Real conflict: two+ therapists on shift today with fully overlapping hours
-  // and no other differentiator, flagged so admins can review, not fabricated.
-  const scheduleConflicts = (() => {
-    const todays = shifts.filter(worksToday);
-    let conflicts = 0;
-    for (let i = 0; i < todays.length; i++) {
-      for (let j = i + 1; j < todays.length; j++) {
-        const a = todays[i], b = todays[j];
-        const overlap = a.start_hour < b.end_hour && b.start_hour < a.end_hour;
-        if (overlap && a.start_hour === b.start_hour && a.end_hour === b.end_hour) conflicts++;
-      }
-    }
-    return conflicts;
-  })();
-
   function updateClient(id, patch) {
     // Called after modal saves via API, just refresh
     fetchClients();
@@ -295,47 +213,6 @@ export default function Clients({ go, toast, openModal, role = 'admin', scopeToT
       }
       return next;
     });
-  }
-
-  async function saveShift(therapistId, patch) {
-    try {
-      const r = await api('/shifts/' + therapistId, { method: 'PUT', body: patch });
-      if (r.affected > 0) {
-        toast(`Shift updated, ${r.affected} booking${r.affected > 1 ? 's' : ''} flagged for rescheduling, parents notified`, 'fa-calendar-xmark');
-      } else {
-        toast('Shift updated for ' + r.therapist, 'fa-calendar-check');
-      }
-      fetchShifts();
-      return true;
-    } catch (err) {
-      toast(err.message, 'fa-triangle-exclamation');
-      return false;
-    }
-  }
-
-  /** Downloads the currently-loaded shift schedule as a CSV file (client-side, all the data is already in `shifts`). */
-  function exportShiftSchedule() {
-    if (!shifts.length) { toast('No shift data to export', 'fa-triangle-exclamation'); return; }
-    const dayShort = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
-    const header = ['Therapist', 'Shift Start', 'Shift End', 'Status', 'Work Days'];
-    const rows = shifts.map(s => {
-      const wd = Array.isArray(s.work_days) && s.work_days.length === 7 ? s.work_days : ALL_WORK_DAYS;
-      const days = wd.map((on, i) => on !== false ? dayShort[i] : null).filter(Boolean).join(' ');
-      return [s.name, s.start, s.end, s.status, days];
-    });
-    const csv = [header, ...rows]
-      .map(row => row.map(v => `"${String(v ?? '').replace(/"/g, '""')}"`).join(','))
-      .join('\r\n');
-    const blob = new Blob(['﻿' + csv], { type: 'text/csv;charset=utf-8;' });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = `shift-schedule-${todayPH()}.csv`;
-    document.body.appendChild(a);
-    a.click();
-    a.remove();
-    URL.revokeObjectURL(url);
-    toast('Shift schedule exported', 'fa-download');
   }
 
   function selectClient(c) {
@@ -355,14 +232,6 @@ export default function Clients({ go, toast, openModal, role = 'admin', scopeToT
     });
     setHistoryName(c.name);
 
-    // Development Trend
-    setProgress(null);
-    setProgressLoading(true);
-    api('/analytics/progress/' + c.id)
-      .then(setProgress)
-      .catch(() => setProgress(null))
-      .finally(() => setProgressLoading(false));
-
     // GAS Longitudinal Progress
     setGasEntries([]);
     setGasLoading(true);
@@ -374,46 +243,6 @@ export default function Clients({ go, toast, openModal, role = 'admin', scopeToT
 
   function closeClientModal() {
     setProfileVisible(false);
-  }
-
-  /* Effective working days for a therapist = unsaved edit, else saved value. */
-  const daysFor = s => dayEdits[s.therapist_id] || s.work_days || ALL_WORK_DAYS;
-
-  function toggleDay(s, dayIdx) {
-    const next = daysFor(s).slice();
-    next[dayIdx] = !next[dayIdx];
-    setDayEdits(prev => ({ ...prev, [s.therapist_id]: next }));
-  }
-
-  async function saveMatrix() {
-    const changed = shifts.filter(s => {
-      const edit = dayEdits[s.therapist_id];
-      return edit && edit.join() !== (s.work_days || ALL_WORK_DAYS).join();
-    });
-    if (!changed.length) {
-      toast('No availability changes to save', 'fa-circle-info');
-      return;
-    }
-    setMatrixSaving(true);
-    let saved = 0, flagged = 0;
-    try {
-      for (const s of changed) {
-        const r = await api('/shifts/' + s.therapist_id, { method: 'PUT', body: { work_days: dayEdits[s.therapist_id] } });
-        saved++;
-        flagged += r.affected || 0;
-      }
-      toast(
-        `Availability saved, ${saved} therapist${saved > 1 ? 's' : ''} updated` +
-        (flagged > 0 ? ` · ${flagged} booking${flagged > 1 ? 's' : ''} flagged, parents notified` : ''),
-        flagged > 0 ? 'fa-calendar-xmark' : 'fa-floppy-disk'
-      );
-      setDayEdits({});
-      fetchShifts();
-    } catch (err) {
-      toast(err.message, 'fa-triangle-exclamation');
-    } finally {
-      setMatrixSaving(false);
-    }
   }
 
   async function cyclePayment(id) {
@@ -483,21 +312,6 @@ export default function Clients({ go, toast, openModal, role = 'admin', scopeToT
   const outstandingCount = fin.filter(r => r.statusKey === 'pending' || r.statusKey === 'overdue').length;
   const recentlySealed = fin.filter(r => r.sealed).slice(0, 3);
 
-  /* ── Client Progress (7.1.d), bucket the selected client's real attendance rows by month ── */
-  const attendanceByMonth = (() => {
-    const rows = progress?.attendance || [];
-    if (!rows.length) return [];
-    const buckets = {};
-    for (const r of rows) {
-      const d = new Date(r.session_date + 'T00:00:00');
-      const key = d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0');
-      const label = d.toLocaleDateString('en-US', { month: 'short', year: 'numeric' });
-      if (!buckets[key]) buckets[key] = { label, a: 0, m: 0 };
-      if (r.attended) buckets[key].a++; else buckets[key].m++;
-    }
-    return Object.keys(buckets).sort().map(k => buckets[k]);
-  })();
-
   return (
     <div className="spa-page" id="spa-clients">
       <style>{`
@@ -511,46 +325,20 @@ export default function Clients({ go, toast, openModal, role = 'admin', scopeToT
       {/* Page Header */}
       <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', marginBottom: 24, flexWrap: 'wrap', gap: 12 }}>
         <div>
-          <h1 style={{ fontSize: 22, fontWeight: 700, color: '#0F172A', margin: '0 0 4px' }}>Administrative Information Management</h1>
-          <p style={{ fontSize: 13.5, color: '#64748B', margin: 0 }}>Manage client profiles, employee scheduling logs, and financial transaction records.</p>
+          <h1 style={{ fontSize: 22, fontWeight: 700, color: '#0F172A', margin: '0 0 4px' }}>Client Records Management</h1>
         </div>
-        {!scopeToTherapist && (
-          <button className="qa-btn" style={{ width: 'auto', padding: '10px 16px', fontSize: 13 }} onClick={() => openModal('add-client', {
-            onSave: async (formData) => {
-              try {
-                await api('/clients', { method: 'POST', body: formData });
-                toast('New client profile created', 'fa-child-reaching');
-                fetchClients();
-              } catch (err) {
-                toast('Error: ' + err.message, 'fa-triangle-exclamation');
-              }
-            }
-          })}>
-            <i className="fa-solid fa-plus" style={{ color: '#0EA5E9' }} /> Register New Client
-          </button>
-        )}
       </div>
 
       {/* Section Tabs: 3.1 / 3.2 / 3.3 */}
       <div className="tab-nav">
         <button className={'section-tab' + (section === 'clients' ? ' active' : '')} onClick={() => setSection('clients')}><i className="fa-solid fa-child" style={{ marginRight: 6 }} />Client Records &amp; Profiles</button>
-        {!scopeToTherapist && <button className={'section-tab' + (section === 'scheduling' ? ' active' : '')} onClick={() => setSection('scheduling')}><i className="fa-solid fa-calendar-alt" style={{ marginRight: 6 }} />Employee Scheduling Logs</button>}
-        {!scopeToTherapist && <button className={'section-tab' + (section === 'financial' ? ' active' : '')} onClick={() => setSection('financial')}><i className="fa-solid fa-peso-sign" style={{ marginRight: 6 }} />Financial Transactions</button>}
       </div>
 
       {/* ═══════════════ SECTION 3.1, CLIENT RECORDS ═══════════════ */}
       <div id="section-clients" style={{ display: section === 'clients' ? '' : 'none' }}>
-        {/* Stat cards */}
-        {scopeToTherapist && (
-          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit,minmax(180px,1fr))', gap: 16, marginBottom: 24 }}>
-            <div className="card stat-card" style={{ borderTop: '3px solid #818CF8' }}><div style={{ display: 'flex', justifyContent: 'space-between' }}><div><div className="stat-label">Total Clients</div><div className="stat-value">{clients.length}</div><div className="stat-change up">Your caseload</div></div><div className="stat-icon" style={{ background: '#EDE9FE', color: '#818CF8' }}><i className="fa-solid fa-child-reaching" /></div></div></div>
-            <div className="card stat-card" style={{ borderTop: '3px solid #0EA5E9' }}><div style={{ display: 'flex', justifyContent: 'space-between' }}><div><div className="stat-label">Appointments</div><div className="stat-value">{apptCount}</div><div className="stat-change up">Your session history</div></div><div className="stat-icon" style={{ background: '#E0F2FE', color: '#0EA5E9' }}><i className="fa-solid fa-calendar-check" /></div></div></div>
-          </div>
-        )}
-
         <div className="card dir-card">
           <div className="dir-head">
-            <div><div className="section-title">Client Directory</div><div className="section-sub">View centralized client clinical records</div></div>
+            <div><div className="section-title">Client Profile</div></div>
             <div className="dir-tools">
               <div className="dir-search"><i className="fa-solid fa-magnifying-glass" /><input id="client-dir-search" type="text" className="filter-input" placeholder="Search name or ID…" style={{ paddingLeft: 30, height: 34, fontSize: 12.5, width: 170 }} value={clientQuery} onChange={e => setClientQuery(e.target.value)} /></div>
               <select id="therapy-filter" className="form-select" style={{ width: 'auto', height: 34, fontSize: 12.5 }} value={therapyFilter} onChange={e => setTherapyFilter(e.target.value)}>
@@ -584,18 +372,25 @@ export default function Clients({ go, toast, openModal, role = 'admin', scopeToT
                     </div>
                     <div className="cd-cell">{c.ageLabel}</div>
                     <div className="cd-cell"><div className="cd-name" style={{ fontWeight: 500 }}>{c.guardian}</div><div className="cd-sub">{c.contact}</div></div>
-                    <div className="cd-cell"><span className="cd-name" style={{ fontWeight: 500 }}>{c.thxName !== '–' ? c.thxName + ' ' : ''}</span><span className={c.thxPill} style={{ fontSize: 10 }}>{c.thxType}</span></div>
+                    <div className="cd-cell">
+                      {(c.thxName !== '–' || c.thxType) && (
+                        <>
+                          <span className="cd-name" style={{ fontWeight: 500 }}>{c.thxName !== '–' ? c.thxName + ' ' : ''}</span>
+                          {c.thxType && <span className={c.thxPill} style={{ fontSize: 10 }}>{c.thxType}</span>}
+                        </>
+                      )}
+                    </div>
                     <div className="cd-cell"><span className={c.statusPill}>{c.status}</span></div>
                     <div className="cd-actions" onClick={e => e.stopPropagation()}>
                       {!scopeToTherapist && (
-                        <button className="btn-edit" onClick={() => { openModal('edit-client', { name: c.name, guardian: c.guardian, status: c.status, thxName: c.thxName, therapy_type: c.therapy, therapists: shifts, onSave: async (patch) => {
+                        <button className="btn-edit" onClick={() => { openModal('edit-client', { name: c.name, guardian: c.guardian, status: c.status, thxName: c.assigned_therapist_name, therapy_type: c.therapy_type, therapists: therapistList, onSave: async (patch) => {
                           try {
                             const body = {};
                             if (patch.name) body.full_name = patch.name;
                             if (patch.guardian) body.guardian_name = patch.guardian;
                             if (patch.status) body.status = patch.status.toLowerCase();
-                            if (patch.therapy_type) body.therapy_type = patch.therapy_type;
-                            if (patch.thxName) body.assigned_therapist_name = patch.thxName;
+                            if ('therapy_type' in patch) body.therapy_type = patch.therapy_type || null;
+                            if ('thxName' in patch) body.assigned_therapist_name = patch.thxName || null;
                             await api('/clients/' + c.id, { method: 'PUT', body });
                             toast('Client profile updated: ' + (patch.name || c.name), 'fa-check');
                             fetchClients();
@@ -603,13 +398,13 @@ export default function Clients({ go, toast, openModal, role = 'admin', scopeToT
                         } }); }} title="Edit"><i className="fa-solid fa-pen" /></button>
                       )}
                       {role === 'admin' && (
-                        <button className="btn-danger" onClick={() => { openModal('delete-client', { name: c.name, onConfirm: async () => {
+                        <button className="btn-archive" onClick={() => { openModal('delete-client', { name: c.name, onConfirm: async () => {
                           try {
                             await api('/clients/' + c.id, { method: 'DELETE' });
-                            toast('Client profile deleted', 'fa-trash');
+                            toast('Client profile archived', 'fa-box-archive');
                             fetchClients();
                           } catch (err) { toast('Error: ' + err.message, 'fa-triangle-exclamation'); }
-                        } }); }} title="Delete"><i className="fa-solid fa-trash" /></button>
+                        } }); }} title="Archive"><i className="fa-solid fa-box-archive" /></button>
                       )}
                     </div>
                   </div>
@@ -642,30 +437,8 @@ export default function Clients({ go, toast, openModal, role = 'admin', scopeToT
                 <div style={{ display: 'flex', gap: 8, marginTop: 6 }}><span className={profile.statusPill}>{profile.status}</span><span className={profile.therapy === 'Speech' ? 'pill pill-teal' : 'pill pill-blue'}>{{ OT: 'Occupational Therapy', Speech: 'Speech Therapy', Both: 'Combined' }[profile.therapy] || 'Occupational Therapy'}</span></div>
               </div>
               <div className="no-print" style={{ display: 'flex', gap: 8, flexShrink: 0 }}>
-                {scopeToTherapist && <button className="btn-primary" onClick={() => openModal('log-progress-note', {
-                  childName: profile.name,
-                  onSave: async (data) => {
-                    if (!selectedId) return;
-                    try {
-                      await Promise.all([
-                        api('/clients/' + selectedId + '/notes', { method: 'POST', body: {
-                          domain: data.domain, score: data.score, session_date: data.session_date,
-                          remark: data.remark || undefined, next_plan: data.next_plan || undefined,
-                          tags: data.tags
-                        } }),
-                        api('/clients/' + selectedId + '/attendance', { method: 'POST', body: {
-                          session_date: data.session_date, attended: data.attended
-                        } })
-                      ]);
-                      toast('Progress note logged', 'fa-check');
-                      setProgressLoading(true);
-                      api('/analytics/progress/' + selectedId).then(setProgress).catch(() => {}).finally(() => setProgressLoading(false));
-                    } catch (err) { toast('Error: ' + err.message, 'fa-triangle-exclamation'); }
-                  }
-                })}><i className="fa-solid fa-notes-medical" style={{ marginRight: 4 }} />Log Progress Note</button>}
-                <button className="btn-secondary" onClick={() => window.print()}><i className="fa-solid fa-print" style={{ marginRight: 4 }} />Print Record</button>
-                {!scopeToTherapist && <button className="btn-edit" onClick={() => { const c = clients.find(cl => cl.id === selectedId); openModal('edit-client', c ? { name: c.name, guardian: c.guardian, status: c.status, thxName: c.thxName, therapy_type: c.therapy, therapists: shifts, onSave: async (patch) => { try { const body = {}; if (patch.name) body.full_name = patch.name; if (patch.guardian) body.guardian_name = patch.guardian; if (patch.status) body.status = patch.status.toLowerCase(); if (patch.therapy_type) body.therapy_type = patch.therapy_type; if (patch.thxName) body.assigned_therapist_name = patch.thxName; await api('/clients/' + c.id, { method: 'PUT', body }); toast('Client profile updated', 'fa-check'); fetchClients(); closeClientModal(); } catch (err) { toast('Error: ' + err.message, 'fa-triangle-exclamation'); } } } : { name: profile.name }); }}><i className="fa-solid fa-pen" style={{ marginRight: 4 }} />Edit</button>}
-                {role === 'admin' && <button className="btn-danger" onClick={() => openModal('delete-client', { name: profile.name, onConfirm: async () => { if (!selectedId) return; try { await api('/clients/' + selectedId, { method: 'DELETE' }); toast('Client profile deleted', 'fa-trash'); closeClientModal(); fetchClients(); } catch (err) { toast('Error: ' + err.message, 'fa-triangle-exclamation'); } } })}><i className="fa-solid fa-trash" style={{ marginRight: 4 }} />Delete</button>}
+                {!scopeToTherapist && <button className="btn-edit" onClick={() => { const c = clients.find(cl => cl.id === selectedId); openModal('edit-client', c ? { name: c.name, guardian: c.guardian, status: c.status, thxName: c.assigned_therapist_name, therapy_type: c.therapy_type, therapists: therapistList, onSave: async (patch) => { try { const body = {}; if (patch.name) body.full_name = patch.name; if (patch.guardian) body.guardian_name = patch.guardian; if (patch.status) body.status = patch.status.toLowerCase(); if ('therapy_type' in patch) body.therapy_type = patch.therapy_type || null; if ('thxName' in patch) body.assigned_therapist_name = patch.thxName || null; await api('/clients/' + c.id, { method: 'PUT', body }); toast('Client profile updated', 'fa-check'); fetchClients(); closeClientModal(); } catch (err) { toast('Error: ' + err.message, 'fa-triangle-exclamation'); } } } : { name: profile.name }); }}><i className="fa-solid fa-pen" style={{ marginRight: 4 }} />Edit</button>}
+                {role === 'admin' && <button className="btn-archive" onClick={() => openModal('delete-client', { name: profile.name, onConfirm: async () => { if (!selectedId) return; try { await api('/clients/' + selectedId, { method: 'DELETE' }); toast('Client profile archived', 'fa-box-archive'); closeClientModal(); fetchClients(); } catch (err) { toast('Error: ' + err.message, 'fa-triangle-exclamation'); } } })}><i className="fa-solid fa-box-archive" style={{ marginRight: 4 }} />Archive</button>}
               </div>
             </div>
             {/* Two-column info */}
@@ -682,41 +455,39 @@ export default function Clients({ go, toast, openModal, role = 'admin', scopeToT
               <div style={{ padding: '16px 18px', borderRadius: 12, border: '1px solid #E2E8F0', background: '#FAFBFC' }}>
                 <div style={{ fontSize: 12.5, fontWeight: 700, color: '#0F172A', marginBottom: 12, display: 'flex', alignItems: 'center', gap: 6 }}><i className="fa-solid fa-notes-medical" style={{ color: '#0EA5E9' }} />Medical Information</div>
                 <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
-                  <div><div style={{ fontSize: 10.5, color: '#94A3B8', fontWeight: 600, textTransform: 'uppercase', letterSpacing: '.3px', marginBottom: 2 }}>Primary Diagnosis</div><div style={{ fontSize: 13, color: '#0F172A', fontWeight: 500 }}>{profile.dx}</div></div>
                   <div><div style={{ fontSize: 10.5, color: '#94A3B8', fontWeight: 600, textTransform: 'uppercase', letterSpacing: '.3px', marginBottom: 2 }}>Allergies</div><div style={{ fontSize: 13, color: '#0F172A', fontWeight: 500 }}>{profile.allergies}</div></div>
                   <div><div style={{ fontSize: 10.5, color: '#94A3B8', fontWeight: 600, textTransform: 'uppercase', letterSpacing: '.3px', marginBottom: 2 }}>Medications</div><div style={{ fontSize: 13, color: '#0F172A', fontWeight: 500 }}>{profile.medications}</div></div>
                   <div><div style={{ fontSize: 10.5, color: '#94A3B8', fontWeight: 600, textTransform: 'uppercase', letterSpacing: '.3px', marginBottom: 2 }}>Emergency Contact</div><div style={{ fontSize: 13, color: '#0F172A', fontWeight: 500 }}>{profile.guardian}</div></div>
                 </div>
               </div>
             </div>
-            {/* Assigned Therapist */}
+            {/* Assigned Therapist, unassigned shows a muted "not yet assigned" state instead of a
+                bare "–" standing in for both the avatar initials and the name, which read like
+                missing data rather than an intentional empty state. */}
             <div style={{ padding: '14px 18px', borderRadius: 12, border: '1px solid #E2E8F0', background: '#FAFBFC', marginBottom: 20, display: 'flex', alignItems: 'center', gap: 12 }}>
-              <div style={{ width: 40, height: 40, borderRadius: 10, background: '#DBEAFE', color: '#2563EB', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 13, fontWeight: 700, flexShrink: 0 }}>{profile.thxInitials}</div>
-              <div style={{ flex: 1 }}><div style={{ fontSize: 10.5, color: '#94A3B8', fontWeight: 600, textTransform: 'uppercase', letterSpacing: '.3px' }}>Assigned Therapist</div><div style={{ fontSize: 13.5, fontWeight: 600, color: '#0F172A' }}>{profile.thxName}</div><div style={{ fontSize: 12, color: '#64748B' }}>{profile.thxType === 'Speech' ? 'Speech-Language Pathologist' : 'Occupational Therapist'}</div></div>
-              <div style={{ display: 'flex', gap: 6 }}><span className="pill pill-blue" style={{ fontSize: 10 }}>{profile.thxType} Sessions</span><span className="pill pill-teal" style={{ fontSize: 10 }}>2x / week</span></div>
+              {profile.thxName !== '–' ? (
+                <>
+                  <div style={{ width: 40, height: 40, borderRadius: 10, background: '#DBEAFE', color: '#2563EB', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 13, fontWeight: 700, flexShrink: 0 }}>{profile.thxInitials}</div>
+                  <div style={{ flex: 1 }}>
+                    <div style={{ fontSize: 10.5, color: '#94A3B8', fontWeight: 600, textTransform: 'uppercase', letterSpacing: '.3px' }}>Assigned Therapist</div>
+                    <div style={{ fontSize: 13.5, fontWeight: 600, color: '#0F172A' }}>{profile.thxName}</div>
+                    <div style={{ fontSize: 12, color: '#64748B' }}>{profile.thxType === 'Speech' ? 'Speech-Language Pathologist' : 'Occupational Therapist'}</div>
+                  </div>
+                </>
+              ) : (
+                <>
+                  <div style={{ width: 40, height: 40, borderRadius: 10, background: '#F1F5F9', color: '#94A3B8', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 15, flexShrink: 0 }}><i className="fa-solid fa-user-slash" /></div>
+                  <div style={{ flex: 1 }}>
+                    <div style={{ fontSize: 10.5, color: '#94A3B8', fontWeight: 600, textTransform: 'uppercase', letterSpacing: '.3px' }}>Assigned Therapist</div>
+                    <div style={{ fontSize: 13.5, fontWeight: 600, color: '#94A3B8' }}>Not yet assigned</div>
+                  </div>
+                </>
+              )}
             </div>
             {/* Development & Functional Information */}
             <div style={{ padding: '16px 18px', borderRadius: 12, border: '1px solid #E2E8F0', background: '#FAFBFC', marginBottom: 20 }}>
               <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12 }}>
                 <div style={{ fontSize: 12.5, fontWeight: 700, color: '#0F172A', display: 'flex', alignItems: 'center', gap: 6 }}><i className="fa-solid fa-child-reaching" style={{ color: '#4F46E5' }} />Development &amp; Functional Information</div>
-                <div className="no-print" style={{ display: 'flex', gap: 6 }}>
-                  {role === 'admin' && !scopeToTherapist && (
-                    <button className="btn-edit" style={{ fontSize: 11 }} onClick={() => openModal('manage-dev-functional-fields', {
-                      onChanged: () => api('/dev-functional-fields').then(setDevFields).catch(() => {})
-                    })}><i className="fa-solid fa-sliders" style={{ marginRight: 4 }} />Manage Fields</button>
-                  )}
-                  <button className="btn-edit" style={{ fontSize: 11 }} onClick={() => openModal('edit-developmental-info', {
-                    clientId: selectedId, values: profile, fields: devFields,
-                    onSave: async (patch) => {
-                      try {
-                        await api('/clients/' + selectedId, { method: 'PUT', body: patch });
-                        toast('Development & Functional Information updated', 'fa-check');
-                        setProfile(p => ({ ...p, ...patch }));
-                        fetchClients();
-                      } catch (err) { toast('Error: ' + err.message, 'fa-triangle-exclamation'); }
-                    }
-                  })}><i className="fa-solid fa-pen" style={{ marginRight: 4 }} />Edit</button>
-                </div>
               </div>
               {devFields.length === 0 ? (
                 <div style={{ fontSize: 12.5, color: '#94A3B8' }}>No fields configured yet.</div>
@@ -729,30 +500,6 @@ export default function Clients({ go, toast, openModal, role = 'admin', scopeToT
                     </div>
                   ))}
                 </div>
-              )}
-            </div>
-            {/* Client Progress */}
-            <div style={{ padding: '16px 18px', borderRadius: 12, border: '1px solid #E2E8F0', background: '#FAFBFC', marginBottom: 20 }}>
-              <div style={{ fontSize: 12.5, fontWeight: 700, color: '#0F172A', marginBottom: 12, display: 'flex', alignItems: 'center', gap: 6 }}><i className="fa-solid fa-chart-area" style={{ color: '#10B981' }} />Client Progress</div>
-              {progressLoading ? (
-                <div style={{ padding: 24, textAlign: 'center', color: '#94A3B8', fontSize: 13 }}><i className="fa-solid fa-spinner fa-spin" style={{ marginRight: 8 }} />Loading…</div>
-              ) : progress && Object.keys(progress.domains || {}).length > 0 ? (
-                <>
-                  <ProgressChart domains={progress.domains} />
-                  <div style={{ marginTop: 14, paddingTop: 12, borderTop: '1px solid #F1F5F9' }}>
-                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: 8, marginBottom: 8 }}>
-                      <div style={{ fontSize: 12.5, fontWeight: 600, color: '#334155' }}>Attendance</div>
-                      <div style={{ display: 'flex', gap: 12 }}>
-                        <span style={{ fontSize: 11, color: '#475569', fontWeight: 600 }}><i className="fa-solid fa-circle-check" style={{ color: '#10B981', marginRight: 3 }} />Attended <b>{progress.attended}</b></span>
-                        <span style={{ fontSize: 11, color: '#475569', fontWeight: 600 }}><i className="fa-solid fa-circle-xmark" style={{ color: '#EF4444', marginRight: 3 }} />Missed <b>{progress.missed}</b></span>
-                        <span style={{ fontSize: 11, color: '#475569', fontWeight: 600 }}><i className="fa-solid fa-percent" style={{ color: '#0EA5E9', marginRight: 3 }} />Rate <b>{progress.attended + progress.missed > 0 ? Math.round(progress.attended / (progress.attended + progress.missed) * 100) : 0}%</b></span>
-                      </div>
-                    </div>
-                    {attendanceByMonth.map(({ label, a, m }) => { const total = a + m; return (<div key={label} style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 5 }}><span style={{ width: 52, fontSize: 10.5, color: '#64748B', fontWeight: 600 }}>{label}</span><div style={{ flex: 1, height: 7, background: (m ? '#FEE2E2' : '#F1F5F9'), borderRadius: 4, overflow: 'hidden' }}><div style={{ width: Math.round(a / total * 100) + '%', height: '100%', background: '#10B981', borderRadius: '4px 0 0 4px' }} /></div><span style={{ fontSize: 10.5, color: '#475569', fontWeight: 600, width: 48, textAlign: 'right' }}>{a}/{total}</span></div>); })}
-                  </div>
-                </>
-              ) : (
-                <div style={{ padding: 20, textAlign: 'center', color: '#94A3B8', fontSize: 12.5 }}>No session notes recorded yet.</div>
               )}
             </div>
             {/* GAS Progress */}
@@ -768,85 +515,6 @@ export default function Clients({ go, toast, openModal, role = 'admin', scopeToT
         </Modal>
       )}
 
-      {/* ═══════════════ SECTION 3.2, EMPLOYEE SCHEDULING LOGS ═══════════════ */}
-      <div id="section-scheduling" style={{ display: section === 'scheduling' ? '' : 'none' }}>
-        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit,minmax(180px,1fr))', gap: 16, marginBottom: 24 }}>
-          <div className="card stat-card" style={{ borderTop: '3px solid #0EA5E9' }}><div style={{ display: 'flex', justifyContent: 'space-between' }}><div><div className="stat-label">Active Therapists</div><div className="stat-value">{activeTherapistsCount}</div><div className="stat-change up">On shift today</div></div><div className="stat-icon" style={{ background: '#E0F2FE', color: '#0EA5E9' }}><i className="fa-solid fa-stethoscope" /></div></div></div>
-          <div className="card stat-card" style={{ borderTop: '3px solid #10B981' }}><div style={{ display: 'flex', justifyContent: 'space-between' }}><div><div className="stat-label">Shifts Today</div><div className="stat-value">{shiftsTodayCount}</div><div className="stat-change up">{shiftsTodayCount === activeTherapistsCount && activeTherapistsCount > 0 ? 'Full coverage' : (shiftsTodayCount + ' of ' + activeTherapistsCount + ' scheduled')}</div></div><div className="stat-icon" style={{ background: '#DCFCE7', color: '#10B981' }}><i className="fa-solid fa-clock" /></div></div></div>
-          <div className="card stat-card" style={{ borderTop: '3px solid #EF4444' }}><div style={{ display: 'flex', justifyContent: 'space-between' }}><div><div className="stat-label">Conflict Flags</div><div className="stat-value">{scheduleConflicts}</div><div className={scheduleConflicts > 0 ? 'stat-change down' : 'stat-change up'}>{scheduleConflicts > 0 ? 'Needs resolution' : 'No conflicts'}</div></div><div className="stat-icon" style={{ background: '#FEE2E2', color: '#EF4444' }}><i className="fa-solid fa-triangle-exclamation" /></div></div></div>
-          <div className="card stat-card" style={{ borderTop: '3px solid #818CF8' }}><div style={{ display: 'flex', justifyContent: 'space-between' }}><div><div className="stat-label">Off Today</div><div className="stat-value">{offTodayCount}</div><div className="stat-change up">{offTodayCount > 0 ? 'Therapists on day off' : 'Everyone on shift'}</div></div><div className="stat-icon" style={{ background: '#EDE9FE', color: '#818CF8' }}><i className="fa-solid fa-user-clock" /></div></div></div>
-        </div>
-
-        <div className="sched-grid">
-          {/* 3.2.1 View intricate therapist shift schedules */}
-          <div className="card" style={{ padding: '22px 0 0' }}>
-            <div style={{ padding: '0 24px 16px', borderBottom: '1px solid #F1F5F9', display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: 10 }}>
-              <div><div className="section-title">Therapist Shift Schedules</div><div className="section-sub">View intricate therapist shift schedules</div></div>
-              <div style={{ display: 'flex', gap: 6 }}>
-                <select className="form-select" style={{ width: 'auto', height: 34, fontSize: 12.5 }} defaultValue="All Departments"><option>All Departments</option><option>Occupational Therapy</option><option>Speech Therapy</option></select>
-                <button className="btn-primary" onClick={exportShiftSchedule}><i className="fa-solid fa-download" style={{ marginRight: 4 }} />Export</button>
-              </div>
-            </div>
-            <div style={{ overflowX: 'auto' }}>
-              <table className="data-table">
-                <thead><tr><th style={{ paddingLeft: 24 }}>Therapist</th><th>Shift Start</th><th>Shift End</th><th>Status</th><th style={{ paddingRight: 24, textAlign: 'right' }}>Actions</th></tr></thead>
-                <tbody>
-                  {shifts.length === 0 ? (
-                    <tr><td colSpan={5} style={{ textAlign: 'center', padding: '28px 24px', color: '#94A3B8', fontSize: 12.5 }}>No therapist accounts yet, add therapists in User Management to schedule shifts.</td></tr>
-                  ) : shifts.map(s => (
-                    <tr key={s.therapist_id}><td style={{ paddingLeft: 24 }}><div style={{ display: 'flex', alignItems: 'center', gap: 10 }}><div className="act-avatar" style={{ width: 30, height: 30, background: s.bg, color: s.color, fontSize: 11 }}>{s.initials}</div><div style={{ fontSize: 13, fontWeight: 600, color: '#0F172A' }}>{s.name}</div></div></td><td>{s.start}</td><td>{s.end}</td><td><span className={s.statusPill}>{s.status}</span></td><td style={{ paddingRight: 24, textAlign: 'right' }}><button className="btn-edit" onClick={() => openModal('edit-shift', { name: s.name, start_hour: s.start_hour, end_hour: s.end_hour, onSave: patch => saveShift(s.therapist_id, patch) })}>Edit Shift</button></td></tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-            <div style={{ padding: '10px 24px 16px', fontSize: 11.5, color: '#94A3B8' }}>
-              <i className="fa-solid fa-circle-info" style={{ marginRight: 5 }} />Shifts control booking availability: each hour offers as many reservation slots as there are therapists on shift, and sessions are auto-assigned to whoever is free.
-            </div>
-          </div>
-
-          {/* 3.2.2 Manage therapist availability matrices */}
-          <div className="card" style={{ padding: '22px 20px' }}>
-            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16 }}>
-              <div><div className="section-title">Availability Matrix</div><div className="section-sub">Manage therapist availability</div></div>
-              <button className="btn-primary" onClick={saveMatrix} disabled={matrixSaving}><i className={'fa-solid ' + (matrixSaving ? 'fa-spinner fa-spin' : 'fa-floppy-disk')} style={{ marginRight: 4 }} />{matrixSaving ? 'Saving…' : 'Save'}</button>
-            </div>
-            {/* Weekly grid */}
-            <div style={{ overflowX: 'auto', marginBottom: 16 }}>
-              <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 11.5 }}>
-                <thead>
-                  <tr style={{ background: '#F8FAFC' }}>
-                    <th style={{ padding: '8px 10px', textAlign: 'left', color: '#64748B', fontWeight: 600, borderBottom: '1px solid #E2E8F0' }}>Therapist</th>
-                    <th style={{ padding: '8px 6px', textAlign: 'center', color: '#64748B', fontWeight: 600, borderBottom: '1px solid #E2E8F0' }}>Mon</th>
-                    <th style={{ padding: '8px 6px', textAlign: 'center', color: '#64748B', fontWeight: 600, borderBottom: '1px solid #E2E8F0' }}>Tue</th>
-                    <th style={{ padding: '8px 6px', textAlign: 'center', color: '#64748B', fontWeight: 600, borderBottom: '1px solid #E2E8F0' }}>Wed</th>
-                    <th style={{ padding: '8px 6px', textAlign: 'center', color: '#64748B', fontWeight: 600, borderBottom: '1px solid #E2E8F0' }}>Thu</th>
-                    <th style={{ padding: '8px 6px', textAlign: 'center', color: '#64748B', fontWeight: 600, borderBottom: '1px solid #E2E8F0' }}>Fri</th>
-                    <th style={{ padding: '8px 6px', textAlign: 'center', color: '#64748B', fontWeight: 600, borderBottom: '1px solid #E2E8F0' }}>Sat</th>
-                    <th style={{ padding: '8px 6px', textAlign: 'center', color: '#64748B', fontWeight: 600, borderBottom: '1px solid #E2E8F0' }}>Sun</th>
-                  </tr>
-                </thead>
-                <tbody id="avail-matrix">
-                  {shifts.length === 0 ? (
-                    <tr><td colSpan={8} style={{ textAlign: 'center', padding: '24px 10px', color: '#94A3B8', fontSize: 12 }}>No therapist accounts yet.</td></tr>
-                  ) : shifts.map((s, rowIdx) => (
-                    <tr key={s.therapist_id} style={rowIdx % 2 === 1 ? { background: '#F8FAFC' } : undefined}>
-                      <td style={{ padding: '8px 10px', fontWeight: 600, color: '#0F172A', fontSize: 12 }}>{s.name}</td>
-                      {daysFor(s).map((working, dayIdx) => (
-                        <td key={dayIdx} style={{ textAlign: 'center', padding: 6 }}><span className="avail-dot" style={{ background: working ? DOT_COLORS.available : DOT_COLORS.off }} onClick={() => toggleDay(s, dayIdx)} title={working ? 'Available, click to set day off' : 'Day off, click to set available'} /></td>
-                      ))}
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-            <div style={{ display: 'flex', gap: 14, alignItems: 'center', flexWrap: 'wrap' }}>
-              <div style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 11.5, color: '#64748B' }}><span className="avail-dot" style={{ background: '#22C55E', pointerEvents: 'none', width: 12, height: 12 }} /> Available</div>
-              <div style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 11.5, color: '#64748B' }}><span className="avail-dot" style={{ background: '#E2E8F0', pointerEvents: 'none', width: 12, height: 12 }} /> Day off</div>
-              <span style={{ fontSize: 11, color: '#94A3B8', marginLeft: 4 }}>· Click a dot to toggle, then Save. Day-off therapists add no booking slots that day; affected bookings are flagged and parents notified.</span>
-            </div>
-          </div>
-        </div>
-      </div>
 
       {/* ═══════════════ SECTION 3.3, FINANCIAL TRANSACTIONS ═══════════════ */}
       <div id="section-financial" style={{ display: section === 'financial' ? '' : 'none' }}>
@@ -955,7 +623,7 @@ export default function Clients({ go, toast, openModal, role = 'admin', scopeToT
         </div>
       </div>{/* end section-financial */}
 
-      <div className="page-footer"><span style={{ fontSize: 12, color: '#94A3B8' }}>© 2026 KID Clinic Information Management System · Administrative Information Management</span></div>
+      <div className="page-footer"><span style={{ fontSize: 12, color: '#94A3B8' }}>© 2026 KID Clinic Information Management System · Client Records Management</span></div>
     </div>
   );
 }

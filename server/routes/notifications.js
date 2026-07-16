@@ -129,48 +129,21 @@ router.put('/settings', requireRole('admin', 'staff'), async (req, res) => {
 
 /**
  * GET /api/notifications/reminders, real, derived operational reminders.
- * Admin/staff see clinic-wide overdue/pending balances, pending booking
- * requests, and sessions happening in the next 24 hours. An 'ot'/'speech'
- * therapist only sees their own upcoming sessions, billing and front-desk
- * booking reminders aren't their job. No separate table, these are
- * computed live from payments and reservations so they can never drift
- * from what's actually true.
+ * Booking only: pending self-service/staff-entered reservation requests
+ * awaiting approval. Payment and upcoming-session reminders are handled by
+ * the automated sweep (see lib/reminders.js) rather than this table. An
+ * 'ot'/'speech' therapist doesn't see these at all, front-desk booking
+ * reminders aren't their job. No separate table, computed live from
+ * reservations so it can never drift from what's actually true.
  */
 router.get('/reminders', requireRole('admin', 'staff', 'ot', 'speech'), async (req, res) => {
   const isTherapist = req.user.role === 'ot' || req.user.role === 'speech';
-  const now = new Date(Date.now() + 8 * 60 * 60 * 1000); // PH time
-  const todayStr = now.toISOString().slice(0, 10);
-  const tomorrow = new Date(now.getTime() + 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
 
-  const [{ data: overdue }, { data: pendingBookings }, { data: upcoming }] = await Promise.all([
-    isTherapist ? { data: [] } : db.from('payments').select('*, clients(full_name, client_code)').in('status', ['pending', 'overdue']).order('created_at'),
-    isTherapist ? { data: [] } : db.from('reservations').select('*, clients(full_name, client_code)').eq('status', 'pending').order('date'),
-    (() => {
-      let q = db.from('reservations').select('*, clients(full_name, client_code)').in('status', ['confirmed', 'rescheduled']).gte('date', todayStr).lte('date', tomorrow).order('date').order('time_slot');
-      if (isTherapist) q = q.eq('therapist_name', req.user.name);
-      return q;
-    })()
-  ]);
+  const { data: pendingBookings } = isTherapist
+    ? { data: [] }
+    : await db.from('reservations').select('*, clients(full_name, client_code)').eq('status', 'pending').order('date');
 
   const reminders = [];
-
-  for (const p of overdue || []) {
-    const days = Math.floor((now.getTime() - new Date(p.created_at).getTime()) / (24 * 60 * 60 * 1000));
-    reminders.push({
-      id: 'payment-' + p.id,
-      record_id: p.id,
-      type: 'Payment',
-      typePill: 'pill-red',
-      title: 'Outstanding balance, ' + (p.clients?.full_name || 'Unknown client'),
-      sub: '₱' + Number(p.amount).toLocaleString() + ' unpaid' + (days > 0 ? ' since ' + days + ' day' + (days === 1 ? '' : 's') + ' ago' : ''),
-      due: p.status === 'overdue' ? 'Overdue' : 'Pending',
-      dueUrgent: p.status === 'overdue',
-      priority: p.status === 'overdue' ? 'Urgent' : 'High',
-      priorityPill: p.status === 'overdue' ? 'pill-red' : 'pill-amber',
-      assignedTo: 'Billing',
-      link: 'payments'
-    });
-  }
 
   for (const r of pendingBookings || []) {
     reminders.push({
@@ -185,23 +158,6 @@ router.get('/reminders', requireRole('admin', 'staff', 'ot', 'speech'), async (r
       priority: 'High',
       priorityPill: 'pill-amber',
       assignedTo: 'Front Desk',
-      link: 'reservations'
-    });
-  }
-
-  for (const r of upcoming || []) {
-    reminders.push({
-      id: 'session-' + r.id,
-      record_id: r.id,
-      type: 'Session',
-      typePill: 'pill-teal',
-      title: 'Upcoming session, ' + (r.clients?.full_name || 'Unknown client'),
-      sub: r.date + ' · ' + r.time_slot + (r.therapist_name ? ' with ' + r.therapist_name : '') + ' · ' + r.session_type,
-      due: r.date === todayStr ? 'Today ' + r.time_slot : 'Tomorrow ' + r.time_slot,
-      dueUrgent: false,
-      priority: 'Normal',
-      priorityPill: 'pill-blue',
-      assignedTo: r.therapist_name || 'Unassigned',
       link: 'reservations'
     });
   }

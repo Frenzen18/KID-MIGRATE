@@ -3,6 +3,7 @@ import { db } from '../supabase.js';
 import { requireAuth, requireRole } from '../middleware/auth.js';
 import { nextClientCode } from '../usercode.js';
 import { logAudit } from '../lib/audit.js';
+import { calendarAge } from '../age.js';
 
 /** Client IDs carry the enrollment year: CLI-YYYY-NNNN. */
 const NEW_CODE_FORMAT = /^CLI-\d{4}-\d{4}$/;
@@ -18,14 +19,15 @@ function sanitizeSearchTerm(s) {
  * via server/routes/devFunctionalFields.js), unknown field ids are dropped,
  * select values must match that field's own option set, text values are
  * trimmed. This is what lets the form be admin-editable without ever trusting
- * a client-submitted value verbatim.
+ * a client-submitted value verbatim. Returns { data } or, if a field an admin
+ * marked required is missing, { error: <message> } for the caller to 400 on.
  */
 async function validateDevFunctionalData(raw) {
-  const out = {};
-  if (!raw || typeof raw !== 'object') return out;
+  const input = (raw && typeof raw === 'object') ? raw : {};
   const { data: fields } = await db.from('dev_functional_fields').select('*').eq('active', true);
+  const out = {};
   for (const f of fields || []) {
-    const val = raw[f.id];
+    const val = input[f.id];
     if (val == null || val === '') continue;
     if (f.field_type === 'select') {
       if (Array.isArray(f.options) && f.options.includes(val)) out[f.id] = val;
@@ -34,16 +36,29 @@ async function validateDevFunctionalData(raw) {
       if (trimmed) out[f.id] = trimmed;
     }
   }
-  return out;
+
+  // Required fields (admin-configurable via Manage Fields), skipped if hidden
+  // by the one conditional dependency the intake form has today: "Primary
+  // mode of communication" only shows once "Verbal" is answered "No" (mirrors
+  // client/src/components/DevFunctionalField.jsx's devFieldHidden).
+  const verbalField = (fields || []).find(f => f.label === 'Verbal');
+  for (const f of fields || []) {
+    if (!f.required) continue;
+    if (f.label === 'Primary mode of communication' && verbalField && out[verbalField.id] !== 'No') continue;
+    if (!out[f.id]) return { error: `"${f.label}" is required.` };
+  }
+
+  return { data: out };
 }
 
 const router = Router();
 router.use(requireAuth);
 
-/** GET /api/clients?search=&status=&therapy=, staff/admin/therapist see all; parents see own children */
+/** GET /api/clients?search=&status=&therapy=&archived=, staff/admin/therapist see all; parents see own children */
 router.get('/', async (req, res) => {
   let q = db.from('clients').select('*').order('created_at', { ascending: false });
   if (req.user.role === 'parent') q = q.eq('parent_id', req.user.id);
+  q = q.eq('archived', req.query.archived === 'true');
   if (req.query.status) q = q.eq('status', req.query.status);
   if (req.query.therapy) q = q.eq('therapy_type', req.query.therapy);
   if (req.query.search) {
@@ -79,7 +94,7 @@ router.get('/:id', async (req, res) => {
   const [{ data: notes }, { data: attendance }, { data: gasEntries }] = await Promise.all([
     db.from('session_notes').select('*').eq('client_id', client.id).order('session_date'),
     db.from('attendance').select('*').eq('client_id', client.id).order('session_date'),
-    db.from('gas_entries').select('*').eq('client_id', client.id).order('session_date')
+    db.from('gas_entries').select('*').eq('client_id', client.id).eq('archived', false).order('session_date')
   ]);
 
   // Attach each GAS entry's own scores, same shape GET /gas/entries returns,
@@ -118,7 +133,7 @@ router.post('/self-register', async (req, res) => {
   // Patients must be 3–21 years old.
   const dobMs = new Date(b.dob).getTime();
   if (isNaN(dobMs) || dobMs > Date.now()) return res.status(400).json({ error: 'Date of birth is invalid.' });
-  const childAge = Math.floor((Date.now() - dobMs) / (365.25 * 24 * 60 * 60 * 1000));
+  const childAge = calendarAge(b.dob);
   if (childAge < 3 || childAge > 21) {
     return res.status(400).json({ error: 'Patients must be between 3 and 21 years old.' });
   }
@@ -129,7 +144,7 @@ router.post('/self-register', async (req, res) => {
   if (isNaN(guardianDobMs) || guardianDobMs > Date.now()) {
     return res.status(400).json({ error: 'Guardian/caretaker date of birth is invalid.' });
   }
-  const guardianAge = Math.floor((Date.now() - guardianDobMs) / (365.25 * 24 * 60 * 60 * 1000));
+  const guardianAge = calendarAge(b.guardian_dob);
   if (guardianAge < 18 || guardianAge > 120) {
     return res.status(400).json({ error: 'Parent/guardian age must be 18 or older.' });
   }
@@ -137,7 +152,7 @@ router.post('/self-register', async (req, res) => {
   // Philippine mobile format: +639XXXXXXXXX only.
   const PH_PHONE = /^\+639\d{9}$/;
   if (b.guardian_phone && !PH_PHONE.test(b.guardian_phone)) {
-    return res.status(400).json({ error: 'Cell phone must start with +63 followed by the mobile number (e.g. +639171234567).' });
+    return res.status(400).json({ error: 'Contact number must start with +63 followed by the mobile number (e.g. +639171234567).' });
   }
   if (b.other_guardian_phone && !PH_PHONE.test(b.other_guardian_phone)) {
     return res.status(400).json({ error: 'Alternate contact number must start with 09 or +63.' });
@@ -146,10 +161,13 @@ router.post('/self-register', async (req, res) => {
   const relationship = ['Parent', 'Guardian', 'Caretaker'].includes(b.guardian_relationship)
     ? b.guardian_relationship : 'Parent';
 
-  // Development & Functional Information, every field is optional (parents may
-  // not know the answer yet at intake), validated dynamically against the
-  // admin-configurable field list rather than a fixed set of columns.
-  const dev_functional_data = await validateDevFunctionalData(b.dev_functional_data);
+  // Development & Functional Information, optional by default (parents may not
+  // know the answer yet at intake) unless an admin marked a field required,
+  // validated dynamically against the admin-configurable field list rather
+  // than a fixed set of columns.
+  const devResult = await validateDevFunctionalData(b.dev_functional_data);
+  if (devResult.error) return res.status(400).json({ error: devResult.error });
+  const dev_functional_data = devResult.data;
 
   // Auto-generated unique client ID: CLI-YYYY-NNNN
   const client_code = await nextClientCode();
@@ -217,7 +235,8 @@ router.post('/', requireRole('admin', 'staff'), async (req, res) => {
     guardian_contact: b.guardian_contact || null,
     parent_id: b.parent_id || null,
     diagnosis: b.diagnosis || null,
-    therapy_type: b.therapy_type || 'OT',
+    therapy_type: b.therapy_type || null, // set by the clinic after assessment
+    assigned_therapist_name: b.assigned_therapist_name || null,
     status: b.status || 'active'
   }).select().single();
   if (error) return res.status(500).json({ error: error.message });
@@ -249,7 +268,9 @@ router.put('/:id', requireRole('admin', 'staff', 'ot', 'speech'), async (req, re
   // submit this (validated dynamically against the current field definitions,
   // same as self-register), unlike the fields above which stay admin/staff-only.
   if ('dev_functional_data' in req.body) {
-    patch.dev_functional_data = await validateDevFunctionalData(req.body.dev_functional_data);
+    const devResult = await validateDevFunctionalData(req.body.dev_functional_data);
+    if (devResult.error) return res.status(400).json({ error: devResult.error });
+    patch.dev_functional_data = devResult.data;
   }
 
   // Keep the derived full_name in sync when either name part changes.
@@ -273,14 +294,15 @@ router.put('/:id', requireRole('admin', 'staff', 'ot', 'speech'), async (req, re
 });
 
 /** DELETE /api/clients/:id, admin only */
+/** DELETE /api/clients/:id, archive a client profile (soft delete, all associated records are kept) */
 router.delete('/:id', requireRole('admin'), async (req, res) => {
   const { data: existing } = await db.from('clients').select('full_name').eq('id', req.params.id).maybeSingle();
-  const { error } = await db.from('clients').delete().eq('id', req.params.id);
+  const { error } = await db.from('clients').update({ archived: true }).eq('id', req.params.id);
   if (error) return res.status(500).json({ error: error.message });
 
   await logAudit({
-    table_name: 'clients', record_id: req.params.id, action: 'delete',
-    description: `Deleted client record${existing?.full_name ? ' for ' + existing.full_name : ''}`,
+    table_name: 'clients', record_id: req.params.id, action: 'archive',
+    description: `Archived client record${existing?.full_name ? ' for ' + existing.full_name : ''}`,
     updated_by: req.user.id
   });
 

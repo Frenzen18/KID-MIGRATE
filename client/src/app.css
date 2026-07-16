@@ -47,7 +47,7 @@
    flow matches the rest of the app instead of feeling like a different product. */
 .login-body{min-height:100vh;display:flex;align-items:center;justify-content:center;background-color:#EDF2FA;background-image:radial-gradient(circle,#C5D4EE 1px,transparent 1px);background-size:28px 28px;padding:24px;font-family:'Inter',sans-serif;background-position:0 0;animation:bgDrift 40s linear infinite}
 .login-card{display:grid;grid-template-columns:360px 440px;border-radius:12px;overflow:hidden;border:1px solid var(--color-border-subtle);box-shadow:0 16px 48px rgba(15,23,42,.10);max-width:800px;width:100%;background:#fff;animation:authCardIn .55s cubic-bezier(.22,1,.36,1) both}
-.login-left{background:#1F4E9E;padding:48px 40px;display:flex;flex-direction:column;justify-content:center;align-items:center;gap:18px;text-align:center;position:relative;overflow:hidden}
+.login-left{background:var(--color-primary);padding:48px 40px;display:flex;flex-direction:column;justify-content:center;align-items:center;gap:18px;text-align:center;position:relative;overflow:hidden}
 .login-left::before{content:'';position:absolute;inset:-40%;background:radial-gradient(circle,rgba(255,255,255,.10) 0%,transparent 60%);animation:sheen 7s ease-in-out infinite}
 .login-left>*{position:relative;z-index:1}
 .login-left .login-icon-ring{animation:floatY 4.5s ease-in-out infinite}

@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useAuth } from '../../auth.jsx';
 import { useToast } from '../../components/ui.jsx';
+import BrandLogo from '../../components/BrandLogo.jsx';
 import { api } from '../../api.js';
 import './admin.css';
 import AdminModals from './AdminModals.jsx';
@@ -10,7 +11,6 @@ import Dashboard from './pages/Dashboard.jsx';
 import Users from './pages/Users.jsx';
 import Clients from './pages/Clients.jsx';
 import Cms from './pages/Cms.jsx';
-import Milestones from './pages/Milestones.jsx';
 import Reservations from './pages/Reservations.jsx';
 import Payments from './pages/Payments.jsx';
 import Notifications from './pages/Notifications.jsx';
@@ -20,7 +20,7 @@ import Settings from './pages/Settings.jsx';
 
 /** All page keys the sidebar can navigate to, used to validate the page restored from localStorage on reload. */
 const ADMIN_PAGE_KEYS = [
-  'dashboard', 'users', 'clients', 'cms', 'milestones', 'reservations',
+  'dashboard', 'users', 'clients', 'cms', 'reservations',
   'payments', 'notifications', 'audit', 'reports', 'settings'
 ];
 
@@ -153,17 +153,7 @@ export default function AdminPortal() {
   return (
     <>
       <aside id="sidebar" className={sidebarOpen ? 'open' : ''}>
-        <div className="logo-area">
-          <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-            <div style={{ width: 38, height: 38, borderRadius: 10, background: 'linear-gradient(135deg,#0EA5E9,#0D9488)', display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}>
-              <i className="fa-solid fa-child-reaching" style={{ color: '#fff', fontSize: 17 }} />
-            </div>
-            <div>
-              <div style={{ fontFamily: "'Poppins',sans-serif", fontWeight: 700, fontSize: 16, color: '#0F172A', lineHeight: 1.1 }}>KID</div>
-              <div style={{ fontSize: 10.5, color: '#64748B', fontWeight: 500 }}>Admin Dashboard</div>
-            </div>
-          </div>
-        </div>
+        <BrandLogo subtitle="Admin Dashboard" />
         <nav id="sidebar-nav">
           <div className="nav-label">Overview</div>
           {nav_item('dashboard', 'fa-gauge-high', 'Dashboard')}
@@ -171,7 +161,6 @@ export default function AdminPortal() {
           {nav_item('users', 'fa-users', 'User Management')}
           {nav_item('clients', 'fa-child', 'Client Records')}
           {nav_item('cms', 'fa-layer-group', 'CMS')}
-          {nav_item('milestones', 'fa-trophy', 'Milestone Scoreboard')}
           {nav_item('reservations', 'fa-calendar-check', 'Booking and Appointment', pendingReservations > 0 ? pendingReservations : null, 'red')}
           {nav_item('payments', 'fa-credit-card', 'Payment Management')}
           <div className="nav-label">System</div>
@@ -186,9 +175,7 @@ export default function AdminPortal() {
           <button id="hamburger" className="topnav-btn" onClick={() => setSidebarOpen(o => !o)}><i className="fa-solid fa-bars" /></button>
           <div style={{ flex: 1 }} />
           <div style={{ display: 'flex', alignItems: 'center', gap: 10, position: 'relative' }}>
-            <button className="topnav-btn" data-tip="Help"><i className="fa-regular fa-circle-question" /></button>
             <div style={{ position: 'relative' }}>
-              <button className="topnav-btn" data-tip="Notifications" id="notif-btn" onClick={toggleNotif}><i className="fa-regular fa-bell" />{notifDot && <span className="notif-dot" />}</button>
               <div id="notif-panel" className={notifOpen ? 'open' : ''}>
                 <div style={{ padding: '14px 16px', borderBottom: '1px solid #F1F5F9', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
                   <span style={{ fontFamily: "'Poppins',sans-serif", fontWeight: 600, fontSize: 14, color: '#0F172A' }}>
@@ -242,7 +229,6 @@ export default function AdminPortal() {
           {page === 'users' && <Users {...pageProps} />}
           {page === 'clients' && <Clients {...pageProps} />}
           {page === 'cms' && <Cms {...pageProps} />}
-          {page === 'milestones' && <Milestones {...pageProps} />}
           {page === 'reservations' && <Reservations {...pageProps} />}
           {page === 'payments' && <Payments {...pageProps} />}
           {page === 'notifications' && <Notifications {...pageProps} />}

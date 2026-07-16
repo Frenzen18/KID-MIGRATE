@@ -10,6 +10,13 @@ export function todayPH() {
 }
 export function nowPH() { return new Date(Date.now() + 8 * 60 * 60 * 1000); }
 
+/** Earliest bookable date (tomorrow, PH time), bookings must be made at least
+ *  a day ahead, same-day isn't allowed (see BOOKING_HOLD_MINUTES server-side). */
+export function minBookableDatePH() {
+  const d = new Date(Date.now() + 8 * 60 * 60 * 1000 + 24 * 60 * 60 * 1000);
+  return d.toISOString().slice(0, 10);
+}
+
 export const DAY_NAMES = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
 export const CAL_MONTH_NAMES = ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December'];
 export const MON_SHORT = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
@@ -36,7 +43,44 @@ export function rateForSessionType(sessionType) {
 export function defaultRateFor(client) {
   return rateForSessionType(defaultSessionTypeFor(client));
 }
+export const ASSESSMENT_TYPES = ['Initial Assessment', 'Speech-Language Assessment', 'Occupational Assessment'];
+
+/** Assessment types that must go to a therapist of one specific discipline;
+ *  booking requires picking that therapist before a day/time can be chosen. */
+export const REQUIRED_ROLE_FOR_TYPE = { 'Speech-Language Assessment': 'speech', 'Occupational Assessment': 'ot' };
+
+/** "YYYY-MM-DD" → work_days index (Mon=0 … Sat=5, Sun=6). Mirrors server/routes/shifts.js. */
+export function workDayIndex(dateStr) {
+  return (new Date(dateStr + 'T00:00:00Z').getUTCDay() + 6) % 7;
+}
+/** True if this therapist's shift covers the given date, same default
+ *  (Mon–Sat) as the server when work_days hasn't been customized. */
+export function therapistWorksOn(therapist, dateStr) {
+  const wd = Array.isArray(therapist.work_days) && therapist.work_days.length === 7
+    ? therapist.work_days
+    : [true, true, true, true, true, true, false];
+  return wd[workDayIndex(dateStr)] !== false;
+}
+
+/** Initial Assessment has no dedicated therapist picked ahead of time, so it's
+ *  capped at one booking per hour clinic-wide. Speech-Language and Occupational
+ *  Assessment instead require picking a specific therapist first (see
+ *  REQUIRED_ROLE_FOR_TYPE), so their capacity is just that one therapist's own
+ *  shift, letting every other qualified therapist still be booked the same hour,
+ *  same as regular sessions, just never the same therapist twice. Returns how
+ *  many more bookings the slot can take for the given service type. */
+export function effectiveSlotAvailable(slot, serviceType) {
+  if (!slot) return 0;
+  if (slot.lunch_break) return 0;
+  if (serviceType === 'Initial Assessment') {
+    const alreadyBooked = (slot.reservations || []).some(r => r.session_type === 'Initial Assessment');
+    return alreadyBooked ? 0 : 1;
+  }
+  return slot.available ?? 0;
+}
+
 export const STATUS_PILL = {
+  awaiting_payment: { label: 'Awaiting Payment', cls: 'pill-amber' },
   pending: { label: 'Pending', cls: 'pill-amber' },
   confirmed: { label: 'Confirmed', cls: 'pill-green' },
   rescheduled: { label: 'Rescheduled', cls: 'pill-blue' },

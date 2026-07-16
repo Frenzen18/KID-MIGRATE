@@ -1,6 +1,13 @@
 import { useEffect, useRef, useState } from 'react';
-import { Link } from 'react-router-dom';
+import { Link, useSearchParams } from 'react-router-dom';
 import './landing.css';
+
+/** In Branding & Theme's live preview (?preview=1), sign-in/portal links render
+    as inert, non-clickable copies, same visual design, no navigating out of the iframe. */
+function AuthLink({ preview, to, className, children }) {
+  if (preview) return <span className={className} style={{ cursor: 'default' }}>{children}</span>;
+  return <Link to={to} className={className}>{children}</Link>;
+}
 
 /** Fades a section in the first time it scrolls into view, gives the page life without re-triggering on every scroll. */
 function useReveal() {
@@ -26,6 +33,9 @@ function scrollToSection(e, id) {
 
 /* Faithful port of index.html, same markup, same copy, same images. */
 export default function Landing() {
+  const [searchParams] = useSearchParams();
+  const preview = searchParams.get('preview') === '1';
+
   const [cmsPosts, setCmsPosts] = useState([]);
   const [announcements, setAnnouncements] = useState([]);
   const [annDismissed, setAnnDismissed] = useState(false);
@@ -33,6 +43,7 @@ export default function Landing() {
   const [newsPage, setNewsPage] = useState(0);
   const [homepage, setHomepage] = useState(null);
   const [openPost, setOpenPost] = useState(null);
+  const [brand, setBrand] = useState(null);
 
   useEffect(() => {
     fetch('/api/cms/public')
@@ -43,6 +54,11 @@ export default function Landing() {
         if (data.homepage) setHomepage(data.homepage);
       })
       .catch(() => {});
+    fetch('/api/settings/branding/public').then(r => r.json()).then(setBrand).catch(() => {});
+
+    const onBranding = e => { if (e.detail) setBrand(e.detail); };
+    window.addEventListener('kid:branding', onBranding);
+    return () => window.removeEventListener('kid:branding', onBranding);
   }, []);
 
   // Rotate announcements every 6 seconds
@@ -56,16 +72,17 @@ export default function Landing() {
 
   const [promiseRef, promiseVisible] = useReveal();
   const [newsRef, newsVisible] = useReveal();
-  const [aboutRef, aboutVisible] = useReveal();
 
   return (
     <div className="ld">
       {/* NAV */}
       <nav className="ld-nav">
         <Link to="/" className="ld-nav-brand">
-          <div className="ld-nav-icon">K</div>
-          <div>
-            <div className="ld-nav-name">KID</div>
+          {brand?.logo_url
+            ? <img src={brand.logo_url} alt={brand.clinic_name || 'Clinic logo'} style={{ width: 34, height: 34, borderRadius: 8, objectFit: 'cover' }} />
+            : <div className="ld-nav-icon">{(brand?.clinic_name || 'KID').charAt(0)}</div>}
+          <div style={{ minWidth: 0 }}>
+            <div className="ld-nav-name" style={{ maxWidth: 220, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }} title={brand?.clinic_name}>{brand?.clinic_name || 'KID'}</div>
             <div className="ld-nav-sub">Pediatric Clinic System</div>
           </div>
         </Link>
@@ -76,8 +93,7 @@ export default function Landing() {
           <a href="#about" onClick={e => scrollToSection(e, 'about')}>About</a>
         </div>
         <div className="ld-nav-actions">
-          <Link to="/login" className="ld-nav-ghost">Sign In</Link>
-          <Link to="/login" className="ld-nav-solid">Get Started</Link>
+          <AuthLink preview={preview} to="/login" className="ld-nav-ghost">Sign In</AuthLink>
         </div>
       </nav>
 
@@ -103,7 +119,7 @@ export default function Landing() {
       <section className="ld-hero-sec">
         <div className="ld-hero-inner">
           <div className="ld-hero-in">
-            <div className="ld-hero-kicker">Bloomsdale Therapy Center · Imus, Cavite</div>
+            <div className="ld-hero-kicker">{brand?.clinic_name || 'Bloomsdale Therapy Center'}{brand?.address ? ' · ' + brand.address : ' · Imus, Cavite'}</div>
             <h1 className="ld-hero-title">{(() => {
               const text = homepage?.headline || 'Every child deserves the chance to thrive.';
               const words = text.split(' ');
@@ -114,7 +130,6 @@ export default function Landing() {
             })()}</h1>
             <p className="ld-hero-sub">{homepage?.sub || 'We provide pediatric speech and occupational therapy in a warm, child-centered environment. Book sessions, follow your child\'s progress, and stay connected with our clinic, all in one place.'}</p>
             <div className="ld-hero-cta">
-              <Link to="/login" className="ld-cta-a">{homepage?.cta || 'Get Started'}</Link>
               <a href="#news" className="ld-cta-b" onClick={e => scrollToSection(e, 'news')}>Read the latest news →</a>
             </div>
           </div>
@@ -218,27 +233,17 @@ export default function Landing() {
         </div>
       </div>
 
-      {/* CTA BAND */}
-      <div className={'ld-cta-band ld-reveal' + (aboutVisible ? ' ld-reveal-in' : '')} id="about" ref={aboutRef}>
-        <h2>Ready to take the <em>first step?</em></h2>
-        <p>KID brings booking, records, and progress tracking together in one system, developed as an undergraduate thesis at LPU-Cavite CITCS for Bloomsdale Therapy Center.</p>
-        <div className="ld-cta-band-btns">
-          <Link to="/login" className="ld-cband-a">Sign In to Portal</Link>
-          <a href="#news" className="ld-cband-b" onClick={e => scrollToSection(e, 'news')}>See What's New</a>
-        </div>
-      </div>
-
       {/* FOOTER */}
-      <footer className="ld-footer">
+      <footer className="ld-footer" id="about">
         <div className="ld-foot-grid">
           <div className="ld-foot-brand">
-            <div className="fn">KID</div>
+            <div className="fn">{brand?.clinic_name || 'KID'}</div>
             <div className="fs">{homepage?.clinicAbout || 'AI-Assisted Information Management System for Pediatric Speech and Occupational Therapy Clinics.'}<br /><br />Lyceum of the Philippines University – Cavite<br />College of Information Technology and Computer Science<br />BS Information Technology: Web and Mobile Technology</div>
           </div>
           <div className="ld-foot-col">
             <h4>System</h4>
             <a href="#promise" onClick={e => scrollToSection(e, 'promise')}>Our Approach</a>
-            <Link to="/login">Guardian/Caretaker Portal</Link>
+            <AuthLink preview={preview} to="/login">Guardian/Caretaker Portal</AuthLink>
           </div>
           <div className="ld-foot-col">
             <h4>Clinic</h4>
@@ -249,7 +254,7 @@ export default function Landing() {
         </div>
         <div className="ld-foot-bottom">
           <div className="ld-foot-copy">© 2026 KID: AI-Assisted Clinic Management System · LPU-Cavite CITCS</div>
-          <div className="ld-foot-copy">Bloomsdale Therapy Center · Imus, Cavite</div>
+          <div className="ld-foot-copy">{brand?.clinic_name || 'Bloomsdale Therapy Center'}{brand?.address ? ' · ' + brand.address : ' · Imus, Cavite'}</div>
         </div>
       </footer>
 

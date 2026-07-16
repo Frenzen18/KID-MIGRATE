@@ -1,6 +1,8 @@
 import { useState } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import { api } from '../api.js';
+import PasswordChecklist, { passwordMeetsPolicy } from '../components/PasswordChecklist.jsx';
+import AuthLeftPanel from '../components/AuthLeftPanel.jsx';
 
 export default function ForgotPassword() {
   const nav = useNavigate();
@@ -45,8 +47,7 @@ export default function ForgotPassword() {
   async function resetPassword(e) {
     e.preventDefault();
     setErr('');
-    if (newPassword.length < 8) return setErr('Password must be at least 8 characters.');
-    if (!/[A-Za-z]/.test(newPassword) || !/[0-9]/.test(newPassword)) return setErr('Password must contain both letters and numbers.');
+    if (!passwordMeetsPolicy(newPassword)) return setErr('Password does not meet all the requirements below.');
     if (newPassword !== confirmPassword) return setErr('Passwords do not match.');
     setBusy(true);
     try {
@@ -65,18 +66,7 @@ export default function ForgotPassword() {
   return (
     <div className="login-body">
       <div className="login-card" style={{ gridTemplateColumns: '360px 440px' }}>
-        <div className="login-left">
-          <div style={{ width: 96, height: 96, borderRadius: '50%', border: '1.5px solid rgba(255,255,255,.45)', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-            <i className="fa-solid fa-child-reaching" style={{ color: '#fff', fontSize: 40 }} />
-          </div>
-          <div style={{ fontFamily: 'Poppins,sans-serif', fontSize: 30, fontWeight: 600, color: '#fff' }}>KID</div>
-          <div style={{ fontSize: 12, color: 'rgba(255,255,255,.7)', letterSpacing: '.05em', textTransform: 'uppercase', fontWeight: 600, lineHeight: 1.6 }}>
-            Pediatric Speech &amp;<br />Occupational Therapy Clinic
-          </div>
-          <div style={{ fontSize: 11.5, color: 'rgba(255,255,255,.5)', lineHeight: 1.7, marginTop: 24 }}>
-            Bloomsdale Therapy Center<br />Imus, Cavite · LPU-Cavite CITCS
-          </div>
-        </div>
+        <AuthLeftPanel icon="fa-child-reaching" iconSize={40} eyebrow={<>Pediatric Speech &amp;<br />Occupational Therapy Clinic</>} />
         <div style={{ padding: '48px 44px', display: 'flex', flexDirection: 'column', justifyContent: 'center' }}>
 
           {/* Step 1: Enter email */}
@@ -162,7 +152,8 @@ export default function ForgotPassword() {
               <form onSubmit={resetPassword}>
                 <div style={{ marginBottom: 18 }}>
                   <label style={label}>New Password</label>
-                  <input style={input} type="password" value={newPassword} onChange={e => setNewPassword(e.target.value)} placeholder="Min. 8 chars, letters & numbers" required />
+                  <input style={input} type="password" value={newPassword} onChange={e => setNewPassword(e.target.value)} placeholder="Create a password" required />
+                  <PasswordChecklist password={newPassword} />
                 </div>
                 <div style={{ marginBottom: 22 }}>
                   <label style={label}>Confirm New Password</label>

@@ -69,6 +69,27 @@ export async function generateQrph({ amount, description, metadata }) {
   };
 }
 
+/**
+ * Retry path for an intent whose attached source already failed/expired (a
+ * simulated "failed" test payment, or a scanned-but-abandoned real one).
+ * PayMongo can't re-succeed a dead source, once it fails the intent itself
+ * reverts to 'awaiting_payment_method', so this attaches a brand new one to
+ * get a fresh, still-payable QR without losing the original invoice/intent.
+ */
+export async function retryQrphOnIntent(intentId, clientKey) {
+  const method = await createQrphPaymentMethod();
+  const attached = await attachPaymentMethod(intentId, method.id, clientKey);
+  const code = attached.attributes?.next_action?.code;
+  return {
+    intentId,
+    clientKey,
+    qrImageUrl: code?.image_url || null,
+    testUrl: attached.attributes.livemode ? null : (code?.test_url || null),
+    status: attached.attributes.status,
+    expiresAt: code?.expires_at || new Date(Date.now() + 1800 * 1000).toISOString()
+  };
+}
+
 /** Polling fallback for local/dev where PayMongo can't reach a public webhook URL yet. */
 export async function retrievePaymentIntent(intentId) {
   const res = await fetch(`${API_BASE}/payment_intents/${intentId}`, {

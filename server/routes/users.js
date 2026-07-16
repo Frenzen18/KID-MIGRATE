@@ -107,6 +107,30 @@ router.put('/:id', requireRole('admin'), async (req, res) => {
   const patch = {};
   for (const k of ['full_name', 'first_name', 'last_name', 'role', 'active']) if (k in req.body) patch[k] = req.body[k];
 
+  // Guardian/Caretaker is a portal category, not a staff role, block crossing the boundary in
+  // either direction (the client's Edit User form already only offers same-category options,
+  // this is the server-side backstop for direct API calls).
+  if (patch.role) {
+    const { data: currentProfile } = await db.from('profiles').select('role').eq('id', req.params.id).maybeSingle();
+    const wasParent = currentProfile?.role === 'parent';
+    const willBeParent = patch.role === 'parent';
+    if (wasParent !== willBeParent) {
+      return res.status(400).json({ error: 'Guardian/Caretaker accounts cannot be reassigned to a staff role, and staff accounts cannot be reassigned to Guardian/Caretaker.' });
+    }
+  }
+
+  if ('contact' in req.body) {
+    if (req.body.contact) {
+      const contact = normalizePhone(req.body.contact);
+      if (!contact) return res.status(400).json({ error: 'Contact number must be a PH mobile number (e.g. 09171234567 or +639171234567).' });
+      const { data: taken } = await db.from('profiles').select('id').eq('contact', contact).neq('id', req.params.id).maybeSingle();
+      if (taken) return res.status(400).json({ error: 'This contact number is already registered to another account.' });
+      patch.contact = contact;
+    } else {
+      patch.contact = null;
+    }
+  }
+
   // Keep the derived full_name in sync when either name part changes.
   if (('first_name' in patch || 'last_name' in patch) && !('full_name' in patch)) {
     const { data: current } = await db.from('profiles').select('first_name, last_name').eq('id', req.params.id).single();

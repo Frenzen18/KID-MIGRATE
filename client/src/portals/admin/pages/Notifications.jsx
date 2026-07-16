@@ -108,21 +108,10 @@ export default function Notifications({ go, toast, openModal, role = 'admin' }) 
     }
   }
 
-  async function markAllInboxRead() {
-    try {
-      await api('/notifications/read-all', { method: 'PUT' });
-      setInbox(list => list.map(n => ({ ...n, read: true })));
-      toast('All notifications marked as read', 'fa-check');
-    } catch (e) {
-      toast('Failed to mark all as read', 'fa-triangle-exclamation');
-    }
-  }
-
-  /* ── Real reminders (12.1), derived server-side from payments + reservations ── */
+  /* ── Real reminders (12.1), booking requests only, derived server-side from reservations ── */
   const [reminders, setReminders] = useState([]);
   const [remindersLoading, setRemindersLoading] = useState(true);
   const [dismissedReminders, setDismissedReminders] = useState(new Set());
-  const [reminderTypeFilter, setReminderTypeFilter] = useState('');
 
   useEffect(() => {
     setRemindersLoading(true);
@@ -138,7 +127,7 @@ export default function Notifications({ go, toast, openModal, role = 'admin' }) 
         method: 'POST',
         body: { type: r.type, record_id: r.record_id, title: r.title, body: r.sub }
       });
-      toast(r.type === 'Reservation' ? 'Notification sent' : 'Guardian notified', 'fa-paper-plane');
+      toast('Notification sent', 'fa-paper-plane');
     } catch (e) {
       toast(e.message || 'Failed to send notification', 'fa-triangle-exclamation');
     }
@@ -148,8 +137,7 @@ export default function Notifications({ go, toast, openModal, role = 'admin' }) 
     setDismissedReminders(prev => new Set(prev).add(id));
   }
 
-  const visibleReminders = reminders.filter(r => !dismissedReminders.has(r.id) && (!reminderTypeFilter || r.type === reminderTypeFilter));
-  const priorityCounts = visibleReminders.reduce((acc, r) => { acc[r.priority] = (acc[r.priority] || 0) + 1; return acc; }, {});
+  const visibleReminders = reminders.filter(r => !dismissedReminders.has(r.id));
 
   function switchNotifTab(t) {
     setTab(t);
@@ -195,18 +183,7 @@ export default function Notifications({ go, toast, openModal, role = 'admin' }) 
       <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', marginBottom: 24, flexWrap: 'wrap', gap: 12 }}>
         <div>
           <h1 style={{ fontSize: 22, fontWeight: 700, color: '#0F172A', margin: '0 0 4px' }}>Notifications &amp; Reminders</h1>
-          <p style={{ fontSize: 13.5, color: '#64748B', margin: 0 }}>Reminders, incoming notifications, push trigger controls, and configuration.</p>
         </div>
-        {!remindersOnly && (
-          <div style={{ display: 'flex', gap: 8 }}>
-            <button className="qa-btn" style={{ width: 'auto', padding: '10px 16px', fontSize: 13 }} onClick={() => switchNotifTab('push')}>
-              <i className="fa-solid fa-paper-plane" style={{ color: '#0EA5E9' }} /> Send Push Notification
-            </button>
-            <button className="qa-btn" style={{ width: 'auto', padding: '10px 16px', fontSize: 13 }} onClick={markAllInboxRead}>
-              <i className="fa-solid fa-check-double" style={{ color: '#10B981' }} /> Mark All Read
-            </button>
-          </div>
-        )}
       </div>
 
       {/* Section tabs */}
@@ -219,15 +196,10 @@ export default function Notifications({ go, toast, openModal, role = 'admin' }) 
 
       {/* ═══════ 12.1 REMINDERS TABLE ═══════ */}
       <div id="tab-reminders" style={{ display: tab === 'reminders' ? 'block' : 'none' }}>
-        <div style={{ display: 'grid', gridTemplateColumns: '1.3fr 1fr', gap: 16, marginBottom: 24 }}>
+        <div style={{ marginBottom: 24 }}>
           <div className="card" style={{ padding: '22px 0 0' }}>
-            <div style={{ padding: '0 24px 16px', borderBottom: '1px solid #F1F5F9', display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: 10 }}>
-              <div><div className="section-title">Reminders Table</div><div className="section-sub">Live reminders derived from outstanding payments, pending bookings, and upcoming sessions</div></div>
-              <div style={{ display: 'flex', gap: 8 }}>
-                <select className="form-select" style={{ width: 'auto', height: 34, fontSize: 12.5 }} value={reminderTypeFilter} onChange={e => setReminderTypeFilter(e.target.value)}>
-                  <option value="">All Types</option><option value="Session">Session</option><option value="Payment">Payment</option><option value="Reservation">Reservation</option>
-                </select>
-              </div>
+            <div style={{ padding: '0 24px 16px', borderBottom: '1px solid #F1F5F9' }}>
+              <div className="section-title">Reminders Table</div>
             </div>
             <div style={{ overflowX: 'auto' }}>
               <table className="data-table" id="reminder-table">
@@ -260,16 +232,6 @@ export default function Notifications({ go, toast, openModal, role = 'admin' }) 
                   ))}
                 </tbody>
               </table>
-            </div>
-          </div>
-
-          {/* Reminder summary */}
-          <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
-            <div className="card" style={{ padding: '22px 20px' }}>
-              <div className="section-title" style={{ marginBottom: 14 }}>Priority Breakdown</div>
-              <div className="status-row"><span style={{ fontSize: 13, color: '#475569' }}>🚨 Urgent</span><span style={{ fontWeight: 700, color: '#DC2626' }}>{priorityCounts.Urgent || 0}</span></div>
-              <div className="status-row"><span style={{ fontSize: 13, color: '#475569' }}>⚠ High Priority</span><span style={{ fontWeight: 700, color: '#B45309' }}>{priorityCounts.High || 0}</span></div>
-              <div className="status-row" style={{ borderBottom: 'none' }}><span style={{ fontSize: 13, color: '#475569' }}>📋 Normal</span><span style={{ fontWeight: 700, color: '#0F172A' }}>{priorityCounts.Normal || 0}</span></div>
             </div>
           </div>
         </div>

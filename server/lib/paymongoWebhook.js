@@ -73,5 +73,27 @@ export async function markPaidByIntentId(intentId) {
     });
   }
 
+  // A guardian's own booking is held as 'awaiting_payment' until this exact
+  // moment, payment succeeding is what actually gives them the slot.
+  if (payment.reservation_id) {
+    const { data: reservation } = await db.from('reservations').select('*').eq('id', payment.reservation_id).maybeSingle();
+    if (reservation && reservation.status === 'awaiting_payment') {
+      await db.from('reservations').update({ status: 'confirmed', payment_expires_at: null }).eq('id', reservation.id);
+      await logAudit({
+        table_name: 'reservations', record_id: reservation.id, action: 'approve',
+        description: `Booking confirmed on QRPh payment (${reservation.date} ${reservation.time_slot})`,
+        approved_by: null
+      });
+      if (reservation.created_by) {
+        await notifyEvent('notify_session_change', {
+          title: 'Booking confirmed',
+          body: `Payment received, your session on ${reservation.date} at ${reservation.time_slot} is confirmed.`,
+          icon: 'fa-calendar-check',
+          target_user: reservation.created_by
+        });
+      }
+    }
+  }
+
   return updated;
 }

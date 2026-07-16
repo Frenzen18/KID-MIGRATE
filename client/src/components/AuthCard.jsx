@@ -2,7 +2,7 @@ import { useState } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import { useAuth } from '../auth.jsx';
 import { HOME_FOR_ROLE } from '../App.jsx';
-import { api } from '../api.js';
+import AuthLeftPanel from './AuthLeftPanel.jsx';
 
 /**
  * Shared sign-in card used by the parent, staff, and therapist login pages,  * they only differ in icon/title/subtitle, which portal to authenticate
@@ -30,13 +30,11 @@ export default function AuthCard({
   const [err, setErr] = useState('');
   const [busy, setBusy] = useState(false);
   const [needsVerification, setNeedsVerification] = useState(false);
-  const [resendMsg, setResendMsg] = useState('');
 
   async function submit(e) {
     e.preventDefault();
     setErr('');
     setNeedsVerification(false);
-    setResendMsg('');
     setBusy(true);
     try {
       const u = await login(email.trim(), password, portal);
@@ -49,34 +47,13 @@ export default function AuthCard({
     }
   }
 
-  async function resendVerification() {
-    setResendMsg('');
-    try {
-      const r = await api('/auth/resend-verification', { method: 'POST', body: { email: email.trim() } });
-      setResendMsg(r.message || 'A new verification link has been sent.');
-    } catch (ex) {
-      setResendMsg(ex.message);
-    }
-  }
-
   const input = { width: '100%', padding: '12px 15px', border: '1px solid var(--color-border)', borderRadius: 8, fontFamily: 'Inter,sans-serif', fontSize: 14, outline: 'none', background: '#fff' };
   const label = { display: 'block', fontSize: 13, fontWeight: 600, color: 'var(--color-text-muted)', marginBottom: 8 };
 
   return (
     <div className="login-body">
       <div className="login-card">
-        <div className="login-left">
-          <div className="login-icon-ring" style={{ width: 96, height: 96, borderRadius: '50%', border: '1.5px solid rgba(255,255,255,.45)', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-            <i className={'fa-solid ' + icon} style={{ color: '#fff', fontSize: iconSize }} />
-          </div>
-          <div style={{ fontFamily: 'Poppins,sans-serif', fontSize: 30, fontWeight: 600, color: '#fff' }}>KID</div>
-          <div style={{ fontSize: 12, color: 'rgba(255,255,255,.7)', letterSpacing: '.05em', textTransform: 'uppercase', fontWeight: 600, lineHeight: 1.6 }}>
-            {eyebrow}
-          </div>
-          <div style={{ fontSize: 11.5, color: 'rgba(255,255,255,.5)', lineHeight: 1.7, marginTop: 24 }}>
-            Bloomsdale Therapy Center<br />Imus, Cavite · LPU-Cavite CITCS
-          </div>
-        </div>
+        <AuthLeftPanel icon={icon} iconSize={iconSize} eyebrow={eyebrow} />
         <div style={{ padding: '48px 44px', display: 'flex', flexDirection: 'column', justifyContent: 'center' }}>
           <div style={{ fontFamily: 'Poppins,sans-serif', fontSize: 26, fontWeight: 600, color: 'var(--color-ink)', marginBottom: 8 }}>{title}</div>
           <p style={{ fontSize: 14, color: 'var(--color-text-muted)', marginBottom: 28, lineHeight: 1.6 }}>{subtitle}</p>
@@ -86,16 +63,11 @@ export default function AuthCard({
               <i className="fa-solid fa-circle-exclamation" style={{ marginRight: 6 }} />{err}
               {needsVerification && (
                 <div style={{ marginTop: 8 }}>
-                  <button type="button" onClick={resendVerification} style={{ background: 'none', border: 'none', padding: 0, color: '#1F4E9E', fontSize: 13, fontWeight: 700, cursor: 'pointer', textDecoration: 'underline' }}>
-                    Resend verification email
-                  </button>
+                  <Link to={`/verify-email?email=${encodeURIComponent(email.trim())}`} style={{ color: '#1F4E9E', fontSize: 13, fontWeight: 700, textDecoration: 'underline' }}>
+                    Verify your email now
+                  </Link>
                 </div>
               )}
-            </div>
-          )}
-          {resendMsg && (
-            <div className="auth-alert-in" style={{ background: '#F0FDF4', border: '1px solid var(--color-success-bg)', borderRadius: 8, padding: '10px 14px', fontSize: 13, color: 'var(--color-success)', marginBottom: 16, fontWeight: 600 }}>
-              {resendMsg}
             </div>
           )}
 
@@ -142,8 +114,10 @@ export default function AuthCard({
           )}
 
           {footerLink && (
-            <div style={{ textAlign: 'center', marginTop: 20 }}>
-              <Link to={footerLink.to} style={{ color: '#1F4E9E', fontSize: 13, fontWeight: 600, textDecoration: 'none' }}>{footerLink.label}</Link>
+            <div style={{ textAlign: 'center', marginTop: 20, display: 'flex', flexDirection: 'column', gap: 8 }}>
+              {(Array.isArray(footerLink) ? footerLink : [footerLink]).map((fl, i) => (
+                <Link key={i} to={fl.to} style={{ color: '#1F4E9E', fontSize: 13, fontWeight: 600, textDecoration: 'none' }}>{fl.label}</Link>
+              ))}
             </div>
           )}
 

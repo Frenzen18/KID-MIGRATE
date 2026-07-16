@@ -4,6 +4,7 @@
 -- Safe to re-run (drops and recreates the app tables).
 -- ============================================================
 
+drop table if exists verification_codes cascade;
 drop table if exists gas_entry_scores cascade;
 drop table if exists gas_entries cascade;
 drop table if exists gas_questionnaire_items cascade;
@@ -78,8 +79,9 @@ create table dev_functional_fields (
   id uuid primary key default gen_random_uuid(),
   section text not null,
   label text not null,
-  field_type text not null check (field_type in ('select','text')),
+  field_type text not null check (field_type in ('select','text','select_other')),
   options jsonb,
+  required boolean not null default false, -- admin-configurable via Manage Fields; false = today's "every field optional" default
   sort_order int not null default 0,
   active boolean not null default true,
   created_at timestamptz not null default now(),
@@ -97,12 +99,13 @@ create table reservations (
   session_type text not null default 'Occupational Therapy',
   duration_min int not null default 60,
   room text,
-  status text not null default 'pending' check (status in ('pending','confirmed','rescheduled','cancelled','completed','declined','no_show')),
+  status text not null default 'pending' check (status in ('awaiting_payment','pending','confirmed','rescheduled','cancelled','completed','declined','no_show')),
   channel text,
   notes text,
   created_by uuid references profiles (id) on delete set null,
   created_at timestamptz not null default now(),
-  reminder_sent_at timestamptz -- set once the pre-session reminder sweep (server/lib/reminders.js) has notified the guardian
+  reminder_sent_at timestamptz, -- set once the pre-session reminder sweep (server/lib/reminders.js) has notified the guardian
+  payment_expires_at timestamptz -- deadline for an 'awaiting_payment' hold before it's auto-released, see server/lib/bookingHolds.js
 );
 create index reservations_date_idx on reservations (date, time_slot);
 -- Real double-booking guard: the app-level check-then-insert has a race window,
@@ -119,11 +122,16 @@ create table shifts (
   therapist_id uuid not null unique references profiles (id) on delete cascade,
   start_hour int not null default 8 check (start_hour between 6 and 20),
   end_hour int not null default 17 check (end_hour between 7 and 21),
+  -- Optional lunch break, an hour range within the shift with no bookings.
+  -- Null on both means no lunch break is set.
+  lunch_start_hour int check (lunch_start_hour between 6 and 21),
+  lunch_end_hour int check (lunch_end_hour between 6 and 21),
   -- Working days Mon..Sun (availability matrix). false = day off, no bookings.
   -- Sunday (7th element) defaults to closed; admins opt individual therapists in.
   work_days boolean[] not null default '{true,true,true,true,true,true,false}',
   updated_at timestamptz not null default now(),
-  created_at timestamptz not null default now()
+  created_at timestamptz not null default now(),
+  constraint shifts_lunch_order_check check (lunch_start_hour is null or lunch_end_hour is null or lunch_start_hour < lunch_end_hour)
 );
 
 -- Qualitative clinical observations (7.1.d.a hover notes)
@@ -242,7 +250,7 @@ create table audit_logs (
   id uuid primary key default gen_random_uuid(),
   table_name text not null,
   record_id text,
-  action text not null check (action in ('create','update','delete','approve')),
+  action text not null check (action in ('create','update','delete','approve','login')),
   description text,
   created_by uuid references profiles (id) on delete set null,
   created_at timestamptz not null default now(),
@@ -308,6 +316,22 @@ create table gas_entry_scores (
 );
 create index gas_entry_scores_entry_idx on gas_entry_scores (entry_id);
 
+-- Email-verification / password-reset codes. One row per (email, purpose);
+-- durable so a server restart between sending a code and the user entering
+-- it doesn't invalidate it. See migration_verification_codes.sql for details.
+create table verification_codes (
+  id uuid primary key default gen_random_uuid(),
+  email text not null,
+  purpose text not null check (purpose in ('email_verify', 'password_reset')),
+  code text not null,
+  user_id uuid references profiles (id) on delete cascade,
+  full_name text,
+  expires_at timestamptz not null,
+  created_at timestamptz not null default now(),
+  unique (email, purpose)
+);
+create index verification_codes_email_purpose_idx on verification_codes (email, purpose);
+
 -- Lock the tables down: RLS on with NO policies means only the
 -- service-role key (our Express server) can read/write them.
 alter table profiles enable row level security;
@@ -327,20 +351,26 @@ alter table gas_questionnaire_items enable row level security;
 alter table gas_entries enable row level security;
 alter table gas_entry_scores enable row level security;
 alter table dev_functional_fields enable row level security;
+alter table verification_codes enable row level security;
 
 -- Seed the original 12 Development & Functional Information fields (fresh
 -- installs only — an existing DB migrates via migration_dev_functional_form_builder.sql,
 -- which also folds over any already-collected fixed-column data).
-insert into dev_functional_fields (section, label, field_type, options, sort_order) values
-  ('Self-Care Skills', 'Able to dress independently', 'select', '["Yes","No","With Support"]', 1),
-  ('Self-Care Skills', 'Able to eat independently', 'select', '["Yes","No","With Support"]', 2),
-  ('Self-Care Skills', 'Toileting', 'select', '["Independent","Needs Assistance","Not Trained"]', 3),
-  ('Communication', 'Verbal', 'select', '["Yes","No","Limited"]', 4),
-  ('Communication', 'Primary mode of communication', 'text', null, 5),
-  ('Communication', 'Understands instructions', 'select', '["Yes","No","Sometimes"]', 6),
-  ('Behavior & Social', 'Behavior concerns', 'text', null, 7),
-  ('Behavior & Social', 'Follows directions', 'select', '["Yes","No","With Support"]', 8),
-  ('Behavior & Social', 'Interacts with others', 'select', '["Easily","Needs Support","Limited"]', 9),
-  ('Behavior & Social', 'Sensory sensitivities (noise, touch, etc.)', 'text', null, 10),
-  ('Motor Skills', 'Walks independently', 'select', '["Yes","No","With Support"]', 11),
-  ('Motor Skills', 'Fine motor concerns (grasping, writing, etc.)', 'text', null, 12);
+-- required = true on the core Yes/No assessment basics; free-text/notes
+-- fields and the conditional "Primary mode of communication" stay optional.
+insert into dev_functional_fields (section, label, field_type, options, required, sort_order) values
+  ('Self-Care Skills', 'Able to dress independently', 'select', '["Yes","No","With Support"]', true, 1),
+  ('Self-Care Skills', 'Able to eat independently', 'select', '["Yes","No","With Support"]', true, 2),
+  ('Self-Care Skills', 'Toileting', 'select', '["Independent","Needs Assistance","Not Trained"]', true, 3),
+  ('Communication', 'Verbal', 'select', '["Yes","No","Limited"]', true, 4),
+  -- 'select_other': dropdown + an implicit "Others" option that reveals a text
+  -- box. Only shown once "Verbal" above is answered "No" (client-side, see
+  -- client/src/components/DevFunctionalField.jsx).
+  ('Communication', 'Primary mode of communication', 'select_other', '["Sign Language","Gestures/Pointing","Picture Exchange (PECS)","AAC Device/App","Written Words","Facial Expressions/Body Language"]', false, 5),
+  ('Communication', 'Understands instructions', 'select', '["Yes","No","Sometimes"]', true, 6),
+  ('Communication', 'Follows directions', 'select', '["Yes","No","With Support"]', true, 7),
+  ('Behavior & Social', 'Behavior concerns', 'text', null, false, 7),
+  ('Behavior & Social', 'Interacts with others', 'select', '["Easily","Needs Support","Limited"]', true, 9),
+  ('Behavior & Social', 'Sensory sensitivities (noise, touch, etc.)', 'text', null, false, 10),
+  ('Motor Skills', 'Walks independently', 'select', '["Yes","No","With Support"]', true, 11),
+  ('Motor Skills', 'Fine motor concerns (grasping, writing, etc.)', 'text', null, false, 12);

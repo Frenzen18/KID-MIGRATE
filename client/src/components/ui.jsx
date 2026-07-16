@@ -1,15 +1,19 @@
-import { createContext, useContext, useRef, useState } from 'react';
+import { createContext, useCallback, useContext, useRef, useState } from 'react';
 
 /* ── Toast ── */
 const ToastCtx = createContext(() => {});
 export function ToastProvider({ children }) {
   const [toast, setToast] = useState(null);
   const timer = useRef(null);
-  function show(msg, icon = 'fa-circle-check') {
+  // Stable identity (useCallback, no deps), every page does useCallback(fetchX, [toast]) +
+  // useEffect(fetchX, [fetchX]) to refresh its data, a new `show` reference on every toast
+  // (shown, then cleared ~2.6s later) would retrigger that effect and refetch/reset loading
+  // state on whichever page happens to be mounted, for literally any toast firing anywhere.
+  const show = useCallback((msg, icon = 'fa-circle-check') => {
     setToast({ msg, icon });
     clearTimeout(timer.current);
     timer.current = setTimeout(() => setToast(null), 2600);
-  }
+  }, []);
   return (
     <ToastCtx.Provider value={show}>
       {children}

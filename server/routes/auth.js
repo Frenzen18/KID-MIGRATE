@@ -1,5 +1,4 @@
 import { Router } from 'express';
-import crypto from 'crypto';
 import { rateLimit } from 'express-rate-limit';
 import { authClient, db } from '../supabase.js';
 import { requireAuth } from '../middleware/auth.js';
@@ -8,6 +7,7 @@ import { sendMail } from '../mailer.js';
 import { nextUserCode } from '../usercode.js';
 import { passwordPolicyError } from '../validate.js';
 import { logAudit } from '../lib/audit.js';
+import { setCode, getCode, deleteCode } from '../codes.js';
 
 const router = Router();
 
@@ -39,19 +39,16 @@ function loginRateLimit(req, res, next) {
 
 // (passwordPolicyError is imported from ../validate.js, shared with the users route)
 
-// In-memory store for password reset codes (use Redis/DB in production)
-const resetCodes = new Map();
-
-// In-memory store for email verification tokens: token -> { userId, email, fullName, expiresAt }
-const verifyTokens = new Map();
-// Resend cooldown: email -> timestamp of last send
-const verifyLastSent = new Map();
-const VERIFY_TOKEN_TTL = 24 * 60 * 60 * 1000; // 24 hours
+// Codes (email verification + password reset) persist in the verification_codes
+// table via ../codes.js, not server memory, so a restart doesn't invalidate a
+// code someone is mid-flow entering. Resend cooldown is derived from each
+// row's created_at instead of a separate timestamp map.
+const VERIFY_CODE_TTL = 15 * 60 * 1000; // 15 minutes
 const RESEND_COOLDOWN = 10 * 1000; // TESTING: 10 seconds, prod: 60 * 1000
 
 // (sendMail is imported from ../mailer.js, single shared, explicit-TLS transporter)
 
-function verificationEmailHtml(fullName, link) {
+function verificationCodeEmailHtml(fullName, code) {
   return `
     <div style="font-family: 'Inter', Arial, sans-serif; max-width: 480px; margin: 0 auto; padding: 32px 24px;">
       <div style="text-align: center; margin-bottom: 24px;">
@@ -60,30 +57,23 @@ function verificationEmailHtml(fullName, link) {
       </div>
       <div style="background: #F8FAFC; border: 1px solid #E2E8F0; border-radius: 12px; padding: 24px; text-align: center;">
         <p style="color: #334155; font-size: 14px; margin: 0 0 16px;">Hi ${fullName || 'there'},</p>
-        <p style="color: #64748B; font-size: 13px; margin: 0 0 20px;">Welcome to KID Clinic! Please confirm your email address to activate your account. This link expires in 24 hours.</p>
-        <a href="${link}" style="background: #1F4E9E; color: #fff; font-size: 15px; font-weight: 700; padding: 14px 32px; border-radius: 8px; display: inline-block; text-decoration: none;">Verify My Email</a>
-        <p style="color: #94A3B8; font-size: 12px; margin: 20px 0 0;">If the button doesn't work, copy this link into your browser:<br/><a href="${link}" style="color: #1F4E9E; word-break: break-all;">${link}</a></p>
-        <p style="color: #94A3B8; font-size: 12px; margin: 16px 0 0;">If you didn't create this account, please ignore this email.</p>
+        <p style="color: #64748B; font-size: 13px; margin: 0 0 20px;">Welcome to KID Clinic! Use this code to verify your email and activate your account. It expires in 15 minutes.</p>
+        <div style="background: #1F4E9E; color: #fff; font-size: 32px; font-weight: 700; letter-spacing: 8px; padding: 16px 24px; border-radius: 8px; display: inline-block;">${code}</div>
+        <p style="color: #94A3B8; font-size: 12px; margin: 20px 0 0;">If you didn't create this account, please ignore this email.</p>
       </div>
     </div>
   `;
 }
 
-/** Creates a fresh verification token for the user and emails them the link. */
-async function sendVerificationEmail({ userId, email, fullName, origin }) {
-  // Invalidate any previous tokens for this user
-  for (const [tok, entry] of verifyTokens) {
-    if (entry.userId === userId) verifyTokens.delete(tok);
-  }
-  const token = crypto.randomBytes(32).toString('hex');
-  verifyTokens.set(token, { userId, email, fullName, expiresAt: Date.now() + VERIFY_TOKEN_TTL });
-  const link = `${origin}/verify-email?token=${token}`;
+/** Creates a fresh 6-digit verification code for the user and emails it. */
+async function sendVerificationEmail({ userId, email, fullName }) {
+  const code = String(Math.floor(100000 + Math.random() * 900000));
   await sendMail({
     to: email,
     subject: 'Verify your email: KID Clinic',
-    html: verificationEmailHtml(fullName, link)
+    html: verificationCodeEmailHtml(fullName, code)
   });
-  verifyLastSent.set(email.toLowerCase(), Date.now());
+  await setCode({ email, purpose: 'email_verify', code, userId, fullName, expiresAt: Date.now() + VERIFY_CODE_TTL });
 }
 
 /**
@@ -111,7 +101,7 @@ router.post('/login', loginRateLimit, async (req, res) => {
   if (error) {
     if (error.code === 'email_not_confirmed' || /not confirmed/i.test(error.message)) {
       return res.status(401).json({
-        error: 'Please verify your email before signing in. Check your inbox for the verification link.',
+        error: 'Please verify your email before signing in. Check your inbox for the verification code.',
         needsVerification: true
       });
     }
@@ -133,6 +123,11 @@ router.post('/login', loginRateLimit, async (req, res) => {
     return res.status(401).json({ error: 'This account has been disabled or removed. Please contact the clinic.' });
   }
 
+  // Fire-and-forget: a login is a self-action (record_id === created_by), lets
+  // the Security Audit Logs' per-user activity view show how many times this
+  // account has signed in. Never throws, doesn't block the response.
+  logAudit({ table_name: 'profiles', record_id: data.user.id, action: 'login', description: `Signed in (${role})`, created_by: data.user.id });
+
   res.json({
     token: data.session.access_token,
     user: {
@@ -141,6 +136,7 @@ router.post('/login', loginRateLimit, async (req, res) => {
       role,
       specialty: profile.specialty || null,
       name: meta.full_name || data.user.email,
+      contact: profile.contact || null,
       privacy_consent_at: profile.privacy_consent_at || null,
       must_change_password: profile.must_change_password === true
     }
@@ -185,18 +181,18 @@ router.post('/signup', signupLimiter, async (req, res) => {
   const pwErr = passwordPolicyError(password);
   if (pwErr) return res.status(400).json({ error: pwErr });
 
-  // Contact number: optional, but if given it must be a valid PH mobile
-  // number and not already registered to another account.
-  let contact = null;
-  if (req.body?.contact) {
-    contact = normalizePhone(req.body.contact);
-    if (!contact) {
-      return res.status(400).json({ error: 'Contact number must start with +63 followed by the mobile number (e.g. +639171234567).' });
-    }
-    const { data: taken } = await db.from('profiles').select('id').eq('contact', contact).maybeSingle();
-    if (taken) {
-      return res.status(400).json({ error: 'This contact number is already registered to another account.' });
-    }
+  // Contact number: required, and must be a valid PH mobile number not
+  // already registered to another account.
+  if (!req.body?.contact) {
+    return res.status(400).json({ error: 'Contact number is required.' });
+  }
+  const contact = normalizePhone(req.body.contact);
+  if (!contact) {
+    return res.status(400).json({ error: 'Contact number must start with +63 followed by the mobile number (e.g. +639171234567).' });
+  }
+  const { data: taken } = await db.from('profiles').select('id').eq('contact', contact).maybeSingle();
+  if (taken) {
+    return res.status(400).json({ error: 'This contact number is already registered to another account.' });
   }
 
   const { data: created, error: createErr } = await db.auth.admin.createUser({
@@ -249,8 +245,7 @@ router.post('/signup', signupLimiter, async (req, res) => {
         await sendVerificationEmail({
           userId: existing.id,
           email: existing.email,
-          fullName: first_name,
-          origin: req.headers.origin || 'http://localhost:5173'
+          fullName: first_name
         });
       } catch (e) {
         console.error('Verification email error:', e.message);
@@ -262,32 +257,38 @@ router.post('/signup', signupLimiter, async (req, res) => {
     return res.status(400).json({ error: 'An account with that email already exists' });
   }
 
-  const { error: profileErr } = await db.from('profiles').insert({
-    id: created.user.id,
-    user_code: await nextUserCode(),
-    email: created.user.email,
-    first_name,
-    last_name,
-    full_name,
-    contact,
-    role: 'parent',
-    active: true
-  });
-  if (profileErr) {
-    console.error('Signup profile insert error:', profileErr.message);
-    // Roll back the auth user so we don't leave an orphaned login with no profile.
-    await db.auth.admin.deleteUser(created.user.id).catch(e => console.error('Signup rollback failed:', e.message));
-    return res.status(500).json({ error: 'Could not finish creating your account: ' + profileErr.message });
+  // From here on, the auth user exists. Anything that fails before we've
+  // successfully written the profile row (including an unexpected throw, not
+  // just a returned error) rolls the auth user back, so a failed signup never
+  // leaves a half-created account sitting in the database with no feedback.
+  try {
+    const { error: profileErr } = await db.from('profiles').insert({
+      id: created.user.id,
+      user_code: await nextUserCode(),
+      email: created.user.email,
+      first_name,
+      last_name,
+      full_name,
+      contact,
+      role: 'parent',
+      active: true
+    });
+    if (profileErr) throw new Error(profileErr.message);
+  } catch (e) {
+    console.error('Signup profile insert error:', e.message);
+    await db.auth.admin.deleteUser(created.user.id).catch(rollbackErr => console.error('Signup rollback failed:', rollbackErr.message));
+    return res.status(500).json({ error: 'Could not finish creating your account, nothing was saved. Please try again.' });
   }
 
-  // No auto-login: the account must be verified via the emailed link first.
+  // The profile row is committed at this point, so the account is real even
+  // if the email below fails, that failure is reported via emailSent instead
+  // of rolling anything back.
   let emailSent = true;
   try {
     await sendVerificationEmail({
       userId: created.user.id,
       email: created.user.email,
-      fullName: first_name,
-      origin: req.headers.origin || 'http://localhost:5173'
+      fullName: first_name
     });
   } catch (e) {
     console.error('Verification email error:', e.message);
@@ -297,28 +298,31 @@ router.post('/signup', signupLimiter, async (req, res) => {
   res.status(201).json({ created: true, verifyEmail: true, emailSent, email: created.user.email });
 });
 
-/** POST /api/auth/verify-email  { token }, activates the account behind the emailed link */
-router.post('/verify-email', async (req, res) => {
-  const { token } = req.body || {};
-  if (!token) return res.status(400).json({ error: 'Verification token is required' });
+/** POST /api/auth/verify-email  { email, code }, activates the account once the emailed code matches */
+router.post('/verify-email', codeLimiter, async (req, res) => {
+  const { email, code } = req.body || {};
+  if (!email || !code) return res.status(400).json({ error: 'Email and code are required' });
+  const key = email.trim().toLowerCase();
 
-  const entry = verifyTokens.get(token);
-  if (!entry) return res.status(400).json({ error: 'This verification link is invalid or has already been used.' });
-  if (Date.now() > entry.expiresAt) {
-    verifyTokens.delete(token);
-    return res.status(400).json({ error: 'This verification link has expired. Please request a new one.' });
+  const entry = await getCode(key, 'email_verify');
+  if (!entry || Date.now() > new Date(entry.expires_at).getTime()) {
+    if (entry) await deleteCode(key, 'email_verify');
+    return res.status(400).json({ error: 'Invalid or expired code. Please check the code or request a new one.' });
+  }
+  if (entry.code !== code.trim()) {
+    return res.status(400).json({ error: 'Invalid or expired code. Please check the code or request a new one.' });
   }
 
-  const { error } = await db.auth.admin.updateUserById(entry.userId, { email_confirm: true });
+  const { error } = await db.auth.admin.updateUserById(entry.user_id, { email_confirm: true });
   if (error) return res.status(500).json({ error: 'Could not verify your email: ' + error.message });
 
-  verifyTokens.delete(token);
+  await deleteCode(key, 'email_verify');
   res.json({ ok: true, message: 'Email verified. You can now sign in.' });
 
   // Welcome email, fire-and-forget, the account is verified either way.
   const origin = req.headers.origin || 'http://localhost:5173';
   sendMail({
-    to: entry.email,
+    to: email.trim(),
     subject: 'Welcome to KID Clinic!',
     html: `
       <div style="font-family: 'Inter', Arial, sans-serif; max-width: 480px; margin: 0 auto; padding: 32px 24px;">
@@ -327,7 +331,7 @@ router.post('/verify-email', async (req, res) => {
           <p style="color: #64748B; font-size: 13px;">Pediatric Speech & Occupational Therapy</p>
         </div>
         <div style="background: #F8FAFC; border: 1px solid #E2E8F0; border-radius: 12px; padding: 24px;">
-          <p style="color: #334155; font-size: 14px; margin: 0 0 16px;">Hi ${entry.fullName || 'there'},</p>
+          <p style="color: #334155; font-size: 14px; margin: 0 0 16px;">Hi ${entry.full_name || 'there'},</p>
           <p style="color: #64748B; font-size: 13px; margin: 0 0 16px; line-height: 1.7;">
             Your account is verified and ready, welcome to the KID Clinic family! From your parent portal you can:
           </p>
@@ -353,15 +357,18 @@ router.post('/resend-verification', emailLimiter, async (req, res) => {
   if (!email) return res.status(400).json({ error: 'Email is required' });
   const key = email.trim().toLowerCase();
 
-  const last = verifyLastSent.get(key);
-  if (last && Date.now() - last < RESEND_COOLDOWN) {
-    const wait = Math.ceil((RESEND_COOLDOWN - (Date.now() - last)) / 1000);
-    return res.status(429).json({ error: `Please wait ${wait}s before requesting another email.` });
+  const existing = await getCode(key, 'email_verify');
+  if (existing) {
+    const elapsed = Date.now() - new Date(existing.created_at).getTime();
+    if (elapsed < RESEND_COOLDOWN) {
+      const wait = Math.ceil((RESEND_COOLDOWN - elapsed) / 1000);
+      return res.status(429).json({ error: `Please wait ${wait}s before requesting another code.` });
+    }
   }
 
   const { data: profile } = await db.from('profiles').select('id, full_name').ilike('email', email.trim()).single();
   // Don't reveal whether the email is registered, respond the same either way.
-  if (!profile) return res.json({ ok: true, message: 'If that email has an unverified account, a new link has been sent.' });
+  if (!profile) return res.json({ ok: true, message: 'If that email has an unverified account, a new code has been sent.' });
 
   const { data: authUser } = await db.auth.admin.getUserById(profile.id);
   if (authUser?.user?.email_confirmed_at) {
@@ -372,10 +379,9 @@ router.post('/resend-verification', emailLimiter, async (req, res) => {
     await sendVerificationEmail({
       userId: profile.id,
       email: email.trim(),
-      fullName: profile.full_name,
-      origin: req.headers.origin || 'http://localhost:5173'
+      fullName: profile.full_name
     });
-    res.json({ ok: true, message: 'If that email has an unverified account, a new link has been sent.' });
+    res.json({ ok: true, message: 'If that email has an unverified account, a new code has been sent.' });
   } catch (e) {
     console.error('Resend verification error:', e.message);
     res.status(500).json({ error: 'Failed to send email. Please try again later.' });
@@ -471,9 +477,6 @@ router.post('/forgot-password', emailLimiter, async (req, res) => {
   const code = String(Math.floor(100000 + Math.random() * 900000));
   const expiresAt = Date.now() + 10 * 60 * 1000; // 10 minutes
 
-  // Store in memory (simple approach, for production use a DB table or Redis)
-  resetCodes.set(email.trim().toLowerCase(), { code, expiresAt, userId: profile.id });
-
   // Send via Gmail SMTP (shared transporter, explicit TLS, see mailer.js)
   try {
     await sendMail({
@@ -495,6 +498,7 @@ router.post('/forgot-password', emailLimiter, async (req, res) => {
       `
     });
 
+    await setCode({ email: email.trim(), purpose: 'password_reset', code, userId: profile.id, expiresAt });
     res.json({ ok: true, message: NEUTRAL_MSG });
   } catch (e) {
     console.error('SMTP Error:', e.message, e.code || '', e.response || '');
@@ -503,15 +507,16 @@ router.post('/forgot-password', emailLimiter, async (req, res) => {
 });
 
 /** POST /api/auth/verify-reset-code  { email, code } */
-router.post('/verify-reset-code', codeLimiter, (req, res) => {
+router.post('/verify-reset-code', codeLimiter, async (req, res) => {
   const { email, code } = req.body || {};
   if (!email || !code) return res.status(400).json({ error: 'Email and code are required' });
+  const key = email.trim().toLowerCase();
 
   // One uniform error for missing/expired/wrong so responses don't reveal
   // whether the email has an account or a pending code.
-  const entry = resetCodes.get(email.trim().toLowerCase());
-  if (Date.now() > (entry?.expiresAt || 0)) {
-    resetCodes.delete(email.trim().toLowerCase());
+  const entry = await getCode(key, 'password_reset');
+  if (!entry || Date.now() > new Date(entry.expires_at).getTime()) {
+    if (entry) await deleteCode(key, 'password_reset');
     return res.status(400).json({ error: 'Invalid or expired code. Please check the code or request a new one.' });
   }
   if (entry.code !== code.trim()) {
@@ -527,10 +532,11 @@ router.post('/reset-password', codeLimiter, async (req, res) => {
   if (!email || !code || !newPassword) return res.status(400).json({ error: 'Email, code, and new password are required' });
   const pwErr = passwordPolicyError(newPassword);
   if (pwErr) return res.status(400).json({ error: pwErr });
+  const key = email.trim().toLowerCase();
 
-  const entry = resetCodes.get(email.trim().toLowerCase());
-  if (Date.now() > (entry?.expiresAt || 0)) {
-    resetCodes.delete(email.trim().toLowerCase());
+  const entry = await getCode(key, 'password_reset');
+  if (!entry || Date.now() > new Date(entry.expires_at).getTime()) {
+    if (entry) await deleteCode(key, 'password_reset');
     return res.status(400).json({ error: 'Invalid or expired code. Please check the code or request a new one.' });
   }
   if (entry.code !== code.trim()) {
@@ -538,11 +544,11 @@ router.post('/reset-password', codeLimiter, async (req, res) => {
   }
 
   // Update password via Supabase Admin API
-  const { error } = await db.auth.admin.updateUserById(entry.userId, { password: newPassword });
+  const { error } = await db.auth.admin.updateUserById(entry.user_id, { password: newPassword });
   if (error) return res.status(500).json({ error: 'Failed to update password: ' + error.message });
 
   // Clean up the code
-  resetCodes.delete(email.trim().toLowerCase());
+  await deleteCode(key, 'password_reset');
 
   res.json({ ok: true, message: 'Password reset successfully. You can now sign in.' });
 });

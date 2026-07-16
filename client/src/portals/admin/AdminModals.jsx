@@ -2,7 +2,6 @@ import AddUserModal from './modals/AddUserModal.jsx';
 import EditUserModal from './modals/EditUserModal.jsx';
 import DeleteUserModal from './modals/DeleteUserModal.jsx';
 import EditClientModal from './modals/EditClientModal.jsx';
-import EditDevelopmentalInfoModal from './modals/EditDevelopmentalInfoModal.jsx';
 import ManageDevFunctionalFieldsModal from './modals/ManageDevFunctionalFieldsModal.jsx';
 import LogProgressNoteModal from './modals/LogProgressNoteModal.jsx';
 import DeleteClientModal from './modals/DeleteClientModal.jsx';
@@ -11,7 +10,6 @@ import CmsEditArticleModal from './modals/CmsEditArticleModal.jsx';
 import CmsEditAnnouncementModal from './modals/CmsEditAnnouncementModal.jsx';
 import CmsDeleteModal from './modals/CmsDeleteModal.jsx';
 import AddClientModal from './modals/AddClientModal.jsx';
-import RefundModal from './modals/RefundModal.jsx';
 import AssignTherapistModal from './modals/AssignTherapistModal.jsx';
 
 /**
@@ -28,7 +26,6 @@ const MODAL_COMPONENTS = {
   'edit-user': EditUserModal,
   'delete-user': DeleteUserModal,
   'edit-client': EditClientModal,
-  'edit-developmental-info': EditDevelopmentalInfoModal,
   'manage-dev-functional-fields': ManageDevFunctionalFieldsModal,
   'log-progress-note': LogProgressNoteModal,
   'delete-client': DeleteClientModal,
@@ -38,7 +35,6 @@ const MODAL_COMPONENTS = {
   'cms-edit-announcement': CmsEditAnnouncementModal,
   'cms-delete': CmsDeleteModal,
   'add-client': AddClientModal,
-  'refund': RefundModal,
   'assign-therapist': AssignTherapistModal,
 };
 

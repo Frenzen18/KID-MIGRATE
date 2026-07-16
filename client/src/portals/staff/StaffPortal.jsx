@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useAuth } from '../../auth.jsx';
 import { useToast } from '../../components/ui.jsx';
+import BrandLogo from '../../components/BrandLogo.jsx';
 import { api } from '../../api.js';
 import '../admin/admin.css';
 import AdminModals from '../admin/AdminModals.jsx';
@@ -145,17 +146,7 @@ export default function StaffPortal() {
   return (
     <>
       <aside id="sidebar" className={sidebarOpen ? 'open' : ''}>
-        <div className="logo-area">
-          <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-            <div style={{ width: 38, height: 38, borderRadius: 10, background: 'linear-gradient(135deg,#0EA5E9,#0D9488)', display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}>
-              <i className="fa-solid fa-child-reaching" style={{ color: '#fff', fontSize: 17 }} />
-            </div>
-            <div>
-              <div style={{ fontFamily: "'Poppins',sans-serif", fontWeight: 700, fontSize: 16, color: '#0F172A', lineHeight: 1.1 }}>KID</div>
-              <div style={{ fontSize: 10.5, color: '#64748B', fontWeight: 500 }}>Staff Dashboard</div>
-            </div>
-          </div>
-        </div>
+        <BrandLogo subtitle="Staff Dashboard" />
         <nav id="sidebar-nav">
           <div className="nav-label">Overview</div>
           {nav_item('dashboard', 'fa-gauge-high', 'Dashboard')}
@@ -229,7 +220,7 @@ export default function StaffPortal() {
           {page === 'dashboard' && <Dashboard {...pageProps} />}
           {page === 'clients' && <Clients {...pageProps} />}
           {page === 'cms' && <Cms {...pageProps} />}
-          {page === 'reservations' && <Reservations toast={toast} />}
+          {page === 'reservations' && <Reservations {...pageProps} />}
           {page === 'payments' && <Payments {...pageProps} />}
           {page === 'notifications' && <Notifications {...pageProps} />}
           {page === 'audit' && <Audit toast={toast} />}

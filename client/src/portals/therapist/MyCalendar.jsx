@@ -66,7 +66,6 @@ export default function MyCalendar({ toast, therapistName }) {
     <div className="spa-page" id="spa-my-calendar">
       <div style={{ marginBottom: 24 }}>
         <h1 style={{ fontSize: 22, fontWeight: 700, color: '#0F172A', margin: '0 0 4px' }}>Booking Schedule</h1>
-        <p style={{ fontSize: 13.5, color: '#64748B', margin: 0 }}>Your own shift and booked sessions, nobody else's schedule is shown here.</p>
       </div>
 
       {loading ? (

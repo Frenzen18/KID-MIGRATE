@@ -1,4 +1,4 @@
-import { useState, useEffect, Fragment } from 'react';
+import { useState, useEffect } from 'react';
 import { api } from '../../../api.js';
 
 /** Splits `value`s of a pie into stroke-dasharray/dashoffset segments around a r=58 circle. */
@@ -105,15 +105,6 @@ export function TrendChart({ labels, series, height = 170 }) {
   );
 }
 
-function initials(name) {
-  return (name || '').split(' ').filter(Boolean).slice(0, 2).map(w => w[0]).join('').toUpperCase() || '-';
-}
-
-const AVATAR_COLORS = [
-  { bg: '#DBEAFE', fg: '#2563EB' }, { bg: '#FCE7F3', fg: '#BE185D' }, { bg: '#FEF3C7', fg: '#D97706' },
-  { bg: '#CCFBF1', fg: '#0F766E' }, { bg: '#EDE9FE', fg: '#818CF8' }
-];
-
 const ROLE_DISCIPLINE = { ot: 'Occupational Therapy', speech: 'Speech-Language Therapy' };
 
 export default function Dashboard({ go, toast, openModal, role = 'admin' }) {
@@ -122,7 +113,6 @@ export default function Dashboard({ go, toast, openModal, role = 'admin' }) {
   const lockedDiscipline = ROLE_DISCIPLINE[role] || null;
   const showMilestones = role !== 'staff';
   const [anaTab, setAnaTab] = useState(showMilestones ? 'milestones' : 'employees');
-  const [expandedTherapist, setExpandedTherapist] = useState(null);
 
   const [employees, setEmployees] = useState(null);
   const [demo, setDemo] = useState(null);
@@ -198,10 +188,7 @@ export default function Dashboard({ go, toast, openModal, role = 'admin' }) {
     }).catch(() => { /* GAS trend is optional, don't block dashboard */ });
   }, []);
 
-  const specialtyPills = { OT: 'pill-blue', Speech: 'pill-teal', Both: 'pill-amber', Unassigned: 'pill' };
-  const specialtyFullLabel = { OT: 'Occupational Therapist', Speech: 'Speech-Language Therapist', Both: 'Handles Both (OT + Speech)', Unassigned: 'Unassigned, no sessions yet' };
   const empRows = employees?.rows || [];
-  const empMaxSessions = empRows.length ? Math.max(...empRows.map(r => r.totalSessions), 1) : 1;
 
   const genderTotal = demo ? demo.gender.Male + demo.gender.Female + demo.gender.Unspecified : 0;
   const ageTotal = demo ? Object.values(demo.ageBrackets).reduce((s, v) => s + v, 0) : 0;
@@ -209,17 +196,9 @@ export default function Dashboard({ go, toast, openModal, role = 'admin' }) {
 
   return (
     <div className="spa-page" id="spa-dashboard">
-      <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', marginBottom: 24, flexWrap: 'wrap', gap: 12 }}>
-        <div>
-          <h1 style={{ fontSize: 22, fontWeight: 700, color: '#0F172A', margin: '0 0 4px' }}>Good morning, Dr. Reyes 👋</h1>
-          <p style={{ fontSize: 13.5, color: '#64748B', margin: 0 }}><i className="fa-regular fa-calendar" style={{ marginRight: 5 }}></i>{new Date().toLocaleDateString('en-US', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' })} &nbsp;·&nbsp; Here's what's happening today at KID Clinic.</p>
-        </div>
-        <div style={{ display: 'flex', gap: 8 }}>
-          {role === 'admin' && (
-            <a href="#" data-spa="users" className="qa-btn" style={{ width: 'auto', padding: '10px 16px', fontSize: 13, textDecoration: 'none' }} onClick={e => { e.preventDefault(); openModal('add-user'); }}><i className="fa-solid fa-plus" style={{ color: '#0EA5E9' }}></i> Add User</a>
-          )}
-          <button className="qa-btn" style={{ width: 'auto', padding: '10px 16px', fontSize: 13 }} onClick={() => { toast('Opening Report Generator, pick "Dashboard Overview"', 'fa-chart-bar'); go('reports'); }}><i className="fa-solid fa-download" style={{ color: '#0D9488' }}></i> Export Report</button>
-        </div>
+      <div style={{ marginBottom: 24 }}>
+        <h1 style={{ fontSize: 22, fontWeight: 700, color: '#0F172A', margin: '0 0 4px' }}>Good morning, Dr. Reyes 👋</h1>
+        <p style={{ fontSize: 13.5, color: '#64748B', margin: 0 }}><i className="fa-regular fa-calendar" style={{ marginRight: 5 }}></i>{new Date().toLocaleDateString('en-US', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' })}</p>
       </div>
 
       {/* ANALYTICS SECTION */}
@@ -256,7 +235,7 @@ export default function Dashboard({ go, toast, openModal, role = 'admin' }) {
                   </div>
                 </>
               ) : (
-                <div style={{ padding: '48px 0', textAlign: 'center', color: '#94A3B8', fontSize: 13 }}><i className="fa-solid fa-chart-line" style={{ marginRight: 6, opacity: 0.5 }} />No data yet, submit OT GAS entries in the Milestone Scoreboard</div>
+                <div style={{ padding: '48px 0', textAlign: 'center', color: '#94A3B8', fontSize: 13 }}><i className="fa-solid fa-chart-line" style={{ marginRight: 6, opacity: 0.5 }} />No data yet, submit OT GAS entries</div>
               )}
             </div>
             )}
@@ -276,7 +255,7 @@ export default function Dashboard({ go, toast, openModal, role = 'admin' }) {
                   </div>
                 </>
               ) : (
-                <div style={{ padding: '48px 0', textAlign: 'center', color: '#94A3B8', fontSize: 13 }}><i className="fa-solid fa-chart-line" style={{ marginRight: 6, opacity: 0.5 }} />No data yet, submit Speech GAS entries in the Milestone Scoreboard</div>
+                <div style={{ padding: '48px 0', textAlign: 'center', color: '#94A3B8', fontSize: 13 }}><i className="fa-solid fa-chart-line" style={{ marginRight: 6, opacity: 0.5 }} />No data yet, submit Speech GAS entries</div>
               )}
             </div>
             )}
@@ -357,63 +336,6 @@ export default function Dashboard({ go, toast, openModal, role = 'admin' }) {
               </div>
             </div>
           </div>
-          <div style={{ display: 'grid', gridTemplateColumns: '1.3fr 1fr', gap: 16, marginBottom: 22 }}>
-            <div className="card" style={{ padding: '22px 0 0' }}>
-              <div style={{ padding: '0 24px 14px', borderBottom: '1px solid #F1F5F9' }}><div className="section-title">Individual Therapist Performance</div><div className="section-sub">Specialty, monthly load, and total sessions handled to date</div></div>
-              <div style={{ overflowX: 'auto' }}><table className="data-table"><thead><tr><th style={{ paddingLeft: 24 }}>Therapist</th><th>Specialty</th><th>Sessions (this mo.)</th><th>Total Handled</th><th>Clients</th></tr></thead><tbody>
-                {empRows.length === 0 && <tr><td colSpan={5} style={{ textAlign: 'center', padding: 24, fontSize: 12.5, color: '#94A3B8' }}>No therapist accounts yet</td></tr>}
-                {empRows.map((r, i) => {
-                  const c = AVATAR_COLORS[i % AVATAR_COLORS.length];
-                  const open = expandedTherapist === r.id;
-                  return (
-                    <Fragment key={r.id}>
-                      <tr style={{ cursor: 'pointer' }} onClick={() => setExpandedTherapist(open ? null : r.id)}>
-                        <td style={{ paddingLeft: 24 }}><div style={{ display: 'flex', alignItems: 'center', gap: 10 }}><div className="act-avatar" style={{ width: 32, height: 32, background: c.bg, color: c.fg, fontSize: 11 }}>{initials(r.name)}</div><div style={{ fontWeight: 600, color: '#0F172A' }}>{r.name}</div><i className={'fa-solid ' + (open ? 'fa-chevron-up' : 'fa-chevron-down')} style={{ fontSize: 10, color: '#94A3B8' }} /></div></td>
-                        <td><span className={'pill ' + specialtyPills[r.specialty]}>{r.specialty}</span></td>
-                        <td style={{ fontWeight: 700 }}>{r.sessionsThisMonth}</td>
-                        <td style={{ fontWeight: 700, color: '#0F172A' }}>{r.totalSessions}</td>
-                        <td>{r.clients}</td>
-                      </tr>
-                      {open && (
-                        <tr>
-                          <td colSpan={5} style={{ padding: '14px 24px', background: '#F8FAFC', borderBottom: '1px solid #F1F5F9' }}>
-                            <div style={{ display: 'flex', flexWrap: 'wrap', gap: 24, alignItems: 'center' }}>
-                              <div><div style={{ fontSize: 11, color: '#94A3B8', marginBottom: 2 }}>Specialty</div><div style={{ fontSize: 13, fontWeight: 600, color: '#0F172A' }}>{specialtyFullLabel[r.specialty] || r.specialty}</div></div>
-                              <div><div style={{ fontSize: 11, color: '#94A3B8', marginBottom: 2 }}>Sessions this month</div><div style={{ fontSize: 13, fontWeight: 600, color: '#0F172A' }}>{r.sessionsThisMonth}</div></div>
-                              <div><div style={{ fontSize: 11, color: '#94A3B8', marginBottom: 2 }}>Total sessions handled</div><div style={{ fontSize: 13, fontWeight: 600, color: '#0F172A' }}>{r.totalSessions}</div></div>
-                              <div><div style={{ fontSize: 11, color: '#94A3B8', marginBottom: 2 }}>Active clients</div><div style={{ fontSize: 13, fontWeight: 600, color: '#0F172A' }}>{r.clients}</div></div>
-                              {role === 'admin' && (
-                                <button className="btn-edit" style={{ marginLeft: 'auto' }} onClick={e => { e.stopPropagation(); sessionStorage.setItem('kid_users_prefill_search', r.name); go('users'); }}>
-                                  <i className="fa-solid fa-arrow-up-right-from-square" style={{ marginRight: 5 }} />Manage in Users
-                                </button>
-                              )}
-                            </div>
-                          </td>
-                        </tr>
-                      )}
-                    </Fragment>
-                  );
-                })}
-              </tbody></table></div>
-            </div>
-            <div className="card" style={{ padding: '22px 20px' }}>
-              <div className="section-title" style={{ marginBottom: 4 }}>Total Sessions Handled</div>
-              <div className="section-sub" style={{ marginBottom: 16 }}>Cumulative sessions per therapist</div>
-              <div style={{ display: 'flex', flexDirection: 'column', gap: 11 }}>
-                {empRows.length === 0 && <div style={{ fontSize: 12.5, color: '#94A3B8' }}>No sessions recorded yet</div>}
-                {empRows.map((r, i) => (
-                  <div key={r.id}>
-                    <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 12.5, color: '#475569', marginBottom: 5, fontWeight: 500 }}><span>{r.name} ({r.specialty})</span><span style={{ fontWeight: 700 }}>{r.totalSessions}</span></div>
-                    <div style={{ height: 11, background: '#F1F5F9', borderRadius: 6, overflow: 'hidden' }}><div style={{ width: `${Math.round((r.totalSessions / empMaxSessions) * 100)}%`, height: '100%', background: AVATAR_COLORS[i % AVATAR_COLORS.length].fg, borderRadius: 6 }}></div></div>
-                  </div>
-                ))}
-              </div>
-              <div style={{ marginTop: 14, paddingTop: 12, borderTop: '1px solid #F1F5F9' }}>
-                <div className="status-row"><span style={{ fontSize: 13, color: '#475569' }}>Team sessions, this month</span><span style={{ fontWeight: 700, color: '#0F172A' }}>{employees?.teamSessionsThisMonth ?? 0}</span></div>
-                <div className="status-row" style={{ borderBottom: 'none' }}><span style={{ fontSize: 13, color: '#475569' }}>Most sessions handled</span>{empRows[0] ? <span className="pill pill-blue" style={{ fontSize: 10 }}>{empRows[0].name} · {empRows[0].totalSessions}</span> : <span style={{ fontSize: 12, color: '#94A3B8' }}>-</span>}</div>
-              </div>
-            </div>
-          </div>
         </div>{/* end tab-employees */}
 
         {/* DEMOGRAPHICS TAB */}
@@ -457,7 +379,7 @@ export default function Dashboard({ go, toast, openModal, role = 'admin' }) {
               </div>
               <div style={{ marginTop: 16, paddingTop: 12, borderTop: '1px solid #F1F5F9' }}>
                 <div className="status-row"><span style={{ fontSize: 13, color: '#475569' }}>Peak enrollment age</span><span className="pill pill-green" style={{ fontSize: 10 }}>{peakAgeBracket ? `${peakAgeBracket[0]} years (${ageTotal ? Math.round((peakAgeBracket[1] / ageTotal) * 100) : 0}%)` : '-'}</span></div>
-                <div className="status-row" style={{ borderBottom: 'none' }}><span style={{ fontSize: 13, color: '#475569' }}>Youngest / Oldest</span><span style={{ fontWeight: 600, color: '#0F172A' }}>{demo?.youngest || '-'}, {demo?.oldest || '-'}</span></div>
+                <div className="status-row" style={{ borderBottom: 'none' }}><span style={{ fontSize: 13, color: '#475569' }}>Youngest / Oldest</span><span style={{ fontWeight: 600, color: '#0F172A' }}>{demo?.youngest != null ? demo.youngest + ' yrs' : '-'} / {demo?.oldest != null ? demo.oldest + ' yrs' : '-'}</span></div>
               </div>
             </div>
           </div>
@@ -465,7 +387,7 @@ export default function Dashboard({ go, toast, openModal, role = 'admin' }) {
 
       </div>{/* end #analytics */}
 
-      <div className="page-footer"><span style={{ fontSize: 12, color: '#94A3B8' }}>© 2026 KID Clinic Information Management System · All rights reserved</span><div style={{ display: 'flex', gap: 16 }}><span style={{ fontSize: 12, color: '#94A3B8', cursor: 'pointer' }}>Privacy Policy</span><span style={{ fontSize: 12, color: '#94A3B8', cursor: 'pointer' }}>Support</span></div></div>
+      <div className="page-footer"><span style={{ fontSize: 12, color: '#94A3B8' }}>© 2026 KID Clinic Information Management System · All rights reserved</span></div>
     </div>
   );
 }

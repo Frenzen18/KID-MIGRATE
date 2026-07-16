@@ -116,23 +116,34 @@ function DashboardReportView({ report }) {
         <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 16 }}>
           <div className="card" style={{ padding: 20 }}>
             <div className="section-title" style={{ marginBottom: 16 }}>Gender Distribution</div>
-            <div style={{ display: 'flex', justifyContent: 'center' }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 24, justifyContent: 'center', flexWrap: 'wrap' }}>
               <PieChart size={140} centerValue={genderTotal} centerLabel="Total" segments={[
                 { value: demo.gender.Male, color: '#0EA5E9' },
                 { value: demo.gender.Female, color: '#EC4899' },
                 { value: demo.gender.Unspecified, color: '#CBD5E1' }
               ]} />
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 9 }}>
+                <div style={{ fontSize: 12.5, color: '#334155' }}><span style={{ color: '#0EA5E9' }}>●</span> Male, {demo.gender.Male}</div>
+                <div style={{ fontSize: 12.5, color: '#334155' }}><span style={{ color: '#EC4899' }}>●</span> Female, {demo.gender.Female}</div>
+                {demo.gender.Unspecified > 0 && <div style={{ fontSize: 12.5, color: '#334155' }}><span style={{ color: '#CBD5E1' }}>●</span> Unspecified, {demo.gender.Unspecified}</div>}
+              </div>
             </div>
           </div>
           <div className="card" style={{ padding: 20 }}>
             <div className="section-title" style={{ marginBottom: 16 }}>Age Distribution</div>
-            <div style={{ display: 'flex', justifyContent: 'center' }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 24, justifyContent: 'center', flexWrap: 'wrap' }}>
               <PieChart size={140} centerValue={ageTotal} centerLabel="Total" segments={[
                 { value: demo.ageBrackets['3-4'], color: '#0EA5E9' },
                 { value: demo.ageBrackets['5-6'], color: '#10B981' },
                 { value: demo.ageBrackets['7-8'], color: '#818CF8' },
                 { value: demo.ageBrackets['9+'], color: '#F59E0B' }
               ]} />
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 9 }}>
+                <div style={{ fontSize: 12.5, color: '#334155' }}><span style={{ color: '#0EA5E9' }}>●</span> Age 3-4, {demo.ageBrackets['3-4']}</div>
+                <div style={{ fontSize: 12.5, color: '#334155' }}><span style={{ color: '#10B981' }}>●</span> Age 5-6, {demo.ageBrackets['5-6']}</div>
+                <div style={{ fontSize: 12.5, color: '#334155' }}><span style={{ color: '#818CF8' }}>●</span> Age 7-8, {demo.ageBrackets['7-8']}</div>
+                <div style={{ fontSize: 12.5, color: '#334155' }}><span style={{ color: '#F59E0B' }}>●</span> Age 9+, {demo.ageBrackets['9+']}</div>
+              </div>
             </div>
           </div>
         </div>
@@ -192,7 +203,8 @@ export default function Reports({ toast, role = 'admin' }) {
     const header = report.columns.map(c => c.label);
     const rows = report.rows.map(r => report.columns.map(c => r[c.key] ?? ''));
     const csv = [header, ...rows].map(r => r.map(v => `"${String(v).replace(/"/g, '""')}"`).join(',')).join('\r\n');
-    const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
+    // Leading BOM, without it Excel guesses Windows-1252 instead of UTF-8 and mangles non-ASCII characters (e.g. ₱).
+    const blob = new Blob(['﻿' + csv], { type: 'text/csv;charset=utf-8;' });
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
     a.href = url;
@@ -210,12 +222,12 @@ export default function Reports({ toast, role = 'admin' }) {
           body * { visibility: hidden; }
           #report-print, #report-print * { visibility: visible; }
           #report-print { position: fixed; top: 0; left: 0; width: 100%; padding: 24px; }
+          #report-print .no-print { display: none !important; }
         }
       `}</style>
 
       <div style={{ marginBottom: 24 }}>
         <h1 style={{ fontSize: 22, fontWeight: 700, color: '#0F172A', margin: '0 0 4px' }}>Report Generation &amp; Exporting</h1>
-        <p style={{ fontSize: 13.5, color: '#64748B', margin: 0 }}>Generate real, live reports from clinic data, export to CSV or print to PDF.</p>
       </div>
 
       <div style={{ display: 'grid', gridTemplateColumns: '1fr', maxWidth: 460, gap: 16, marginBottom: 24 }}>
@@ -246,6 +258,14 @@ export default function Reports({ toast, role = 'admin' }) {
         </div>
       </div>
 
+      {!report && (
+        <div className="card" style={{ padding: '40px 20px', marginBottom: 24, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', textAlign: 'center' }}>
+          <i className="fa-solid fa-file-chart-column" style={{ fontSize: 32, marginBottom: 12, color: '#CBD5E1' }} />
+          <div style={{ fontSize: 13.5, fontWeight: 600, color: '#64748B', marginBottom: 4 }}>No report generated yet</div>
+          <div style={{ fontSize: 12.5, color: '#94A3B8', maxWidth: 320 }}>Pick a report type and date range, then click "Generate Report" to see it here, ready to export as CSV or print to PDF.</div>
+        </div>
+      )}
+
       {report && (
         <div className="card" style={{ padding: '22px 0 0', marginBottom: 24 }}>
           <div id="report-print">
@@ -254,7 +274,7 @@ export default function Reports({ toast, role = 'admin' }) {
                 <div className="section-title">{report.title}</div>
                 <div className="section-sub">{report.range.from} to {report.range.to}</div>
               </div>
-              <div style={{ display: 'flex', gap: 8 }}>
+              <div className="no-print" style={{ display: 'flex', gap: 8 }}>
                 {!report.gasEntries && !report.gasTrend && !report.employees && !report.demo && <button className="qa-btn" style={{ width: 'auto', padding: '8px 14px', fontSize: 12 }} onClick={exportCsv}><i className="fa-solid fa-file-csv" style={{ color: '#0D9488' }} /> Export CSV</button>}
                 <button className="qa-btn" style={{ width: 'auto', padding: '8px 14px', fontSize: 12 }} onClick={printReport}><i className="fa-solid fa-print" style={{ color: '#0284C7' }} /> Print / Save as PDF</button>
               </div>
@@ -275,7 +295,7 @@ export default function Reports({ toast, role = 'admin' }) {
               </div>
             ) : (report.gasTrend || report.employees || report.demo) ? (
               <DashboardReportView report={report} />
-            ) : (
+            ) : type === 'summary' ? null : (
               <>
                 <div style={{ overflowX: 'auto' }}>
                   <table className="data-table">

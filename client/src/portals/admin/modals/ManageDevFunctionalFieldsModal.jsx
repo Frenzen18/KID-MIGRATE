@@ -19,7 +19,7 @@ export default function ManageDevFunctionalFieldsModal({ data, closeModal, toast
   if (fields === null && !err) load();
 
   function startAdd() {
-    setEditing({ section: '', label: '', field_type: 'select', optionsText: 'Yes, No, With Support', sort_order: (fields?.length || 0) + 1 });
+    setEditing({ section: '', label: '', field_type: 'select', optionsText: 'Yes, No, With Support', required: false, sort_order: (fields?.length || 0) + 1 });
   }
   function startEdit(f) {
     setEditing({ ...f, optionsText: (f.options || []).join(', ') });
@@ -29,13 +29,14 @@ export default function ManageDevFunctionalFieldsModal({ data, closeModal, toast
     setSaving(true);
     setErr('');
     try {
+      const needsOptions = editing.field_type === 'select' || editing.field_type === 'select_other';
       const body = {
         section: editing.section, label: editing.label, field_type: editing.field_type,
-        sort_order: editing.sort_order,
-        options: editing.field_type === 'select' ? editing.optionsText.split(',').map(s => s.trim()).filter(Boolean) : null
+        sort_order: editing.sort_order, required: editing.required === true,
+        options: needsOptions ? editing.optionsText.split(',').map(s => s.trim()).filter(Boolean) : null
       };
       if (!body.section.trim() || !body.label.trim()) { setErr('Section and label are required.'); setSaving(false); return; }
-      if (body.field_type === 'select' && body.options.length < 2) { setErr('A select field needs at least 2 options.'); setSaving(false); return; }
+      if (needsOptions && body.options.length < 2) { setErr('This field type needs at least 2 options.'); setSaving(false); return; }
 
       if (editing.id) {
         await api('/dev-functional-fields/' + editing.id, { method: 'PUT', body });
@@ -82,13 +83,24 @@ export default function ManageDevFunctionalFieldsModal({ data, closeModal, toast
             <div><label className="form-label">Field Type</label>
               <select className="form-select" value={editing.field_type} onChange={e => setEditing(f => ({ ...f, field_type: e.target.value }))}>
                 <option value="select">Multiple Choice</option>
+                <option value="select_other">Multiple Choice + Others</option>
                 <option value="text">Free Text</option>
               </select>
             </div>
             <div style={{ gridColumn: '1/-1' }}><label className="form-label">Question / Label</label><input className="form-input" value={editing.label} onChange={e => setEditing(f => ({ ...f, label: e.target.value }))} placeholder="e.g. Able to dress independently" /></div>
-            {editing.field_type === 'select' && (
-              <div style={{ gridColumn: '1/-1' }}><label className="form-label">Options (comma-separated)</label><input className="form-input" value={editing.optionsText} onChange={e => setEditing(f => ({ ...f, optionsText: e.target.value }))} placeholder="Yes, No, With Support" /></div>
+            {(editing.field_type === 'select' || editing.field_type === 'select_other') && (
+              <div style={{ gridColumn: '1/-1' }}>
+                <label className="form-label">Options (comma-separated)</label>
+                <input className="form-input" value={editing.optionsText} onChange={e => setEditing(f => ({ ...f, optionsText: e.target.value }))} placeholder="Yes, No, With Support" />
+                {editing.field_type === 'select_other' && <div style={{ fontSize: 11, color: '#94A3B8', marginTop: 4 }}>An "Others" option (with a text box) is added automatically, no need to list it here.</div>}
+              </div>
             )}
+            <div style={{ gridColumn: '1/-1' }}>
+              <label style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 12.5, color: '#334155', cursor: 'pointer' }}>
+                <input type="checkbox" checked={editing.required === true} onChange={e => setEditing(f => ({ ...f, required: e.target.checked }))} style={{ width: 14, height: 14, accentColor: '#1F4E9E', cursor: 'pointer' }} />
+                Required (parents must answer this before submitting)
+              </label>
+            </div>
           </div>
           <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8 }}>
             <button className="btn-secondary" onClick={() => { setEditing(null); setErr(''); }} disabled={saving}>Cancel</button>
@@ -109,8 +121,8 @@ export default function ManageDevFunctionalFieldsModal({ data, closeModal, toast
               {sectionFields.map(f => (
                 <div key={f.id} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '8px 12px', borderRadius: 8, background: f.active ? '#fff' : '#F8FAFC', border: '1px solid #F1F5F9', marginBottom: 6, opacity: f.active ? 1 : 0.6 }}>
                   <div>
-                    <div style={{ fontSize: 13, fontWeight: 600, color: '#0F172A' }}>{f.label}</div>
-                    <div style={{ fontSize: 11, color: '#94A3B8' }}>{f.field_type === 'select' ? (f.options || []).join(' · ') : 'Free text'}{!f.active ? ' · Removed' : ''}</div>
+                    <div style={{ fontSize: 13, fontWeight: 600, color: '#0F172A' }}>{f.label}{f.required && <span style={{ color: '#DC2626' }}> *</span>}</div>
+                    <div style={{ fontSize: 11, color: '#94A3B8' }}>{f.field_type === 'select' ? (f.options || []).join(' · ') : f.field_type === 'select_other' ? [...(f.options || []), 'Others'].join(' · ') : 'Free text'}{f.required ? ' · Required' : ''}{!f.active ? ' · Removed' : ''}</div>
                   </div>
                   <div style={{ display: 'flex', gap: 6 }}>
                     <button className="btn-edit" style={{ fontSize: 11 }} onClick={() => startEdit(f)}>Edit</button>

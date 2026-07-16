@@ -3,32 +3,34 @@ import { Modal } from '../../../components/ui.jsx';
 
 export default function EditClientModal({ data, closeModal, toast }) {
   const [first = '', last = ''] = (data.name || '').split(' ');
-  // Real registered ot/speech accounts (passed in from Clients.jsx's own /api/shifts fetch,   // the same live data source the 3.2 Employee Scheduling tab uses), not a fabricated list.
+  // Real registered ot/speech accounts (passed in from Clients.jsx's own /api/shifts fetch,
+  // the same live data source Reservations.jsx's Employee Scheduling tab uses), not a fabricated list.
   const therapistRoleAbbr = { ot: 'OT', speech: 'Speech' };
   const therapists = (data.therapists || []).map(t => `${t.name} (${therapistRoleAbbr[t.role] || t.role})`);
   const statuses = ['Active', 'On Hold', 'Discharged', 'New'];
   const statusPillClass = { Active: 'pill pill-green', 'On Hold': 'pill pill-amber', Discharged: 'pill pill-red', New: 'pill pill-blue' };
   // Labels shown in the dropdown map to the DB's therapy_type values ('OT' | 'Speech' | 'Both').
+  // A client isn't required to have a therapy type or therapist yet, both start unset until
+  // the clinic makes an assessment, so "Not yet assigned" is a real, selectable option here,
+  // not just a display fallback.
   const therapyLabels = { OT: 'Occupational Therapy', Speech: 'Speech Therapy', Both: 'Combined' };
   const therapyValues = { 'Occupational Therapy': 'OT', 'Speech Therapy': 'Speech', 'Combined': 'Both' };
-  const [therapyLabel, setTherapyLabel] = useState(therapyLabels[data.therapy_type] || 'Occupational Therapy');
-  const therapyType = therapyValues[therapyLabel] || 'OT';
+  const [therapyLabel, setTherapyLabel] = useState(therapyLabels[data.therapy_type] || '');
+  const therapyType = therapyValues[therapyLabel] || '';
   // Combined clients can be assigned any therapist; OT/Speech-only clients only see therapists of that discipline.
-  const visibleTherapists = therapyType === 'Both' ? therapists : therapists.filter(t => t.endsWith('(' + therapyType + ')'));
+  // No therapy type chosen yet means no therapist can be chosen yet either.
+  const visibleTherapists = therapyType === '' ? [] : therapyType === 'Both' ? therapists : therapists.filter(t => t.endsWith('(' + therapyType + ')'));
   // Must come from visibleTherapists, not the full unfiltered list, otherwise the
   // preselected value could be a therapist not shown in the dropdown's own options,
   // and saving without touching the field would silently assign the wrong person.
-  const defaultTherapist = visibleTherapists.find(t => data.thxName && t.startsWith(data.thxName.split(' ')[0])) || visibleTherapists[0] || '';
+  const defaultTherapist = visibleTherapists.find(t => data.thxName && t.startsWith(data.thxName.split(' ')[0])) || '';
   const [therapistVal, setTherapistVal] = useState(defaultTherapist);
 
   function changeTherapyType(newLabel) {
     setTherapyLabel(newLabel);
-    const newType = therapyValues[newLabel] || 'OT';
-    const stillVisible = newType === 'Both' || therapistVal.endsWith('(' + newType + ')');
-    if (!stillVisible) {
-      const firstMatch = therapists.find(t => newType === 'Both' || t.endsWith('(' + newType + ')'));
-      if (firstMatch) setTherapistVal(firstMatch);
-    }
+    const newType = therapyValues[newLabel] || '';
+    const stillVisible = newType !== '' && (newType === 'Both' || therapistVal.endsWith('(' + newType + ')'));
+    if (!stillVisible) setTherapistVal('');
   }
 
   return (
@@ -38,11 +40,13 @@ export default function EditClientModal({ data, closeModal, toast }) {
         <div><label className="form-label">Last Name</label><input id="ec-last" className="form-input" defaultValue={last} /></div>
         <div><label className="form-label">Guardian</label><input id="ec-guardian" className="form-input" defaultValue={data.guardian || ''} /></div>
         <div><label className="form-label">Status</label><select id="ec-status" className="form-select" defaultValue={statuses.includes(data.status) ? data.status : statuses[0]}>{statuses.map(s => <option key={s} value={s}>{s}</option>)}</select></div>
-        <div><label className="form-label">Therapy Type</label><select id="ec-therapy" className="form-select" value={therapyLabel} onChange={e => changeTherapyType(e.target.value)}><option>Occupational Therapy</option><option>Speech Therapy</option><option>Combined</option></select></div>
+        <div><label className="form-label">Therapy Type</label><select id="ec-therapy" className="form-select" value={therapyLabel} onChange={e => changeTherapyType(e.target.value)}><option value="">Not yet assigned</option><option>Occupational Therapy</option><option>Speech Therapy</option><option>Combined</option></select></div>
         <div>
           <label className="form-label">Assigned Therapist</label>
-          {visibleTherapists.length ? (
-            <select id="ec-therapist" className="form-select" value={therapistVal} onChange={e => setTherapistVal(e.target.value)}>{visibleTherapists.map(t => <option key={t} value={t}>{t}</option>)}</select>
+          {therapyType === '' ? (
+            <div className="form-input" style={{ display: 'flex', alignItems: 'center', color: '#94A3B8', background: '#F8FAFC' }}>Choose a therapy type first</div>
+          ) : visibleTherapists.length ? (
+            <select id="ec-therapist" className="form-select" value={therapistVal} onChange={e => setTherapistVal(e.target.value)}><option value="">Not yet assigned</option>{visibleTherapists.map(t => <option key={t} value={t}>{t}</option>)}</select>
           ) : (
             <div className="form-input" style={{ display: 'flex', alignItems: 'center', color: '#94A3B8', background: '#F8FAFC' }}>No registered {therapyType === 'Both' ? '' : therapyType + ' '}therapists yet</div>
           )}
