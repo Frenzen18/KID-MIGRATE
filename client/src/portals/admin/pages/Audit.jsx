@@ -26,7 +26,13 @@ const TABLE_LABEL = {
   cms_posts: 'CMS Post',
   announcements: 'Announcement',
   shifts: 'Therapist Shift',
-  notifications: 'Notification Push'
+  notifications: 'Notification Push',
+  gas_entries: 'GAS Entry',
+  gas_questionnaires: 'GAS Questionnaire Set',
+  gas_questionnaire_items: 'GAS Goal Item',
+  dev_functional_fields: 'Clinical Field Config',
+  branding_settings: 'Branding & Theme',
+  clinic_holidays: 'Clinic Holiday'
 };
 
 const ROLE_LABEL = { admin: 'Administrator', staff: 'Staff', ot: 'Occupational Therapist', speech: 'Speech-Language Therapist', parent: 'Guardian/Caretaker' };
@@ -123,27 +129,6 @@ export default function Audit({ toast }) {
     if (match) selectUser(match.id);
   }
 
-  function exportCsv() {
-    if (!logs.length) { toast('No audit events to export', 'fa-triangle-exclamation'); return; }
-    const header = ['Record', 'Action', 'Description', 'Created By', 'Created At', 'Updated By', 'Updated At', 'Approved By', 'Approved At'];
-    const rows = logs.map(l => [
-      TABLE_LABEL[l.table_name] || l.table_name, l.action, l.description || '',
-      l.creator?.full_name || '', l.created_at || '',
-      l.updater?.full_name || '', l.updated_at || '',
-      l.approver?.full_name || '', l.approved_at || ''
-    ]);
-    const csv = [header, ...rows].map(r => r.map(v => `"${String(v).replace(/"/g, '""')}"`).join(',')).join('\r\n');
-    // Leading BOM, without it Excel guesses Windows-1252 instead of UTF-8 and mangles non-ASCII characters.
-    const blob = new Blob(['﻿' + csv], { type: 'text/csv;charset=utf-8;' });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = `audit-trail-${new Date().toISOString().slice(0, 10)}.csv`;
-    a.click();
-    URL.revokeObjectURL(url);
-    toast('Audit trail exported to CSV', 'fa-file-export');
-  }
-
   function exportPdf() {
     if (!logs.length) { toast('No audit events to export', 'fa-triangle-exclamation'); return; }
     window.print();
@@ -166,9 +151,6 @@ export default function Audit({ toast }) {
           <h1 style={{ fontSize: 22, fontWeight: 700, color: '#0F172A', margin: '0 0 4px' }}>Security Audit Logs</h1>
         </div>
         <div style={{ display: 'flex', gap: 8 }}>
-          <button className="qa-btn" style={{ width: 'auto', padding: '10px 16px', fontSize: 13 }} onClick={exportCsv}>
-            <i className="fa-solid fa-file-export" style={{ color: 'var(--cat-3)' }} /> Export CSV
-          </button>
           <button className="qa-btn" style={{ width: 'auto', padding: '10px 16px', fontSize: 13 }} onClick={exportPdf}>
             <i className="fa-solid fa-file-pdf" style={{ color: 'var(--color-danger-strong)' }} /> Export PDF
           </button>
@@ -204,8 +186,8 @@ export default function Audit({ toast }) {
               <option value="payments">Payments</option>
               <option value="cms_posts">CMS Posts</option>
               <option value="announcements">Announcements</option>
-              <option value="shifts">Therapist Shifts</option>
               <option value="notifications">Notification Pushes</option>
+              <option value="gas_entries">GAS Entries</option>
             </select>
             <select className="form-select" style={{ width: 'auto', height: 34, fontSize: 12.5 }} value={actionFilter} onChange={e => setActionFilter(e.target.value)}>
               <option value="">All Actions</option>

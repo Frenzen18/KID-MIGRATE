@@ -12,6 +12,7 @@ import Users from './pages/Users.jsx';
 import Clients from './pages/Clients.jsx';
 import Cms from './pages/Cms.jsx';
 import Reservations from './pages/Reservations.jsx';
+import Milestones from './pages/Milestones.jsx';
 import Payments from './pages/Payments.jsx';
 import Notifications from './pages/Notifications.jsx';
 import Audit from './pages/Audit.jsx';
@@ -20,7 +21,7 @@ import Settings from './pages/Settings.jsx';
 
 /** All page keys the sidebar can navigate to, used to validate the page restored from localStorage on reload. */
 const ADMIN_PAGE_KEYS = [
-  'dashboard', 'users', 'clients', 'cms', 'reservations',
+  'dashboard', 'users', 'clients', 'cms', 'reservations', 'milestones',
   'payments', 'notifications', 'audit', 'reports', 'settings'
 ];
 
@@ -183,6 +184,7 @@ export default function AdminPortal() {
           <div className="nav-label">Management</div>
           {nav_item('users', 'fa-users', 'User Management')}
           {nav_item('clients', 'fa-child', 'Client Records')}
+          {nav_item('milestones', 'fa-bullseye', 'Milestone Scorecard')}
           {nav_item('cms', 'fa-layer-group', 'CMS')}
           {nav_item('reservations', 'fa-calendar-check', 'Booking and Appointment', pendingReservations > 0 ? pendingReservations : null, 'red')}
           {nav_item('payments', 'fa-credit-card', 'Payment Management')}
@@ -255,6 +257,7 @@ export default function AdminPortal() {
           {page === 'clients' && <Clients {...pageProps} />}
           {page === 'cms' && <Cms {...pageProps} onUnsavedChange={setHasUnsavedCms} />}
           {page === 'reservations' && <Reservations {...pageProps} />}
+          {page === 'milestones' && <Milestones {...pageProps} />}
           {page === 'payments' && <Payments {...pageProps} />}
           {page === 'notifications' && <Notifications {...pageProps} />}
           {page === 'audit' && <Audit {...pageProps} />}

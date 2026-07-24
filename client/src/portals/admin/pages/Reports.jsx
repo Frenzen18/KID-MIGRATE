@@ -61,7 +61,8 @@ const AUDIT_TABLE_OPTIONS = [
   { value: 'cms_posts', label: 'CMS Posts' },
   { value: 'announcements', label: 'Announcements' },
   { value: 'shifts', label: 'Therapist Shifts' },
-  { value: 'notifications', label: 'Notification Pushes' }
+  { value: 'notifications', label: 'Notification Pushes' },
+  { value: 'gas_entries', label: 'GAS Entries' }
 ];
 const AUDIT_ACTION_OPTIONS = [
   { value: '', label: 'All Actions' },
@@ -326,21 +327,6 @@ export default function Reports({ toast, role = 'admin' }) {
     }
   }
 
-  function exportCsv() {
-    if (!report) return;
-    const header = report.columns.map(c => c.label);
-    const rows = report.rows.map(r => report.columns.map(c => r[c.key] ?? ''));
-    const csv = [header, ...rows].map(r => r.map(v => `"${String(v).replace(/"/g, '""')}"`).join(',')).join('\r\n');
-    // Leading BOM, without it Excel guesses Windows-1252 instead of UTF-8 and mangles non-ASCII characters (e.g. ₱).
-    const blob = new Blob(['﻿' + csv], { type: 'text/csv;charset=utf-8;' });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = `${report.title.replace(/\s+/g, '-')}_${report.range.from}_to_${report.range.to}.csv`;
-    a.click();
-    URL.revokeObjectURL(url);
-    toast('Report exported to CSV', 'fa-file-csv');
-  }
   function printReport() { window.print(); }
 
   return (
@@ -503,7 +489,6 @@ export default function Reports({ toast, role = 'admin' }) {
                   </label>
                 </div>
               )}
-              {!report.gasEntries && !report.gasTrend && !report.employees && !report.demo && <button className="qa-btn" style={{ width: 'auto', padding: '8px 14px', fontSize: 12 }} onClick={exportCsv}><i className="fa-solid fa-file-csv" style={{ color: '#0D9488' }} /> Export CSV</button>}
               <button className="qa-btn" style={{ width: 'auto', padding: '8px 14px', fontSize: 12 }} onClick={printReport}><i className="fa-solid fa-print" style={{ color: '#0284C7' }} /> Print / Save as PDF</button>
             </div>
 

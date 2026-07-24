@@ -399,6 +399,24 @@ router.get('/me', requireAuth, async (req, res) => {
 });
 
 /**
+ * GET /api/auth/session-check, the timestamp of the most recent successful
+ * login on this account (see the `login` audit event recorded in POST
+ * /login), so the client can tell "a newer sign-in happened than the one I'm
+ * using" and warn the user their account may be signed in somewhere else.
+ */
+router.get('/session-check', requireAuth, async (req, res) => {
+  const { data } = await db.from('audit_logs')
+    .select('created_at')
+    .eq('table_name', 'profiles')
+    .eq('record_id', req.user.id)
+    .eq('action', 'login')
+    .order('created_at', { ascending: false })
+    .limit(1)
+    .maybeSingle();
+  res.json({ last_login_at: data?.created_at || null });
+});
+
+/**
  * PUT /api/auth/me { contact }, self-service update of your own contact
  * number (e.g. the guardian/caretaker "My Profile" panel). Any authenticated
  * role can use this for their own account; it never touches other users.

@@ -1,6 +1,7 @@
 import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom';
 import { AuthProvider, useAuth } from './auth.jsx';
 import { ToastProvider } from './components/ui.jsx';
+import SessionWatcher from './components/SessionWatcher.jsx';
 import Landing from './pages/Landing.jsx';
 import Login from './pages/Login.jsx';
 import AdminLogin from './pages/AdminLogin.jsx';
@@ -48,6 +49,7 @@ export default function App() {
     <BrowserRouter>
       <AuthProvider>
         <ToastProvider>
+          <SessionWatcher />
           <Routes>
             <Route path="/" element={<Landing />} />
             <Route path="/login" element={<Login />} />

@@ -61,8 +61,21 @@ function gasScoreTone(score) {
 const MILESTONES_TAB_KEYS = ['scorecard', 'entries'];
 
 export default function Milestones({ go, toast, openModal }) {
+  /* ═══════ GAS (Goal Attainment Scaling) assessment questionnaire tool ═══════ */
+  const { user } = useAuth();
+  const isGasAdmin = user?.role === 'admin';
+  // An 'ot'/'speech' account only ever scores their own discipline, role directly
+  // encodes it now. Admin/staff are unrestricted and see both disciplines.
+  const lockedDiscipline = ROLE_DISCIPLINE[user?.role] || null;
+  const visibleDisciplines = lockedDiscipline ? [lockedDiscipline] : GAS_DISCIPLINES;
+
   /* ── Tab switching ── */
+  // Admin is oversight-only here: scoring a session and re-scoring/editing a
+  // submitted one are the therapist's clinical judgment calls, not something
+  // an admin account should be doing. Admin only ever sees Session Entries
+  // (view/archive), the Scorecard Input tab and its Edit action don't exist for them.
   const [tab, setTab] = useState(() => {
+    if (isGasAdmin) return 'entries';
     const saved = localStorage.getItem('kid_admin_milestones_tab');
     return MILESTONES_TAB_KEYS.includes(saved) ? saved : 'scorecard';
   });
@@ -72,14 +85,6 @@ export default function Milestones({ go, toast, openModal }) {
   const [msModal, setMsModal] = useState(null); // { type, param, name, lockDate }
   const openMsModal = (type, param) => setMsModal({ type, param });
   const closeModal = () => setMsModal(null);
-
-  /* ═══════ GAS (Goal Attainment Scaling) assessment questionnaire tool ═══════ */
-  const { user } = useAuth();
-  const isGasAdmin = user?.role === 'admin';
-  // An 'ot'/'speech' account only ever scores their own discipline, role directly
-  // encodes it now. Admin/staff are unrestricted and see both disciplines.
-  const lockedDiscipline = ROLE_DISCIPLINE[user?.role] || null;
-  const visibleDisciplines = lockedDiscipline ? [lockedDiscipline] : GAS_DISCIPLINES;
 
   const [gasDiscipline, setGasDiscipline] = useState(GAS_DISCIPLINES[0]);
   const [gasSets, setGasSets] = useState({});       // { [discipline]: [{...set, items:[]}] }
@@ -488,6 +493,8 @@ export default function Milestones({ go, toast, openModal }) {
 
   /* ── Session Entries: view / edit a submitted GAS entry ── */
   const [gasEntriesFilter, setGasEntriesFilter] = useState('all'); // 'all' | discipline
+  const [gasEntryTherapistFilter, setGasEntryTherapistFilter] = useState('all'); // 'all' | therapist_name
+  const [gasEntryCreatorFilter, setGasEntryCreatorFilter] = useState('all'); // 'all' | submitted-by name
   const [gasEntryIdSearch, setGasEntryIdSearch] = useState('');
   const [gasEntryDateFrom, setGasEntryDateFrom] = useState('');
   const [gasEntryDateTo, setGasEntryDateTo] = useState('');
@@ -506,7 +513,14 @@ export default function Milestones({ go, toast, openModal }) {
   // dialog: null | { type: 'bulk', count } | { type: 'single', entry }
   const [gasArchiveConfirm, setGasArchiveConfirm] = useState(null);
 
+  // Distinct option lists, derived from the entries actually loaded (not the full
+  // therapist/user directory), so a filter never offers a choice with zero results.
+  const gasEntryTherapistOptions = [...new Set(gasAllEntries.map(e => e.therapist_name).filter(Boolean))].sort();
+  const gasEntryCreatorOptions = [...new Set(gasAllEntries.map(e => e.created_by_name).filter(Boolean))].sort();
+
   const gasDisciplineEntries = (gasEntriesFilter === 'all' ? gasAllEntries : gasAllEntries.filter(e => e.discipline === gasEntriesFilter))
+    .filter(e => gasEntryTherapistFilter === 'all' || e.therapist_name === gasEntryTherapistFilter)
+    .filter(e => gasEntryCreatorFilter === 'all' || e.created_by_name === gasEntryCreatorFilter)
     .filter(e => !gasEntryDateFrom || e.session_date >= gasEntryDateFrom)
     .filter(e => !gasEntryDateTo || e.session_date <= gasEntryDateTo);
   const gasVisibleEntries = gasEntryIdSearch.trim()
@@ -682,11 +696,14 @@ export default function Milestones({ go, toast, openModal }) {
 
       {/* View tabs */}
       <div style={{ display: 'flex', gap: 6, marginBottom: 20, flexWrap: 'wrap' }}>
-        <button className={'tab-pill' + (tab === 'scorecard' ? ' active' : '')} onClick={() => setTab('scorecard')}><i className="fa-solid fa-file-pen" style={{ marginRight: 6 }} />GAS Scorecard Input</button>
+        {!isGasAdmin && (
+          <button className={'tab-pill' + (tab === 'scorecard' ? ' active' : '')} onClick={() => setTab('scorecard')}><i className="fa-solid fa-file-pen" style={{ marginRight: 6 }} />GAS Scorecard Input</button>
+        )}
         <button className={'tab-pill' + (tab === 'entries' ? ' active' : '')} onClick={() => setTab('entries')}><i className="fa-solid fa-table-list" style={{ marginRight: 6 }} />Session Entries</button>
       </div>
 
       {/* ═══════ TAB: SCORECARD INPUT (5.1 / 5.2 / 5.2.1 / 5.2.2 / 5.3 / 5.4) ═══════ */}
+      {!isGasAdmin && (
       <div id="tab-scorecard" style={{ display: tab === 'scorecard' ? '' : 'none' }}>
 
         {/* ─── GAS (Goal Attainment Scaling) assessment questionnaire tool ─── */}
@@ -695,7 +712,7 @@ export default function Milestones({ go, toast, openModal }) {
             <div>
               <div className="section-title"><i className="fa-solid fa-bullseye" style={{ color: '#4F46E5', marginRight: 7 }} />GAS Assessment Questionnaire</div>
             </div>
-            {isGasAdmin && (
+            {lockedDiscipline && (
               <button className="qa-btn" style={{ width: 'auto', padding: '9px 14px', fontSize: 12.5 }} onClick={() => { setGasManageOpen(true); setGasManageSetId(null); }}>
                 <i className="fa-solid fa-sliders" style={{ color: '#4F46E5' }} /> Manage Questionnaire Sets
               </button>
@@ -1007,6 +1024,7 @@ export default function Milestones({ go, toast, openModal }) {
         </div>
 
       </div>
+      )}
 
       {/* ═══════ TAB: SESSION ENTRIES ═══════ */}
       <div id="tab-entries" style={{ display: tab === 'entries' ? '' : 'none' }}>
@@ -1026,6 +1044,14 @@ export default function Milestones({ go, toast, openModal }) {
                   {GAS_DISCIPLINES.map(d => <option key={d} value={d}>{d}</option>)}
                 </select>
               )}
+              <select className="form-select" style={{ width: 'auto', height: 34, fontSize: 12.5 }} value={gasEntryTherapistFilter} onChange={e => { setGasEntryTherapistFilter(e.target.value); setGasEntryPage(1); setGasEntrySelected(new Set()); }}>
+                <option value="all">All Therapists</option>
+                {gasEntryTherapistOptions.map(name => <option key={name} value={name}>{name}</option>)}
+              </select>
+              <select className="form-select" style={{ width: 'auto', height: 34, fontSize: 12.5 }} value={gasEntryCreatorFilter} onChange={e => { setGasEntryCreatorFilter(e.target.value); setGasEntryPage(1); setGasEntrySelected(new Set()); }}>
+                <option value="all">Added By, Anyone</option>
+                {gasEntryCreatorOptions.map(name => <option key={name} value={name}>Added by {name}</option>)}
+              </select>
             </div>
           </div>
           {/* Bulk actions apply to 2+ entries, a single entry has its own row buttons. */}
@@ -1046,6 +1072,8 @@ export default function Milestones({ go, toast, openModal }) {
                   <th>Date</th>
                   <th>Therapist</th>
                   <th>T-Score</th>
+                  <th>Added By</th>
+                  <th>Last Edited</th>
                   <th style={{ textAlign: 'right', paddingRight: 24 }}>Actions</th>
                 </tr>
               </thead>
@@ -1064,9 +1092,15 @@ export default function Milestones({ go, toast, openModal }) {
                     </td>
                     <td style={{ fontSize: 12.5 }}>{e.therapist_name || '-'}</td>
                     <td><span className={'pill pill-' + gasScoreTone(e.gas_t_score)}>{e.gas_t_score}</span></td>
+                    <td style={{ fontSize: 12, color: '#475569' }}>{e.created_by_name || '-'}</td>
+                    <td style={{ fontSize: 12, color: '#475569' }}>
+                      {e.updated_by_name ? (
+                        <>{e.updated_by_name}<div style={{ fontSize: 10.5, color: '#94A3B8' }}>{e.updated_at ? new Date(e.updated_at).toLocaleDateString('en-PH', { month: 'short', day: 'numeric', year: 'numeric' }) : ''}</div></>
+                      ) : '-'}
+                    </td>
                     <td style={{ textAlign: 'right', paddingRight: 24 }}>
                       <div style={{ display: 'flex', gap: 5, justifyContent: 'flex-end' }}>
-                        <button className="btn-edit" onClick={() => openGasEdit(e)}>Edit</button>
+                        {!isGasAdmin && <button className="btn-edit" onClick={() => openGasEdit(e)}>Edit</button>}
                         <button className="btn-edit" onClick={() => openGasView(e)}>View</button>
                         <button className="btn-danger" disabled={gasArchiving === e.id} onClick={() => archiveGasEntry(e)}>{gasArchiving === e.id ? 'Archiving…' : 'Archive'}</button>
                       </div>
@@ -1074,7 +1108,7 @@ export default function Milestones({ go, toast, openModal }) {
                   </tr>
                 ))}
                 {!gasPagedEntries.length && (
-                  <tr><td colSpan={7} style={{ textAlign: 'center', color: '#94A3B8', fontSize: 12.5, padding: '24px 0' }}>{gasEntryIdSearch.trim() || gasEntryDateFrom || gasEntryDateTo ? 'No GAS entries match those filters.' : lockedDiscipline ? 'No GAS entries submitted yet for your caseload.' : 'No GAS entries submitted yet.'}</td></tr>
+                  <tr><td colSpan={9} style={{ textAlign: 'center', color: '#94A3B8', fontSize: 12.5, padding: '24px 0' }}>{gasEntryIdSearch.trim() || gasEntryDateFrom || gasEntryDateTo || gasEntryTherapistFilter !== 'all' || gasEntryCreatorFilter !== 'all' ? 'No GAS entries match those filters.' : lockedDiscipline ? 'No GAS entries submitted yet for your caseload.' : 'No GAS entries submitted yet.'}</td></tr>
                 )}
               </tbody>
             </table>
@@ -1137,6 +1171,7 @@ export default function Milestones({ go, toast, openModal }) {
 
       {gasEntryModal && gasEntryModal.mode === 'view' && (
         <Modal title="GAS Entry: View" onClose={closeGasEntryModal} width={620}>
+          <div style={{ maxHeight: '65vh', overflowY: 'auto', paddingRight: 4 }}>
           <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12, marginBottom: 18 }}>
             <div><div className="form-label">Entry ID</div><div style={{ fontSize: 11.5, color: '#64748B', fontFamily: 'monospace' }}>{gasEntryModal.entry.id}</div></div>
             <div><div className="form-label">Client ID</div><div style={{ fontSize: 11.5, color: '#64748B', fontFamily: 'monospace' }}>{gasEntryModal.entry.client?.client_code || gasEntryModal.entry.client_id}</div></div>
@@ -1183,8 +1218,9 @@ export default function Milestones({ go, toast, openModal }) {
               </>
             );
           })()}
+          </div>
 
-          <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 10 }}>
+          <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 10, marginTop: 16 }}>
             <button className="btn-secondary" onClick={closeGasEntryModal}>Close</button>
           </div>
         </Modal>
@@ -1192,6 +1228,7 @@ export default function Milestones({ go, toast, openModal }) {
 
       {gasEntryModal && gasEntryModal.mode === 'edit' && (
         <Modal title="GAS Entry: Edit" onClose={closeGasEntryModal} width={620}>
+          <div style={{ maxHeight: '65vh', overflowY: 'auto', paddingRight: 4 }}>
           <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12, marginBottom: 14 }}>
             <div><div className="form-label">Child</div><div style={{ fontSize: 13.5, fontWeight: 600, color: '#0F172A' }}>{gasEntryModal.entry.client?.full_name || 'Unknown child'}</div></div>
             <div><div className="form-label">Discipline</div><div style={{ fontSize: 13.5, color: '#334155' }}>{gasEntryModal.entry.discipline} · {gasEntryModal.entry.questionnaire_name}</div></div>
@@ -1218,7 +1255,7 @@ export default function Milestones({ go, toast, openModal }) {
             <textarea className="form-input" rows="3" style={{ height: 'auto', padding: '8px 12px', resize: 'vertical' }} placeholder="Parent observation text notes…" value={gasEditForm.parentObservation} onChange={e => setGasEditForm(f => ({ ...f, parentObservation: e.target.value }))} />
           </div>
 
-          <div style={{ display: 'flex', flexDirection: 'column', gap: 10, maxHeight: 320, overflowY: 'auto', paddingRight: 4, marginBottom: 14 }}>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 10, marginBottom: 14 }}>
             {(gasEntryModal.entry.scores || []).map(s => {
               const liveItem = s.item_id ? gasEditQuestionnaireItems.find(it => it.id === s.item_id) : null;
               const level = s.item_id ? gasEditScores[s.item_id] : s.level;
@@ -1258,8 +1295,9 @@ export default function Milestones({ go, toast, openModal }) {
               <i className="fa-solid fa-file-lines" style={{ marginRight: 6 }} />Generate Summary
             </button>
           </div>
+          </div>
 
-          <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 10, marginTop: 18 }}>
+          <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 10, marginTop: 16 }}>
             <button className="btn-secondary" onClick={closeGasEntryModal}>Cancel</button>
             <button className="btn-primary" disabled={gasEditSaving} onClick={saveGasEdit}>
               <i className="fa-solid fa-floppy-disk" style={{ marginRight: 5 }} />{gasEditSaving ? 'Saving…' : 'Save Changes'}

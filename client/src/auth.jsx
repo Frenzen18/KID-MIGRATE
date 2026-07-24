@@ -74,6 +74,9 @@ export function AuthProvider({ children }) {
     const data = await api('/auth/login', { method: 'POST', body: { email, password, ...(portal ? { portal } : {}) } });
     localStorage.setItem('kid_token', data.token);
     localStorage.setItem('kid_user', JSON.stringify(data.user));
+    // Stamped once, right here, so SessionWatcher can tell "a login happened
+    // more recently than the one I'm using" apart from this login itself.
+    localStorage.setItem('kid_login_at', new Date().toISOString());
     setUser(data.user);
     return data.user;
   }
@@ -90,6 +93,7 @@ export function AuthProvider({ children }) {
     localStorage.removeItem('kid_token');
     localStorage.removeItem('kid_user');
     localStorage.removeItem('kid_admin_page');
+    localStorage.removeItem('kid_login_at');
     setUser(null);
   }
 

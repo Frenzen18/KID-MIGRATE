@@ -226,16 +226,27 @@ router.get('/entries', requireRole('admin', 'staff', 'ot', 'speech'), async (req
   if (error) return res.status(500).json({ error: error.message });
   if (!entries.length) return res.json([]);
 
-  const [{ data: scores }, { data: clients }] = await Promise.all([
+  // Who submitted/last edited each entry, resolved to a name here so the
+  // Session Entries table doesn't need a separate Audit Logs lookup just to
+  // show "who added this" / "who last edited this".
+  const profileIds = [...new Set(entries.flatMap(e => [e.created_by, e.updated_by]).filter(Boolean))];
+  const [{ data: scores }, { data: clients }, { data: profiles }] = await Promise.all([
     db.from('gas_entry_scores').select('*').in('entry_id', entries.map(e => e.id)),
-    db.from('clients').select('id, full_name, client_code').in('id', [...new Set(entries.map(e => e.client_id))])
+    db.from('clients').select('id, full_name, client_code').in('id', [...new Set(entries.map(e => e.client_id))]),
+    profileIds.length ? db.from('profiles').select('id, full_name').in('id', profileIds) : Promise.resolve({ data: [] })
   ]);
   const scoresByEntry = {};
   for (const s of scores || []) (scoresByEntry[s.entry_id] ||= []).push(s);
   const clientById = {};
   for (const c of clients || []) clientById[c.id] = c;
+  const nameById = {};
+  for (const p of profiles || []) nameById[p.id] = p.full_name;
 
-  res.json(entries.map(e => ({ ...e, scores: scoresByEntry[e.id] || [], client: clientById[e.client_id] || null })));
+  res.json(entries.map(e => ({
+    ...e, scores: scoresByEntry[e.id] || [], client: clientById[e.client_id] || null,
+    created_by_name: nameById[e.created_by] || null,
+    updated_by_name: nameById[e.updated_by] || null
+  })));
 });
 
 /** POST /api/gas/ai-summary, Gemini-generated plain-language draft for the Scorecard
@@ -367,7 +378,7 @@ router.put('/entries/:id', requireRole('admin', 'staff', 'ot', 'speech'), async 
     return res.status(400).json({ error: 'Session date cannot be in the future, a GAS entry scores a session that already happened.' });
   }
 
-  const patch = {};
+  const patch = { updated_by: req.user.id, updated_at: new Date().toISOString() };
   for (const k of ['session_date', 'therapist_name', 'remarks']) if (k in b) patch[k] = b[k];
 
   // Re-derive the booking link and late flag if the session date or therapist
