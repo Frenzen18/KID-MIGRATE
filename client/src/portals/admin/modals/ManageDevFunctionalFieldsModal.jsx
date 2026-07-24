@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import { Modal } from '../../../components/ui.jsx';
 import { api } from '../../../api.js';
 
@@ -9,6 +9,7 @@ export default function ManageDevFunctionalFieldsModal({ data, closeModal, toast
   const [saving, setSaving] = useState(false);
 
   async function load() {
+    setErr('');
     try {
       const res = await api('/dev-functional-fields/all');
       setFields(res || []);
@@ -16,7 +17,7 @@ export default function ManageDevFunctionalFieldsModal({ data, closeModal, toast
       setErr(e.message || 'Failed to load fields');
     }
   }
-  if (fields === null && !err) load();
+  useEffect(() => { load(); }, []);
 
   function startAdd() {
     setEditing({ section: '', label: '', field_type: 'select', optionsText: 'Yes, No, With Support', required: false, sort_order: (fields?.length || 0) + 1 });
@@ -72,8 +73,8 @@ export default function ManageDevFunctionalFieldsModal({ data, closeModal, toast
   (fields || []).forEach(f => { (bySection[f.section] ||= []).push(f); });
 
   return (
-    <Modal title={<><i className="fa-solid fa-sliders" style={{ color: '#4F46E5', marginRight: 8 }} />Manage Development &amp; Functional Fields</>} onClose={closeModal} width={680}>
-      {err && <div style={{ background: '#FEF2F2', border: '1px solid #FECACA', borderRadius: 8, padding: '9px 13px', fontSize: 12.5, color: '#DC2626', marginBottom: 14, fontWeight: 600 }}>{err}</div>}
+    <Modal title={<><i className="fa-solid fa-sliders" style={{ color: 'var(--cat-8)', marginRight: 8 }} />Manage Development &amp; Functional Fields</>} onClose={closeModal} width={680}>
+      {err && <div style={{ background: 'var(--color-danger-bg-soft)', border: '1px solid #FECACA', borderRadius: 8, padding: '9px 13px', fontSize: 12.5, color: 'var(--color-danger)', marginBottom: 14, fontWeight: 600 }}>{err}</div>}
 
       {editing ? (
         <div style={{ padding: 16, borderRadius: 10, border: '1px solid #E2E8F0', background: '#FAFBFC', marginBottom: 16 }}>
@@ -97,7 +98,7 @@ export default function ManageDevFunctionalFieldsModal({ data, closeModal, toast
             )}
             <div style={{ gridColumn: '1/-1' }}>
               <label style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 12.5, color: '#334155', cursor: 'pointer' }}>
-                <input type="checkbox" checked={editing.required === true} onChange={e => setEditing(f => ({ ...f, required: e.target.checked }))} style={{ width: 14, height: 14, accentColor: '#1F4E9E', cursor: 'pointer' }} />
+                <input type="checkbox" checked={editing.required === true} onChange={e => setEditing(f => ({ ...f, required: e.target.checked }))} style={{ width: 14, height: 14, accentColor: 'var(--color-primary)', cursor: 'pointer' }} />
                 Required (parents must answer this before submitting)
               </label>
             </div>
@@ -111,7 +112,11 @@ export default function ManageDevFunctionalFieldsModal({ data, closeModal, toast
         <button className="btn-primary" style={{ marginBottom: 16 }} onClick={startAdd}><i className="fa-solid fa-plus" style={{ marginRight: 5 }} />Add Field</button>
       )}
 
-      {fields === null ? (
+      {fields === null && err ? (
+        <div style={{ textAlign: 'center', padding: 24 }}>
+          <button className="btn-secondary" onClick={load}><i className="fa-solid fa-rotate-right" style={{ marginRight: 6 }} />Retry</button>
+        </div>
+      ) : fields === null ? (
         <div style={{ textAlign: 'center', padding: 24, color: '#94A3B8', fontSize: 13 }}>Loading…</div>
       ) : (
         <div style={{ maxHeight: 360, overflowY: 'auto' }}>
@@ -121,7 +126,7 @@ export default function ManageDevFunctionalFieldsModal({ data, closeModal, toast
               {sectionFields.map(f => (
                 <div key={f.id} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '8px 12px', borderRadius: 8, background: f.active ? '#fff' : '#F8FAFC', border: '1px solid #F1F5F9', marginBottom: 6, opacity: f.active ? 1 : 0.6 }}>
                   <div>
-                    <div style={{ fontSize: 13, fontWeight: 600, color: '#0F172A' }}>{f.label}{f.required && <span style={{ color: '#DC2626' }}> *</span>}</div>
+                    <div style={{ fontSize: 13, fontWeight: 600, color: '#0F172A' }}>{f.label}{f.required && <span style={{ color: 'var(--color-danger)' }}> *</span>}</div>
                     <div style={{ fontSize: 11, color: '#94A3B8' }}>{f.field_type === 'select' ? (f.options || []).join(' · ') : f.field_type === 'select_other' ? [...(f.options || []), 'Others'].join(' · ') : 'Free text'}{f.required ? ' · Required' : ''}{!f.active ? ' · Removed' : ''}</div>
                   </div>
                   <div style={{ display: 'flex', gap: 6 }}>

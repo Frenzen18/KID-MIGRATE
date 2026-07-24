@@ -1,11 +1,15 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useState, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useAuth } from '../../auth.jsx';
-import { api } from '../../api.js';
+import { api, getToken } from '../../api.js';
 import { useToast, Modal } from '../../components/ui.jsx';
 import BrandLogo from '../../components/BrandLogo.jsx';
 import GasProgressChart from '../../components/GasProgressChart.jsx';
 import DevFunctionalField, { devFieldHidden } from '../../components/DevFunctionalField.jsx';
+import { effectiveSlotAvailable } from '../admin/pages/reservations/reservationsHelpers.js';
+import { formatPhoneDisplay } from '../../phoneInput.js';
+import { sanitizeNameInput, hasInvalidNameChars, INVALID_NAME_MSG } from '../../nameInput.js';
+import { filterSafeTextInput, hasUnsafeTextChars, UNSAFE_TEXT_MSG } from '../../textInput.js';
 import './parent.css';
 
 /* ── Constants ── */
@@ -95,9 +99,15 @@ function minBookableDateStr() {
  *  for a Combined program) become available. */
 function sessionTypesFor(child) {
   if (!child) return [];
-  if (!child.assigned_therapist_name && !child.therapy_type) return ['Initial Assessment'];
+  if (!child.assigned_ot_therapist_name && !child.assigned_speech_therapist_name && !child.therapy_type) return ['Initial Assessment'];
   const map = { OT: ['Occupational Therapy'], Speech: ['Speech Therapy'], Both: ['Occupational Therapy', 'Speech Therapy'] };
   return map[child.therapy_type] || ['Initial Assessment'];
+}
+/** Which discipline a session type belongs to, null for discipline-agnostic types (e.g. Initial Assessment). */
+function disciplineOfType(type) {
+  if (type === 'Occupational Therapy' || type === 'Occupational Assessment') return 'ot';
+  if (type === 'Speech Therapy' || type === 'Speech-Language Assessment') return 'speech';
+  return null;
 }
 /** Current time in the Philippines (UTC+8), regardless of the device's local timezone. */
 function nowPH() {
@@ -118,13 +128,42 @@ function isSlotPast(dateStr, timeLabel) {
   return slotMinutes <= nowMinutes;
 }
 
+/* ── Booking date-picker (calendar) helpers, string-based ("YYYY-MM"/"YYYY-MM-DD")
+   to avoid local-timezone drift from constructing Date objects for arithmetic. ── */
+function ymFromDateStr(dateStr) { return dateStr.slice(0, 7); }
+function addMonths(ym, delta) {
+  let [y, m] = ym.split('-').map(Number);
+  m += delta;
+  while (m > 12) { m -= 12; y++; }
+  while (m < 1) { m += 12; y--; }
+  return y + '-' + String(m).padStart(2, '0');
+}
+function daysInMonth(ym) {
+  const [y, m] = ym.split('-').map(Number);
+  return new Date(y, m, 0).getDate();
+}
+function firstWeekdayOfMonth(ym) {
+  const [y, m] = ym.split('-').map(Number);
+  return new Date(y, m - 1, 1).getDay(); // 0 = Sunday
+}
+function monthLabel(ym) {
+  const [y, m] = ym.split('-').map(Number);
+  return new Date(y, m - 1, 1).toLocaleDateString('en-US', { month: 'long', year: 'numeric' });
+}
+
+/** All page keys the sidebar can navigate to, used to validate the page restored from localStorage on reload. */
+const PARENT_PAGE_KEYS = ['dashboard', 'booking', 'payment', 'notifications'];
+
 export default function ParentPortal() {
   const { logout, user, updateUser, updateProfile } = useAuth();
   const nav = useNavigate();
   const toast = useToast();
 
   /* ── Navigation state ── */
-  const [page, setPage] = useState('dashboard');
+  const [page, setPage] = useState(() => {
+    const saved = localStorage.getItem('kid_parent_page');
+    return PARENT_PAGE_KEYS.includes(saved) ? saved : 'dashboard';
+  });
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [notifOpen, setNotifOpen] = useState(false);
   const [profileOpen, setProfileOpen] = useState(false);
@@ -142,26 +181,37 @@ export default function ParentPortal() {
   /* ── Data state ── */
   const [children, setChildren] = useState(null); // null = loading
   const [activeChild, setActiveChild] = useState(null); // full child detail with session_notes + attendance
+  const [photoUploading, setPhotoUploading] = useState(false);
   const [reservations, setReservations] = useState(null);
   const [payments, setPayments] = useState(null);
   const [notifications, setNotifications] = useState(null);
   const [loading, setLoading] = useState(true);
+  // Clinic-wide closures (holidays), so "no time slots" can explain why instead
+  // of just looking broken, no booking of any kind is allowed on one.
+  const [holidays, setHolidays] = useState([]);
+  useEffect(() => { api('/settings/holidays?from=' + todayStr()).then(setHolidays).catch(() => {}); }, []);
   // Development & Functional Information, the admin-configurable field list
   // rendered on the child-linking form (see server/routes/devFunctionalFields.js).
   const [devFields, setDevFields] = useState([]);
 
   /* ── Booking page state ── */
   const [reservationDate, setReservationDate] = useState(minBookableDateStr());
+  const [calMonth, setCalMonth] = useState(() => ymFromDateStr(minBookableDateStr()));
   const [selectedSlot, setSelectedSlot] = useState('');
   const [slotsForDate, setSlotsForDate] = useState([]);
   const [bookingBusy, setBookingBusy] = useState(false);
   const [slotError, setSlotError] = useState(false);
+  const [bookingConfirm, setBookingConfirm] = useState(false);
   const [bookingSessionType, setBookingSessionType] = useState('');
 
   /* ── Progress page state ── */
 
   /* ── Payment page state ── */
-  const [payTab, setPayTab] = useState('checkout');
+  const [payTab, setPayTab] = useState(() => {
+    const saved = localStorage.getItem('kid_parent_pay_tab');
+    return saved === 'checkout' || saved === 'receipts' ? saved : 'checkout';
+  });
+  useEffect(() => { localStorage.setItem('kid_parent_pay_tab', payTab); }, [payTab]);
 
   /* ── Notifications page state ── */
   const [notifTab, setNotifTab] = useState('reminders');
@@ -214,6 +264,8 @@ export default function ParentPortal() {
   const [linkStep, setLinkStep] = useState(1);
   // Live per-field notes for the phone inputs (e.g. "numbers only" when letters are typed)
   const [phoneNotes, setPhoneNotes] = useState({});
+  const [nameNotes, setNameNotes] = useState({});
+  const [textNotes, setTextNotes] = useState({});
   // First-login onboarding: when the parent has no child linked yet, the
   // intake modal opens automatically with a welcome framing.
   const [onboarding, setOnboarding] = useState(false);
@@ -289,12 +341,13 @@ export default function ParentPortal() {
     if (!reservationDate) return;
     let cancelled = false;
     const child = activeChild || children?.[0];
-    const qs = 'date=' + reservationDate + (child?.id ? '&client_id=' + child.id : '');
+    const qs = 'date=' + reservationDate + (child?.id ? '&client_id=' + child.id : '')
+      + (bookingSessionType ? '&session_type=' + encodeURIComponent(bookingSessionType) : '');
     api('/reservations/slots?' + qs)
       .then(data => { if (!cancelled) setSlotsForDate(data); })
       .catch(() => { if (!cancelled) setSlotsForDate([]); });
     return () => { cancelled = true; };
-  }, [reservationDate, activeChild, children]);
+  }, [reservationDate, activeChild, children, bookingSessionType]);
 
   /* ── Keep the selected session type in sync with what the child is actually
      eligible for, defaulting to the only option, or the first, whenever the
@@ -316,10 +369,96 @@ export default function ParentPortal() {
   }, []);
 
   /* ── Helpers ── */
-  function goPage(key) { setPage(key); setSidebarOpen(false); window.scrollTo(0, 0); }
+  function goPage(key) { setPage(key); localStorage.setItem('kid_parent_page', key); setSidebarOpen(false); window.scrollTo(0, 0); }
   function toggleNotif() { setProfileOpen(false); setNotifOpen(o => !o); }
   function toggleProfile() { setNotifOpen(false); setProfileOpen(o => !o); }
   function doLogout() { logout(); nav('/login'); }
+
+  /* ── Idle session timeout (Guardian/Caretaker portal only) ──
+     After 5 minutes with no mouse/keyboard/touch activity, warn instead of
+     silently logging out, since a guardian mid-read shouldn't just get
+     yanked back to the login screen with no chance to say "I'm still here".
+     A 60s countdown follows the warning, if nothing's clicked by the end of
+     that, it logs out for real, same as a shared/public clinic computer
+     should behave. */
+  const IDLE_WARNING_AFTER_MS = 5 * 60 * 1000;
+  const IDLE_COUNTDOWN_SECONDS = 60;
+  const [idleWarning, setIdleWarning] = useState(false);
+  const [idleCountdown, setIdleCountdown] = useState(IDLE_COUNTDOWN_SECONDS);
+  const idleTimerRef = useRef(null);
+  const countdownIntervalRef = useRef(null);
+  // Mirrors idleWarning for the activity listener below, that listener is
+  // attached once on mount, so it needs a ref (not the state itself) to see
+  // the current value instead of forever reading whatever it was at mount.
+  const idleWarningRef = useRef(false);
+  useEffect(() => { idleWarningRef.current = idleWarning; }, [idleWarning]);
+
+  function clearCountdown() {
+    if (countdownIntervalRef.current) { clearInterval(countdownIntervalRef.current); countdownIntervalRef.current = null; }
+  }
+
+  function startCountdown() {
+    clearCountdown();
+    setIdleCountdown(IDLE_COUNTDOWN_SECONDS);
+    countdownIntervalRef.current = setInterval(() => {
+      setIdleCountdown(s => {
+        if (s <= 1) {
+          clearCountdown();
+          doLogout();
+          return 0;
+        }
+        return s - 1;
+      });
+    }, 1000);
+  }
+
+  function resetIdleTimer() {
+    if (idleTimerRef.current) clearTimeout(idleTimerRef.current);
+    idleTimerRef.current = setTimeout(() => {
+      setIdleWarning(true);
+      startCountdown();
+    }, IDLE_WARNING_AFTER_MS);
+  }
+
+  function stayLoggedIn() {
+    setIdleWarning(false);
+    clearCountdown();
+    resetIdleTimer();
+  }
+
+  useEffect(() => {
+    const activityEvents = ['mousemove', 'mousedown', 'keydown', 'touchstart', 'scroll'];
+    // Only real activity counts, once the warning modal is up, only its own
+    // "Continue Session" button (stayLoggedIn) should clear it, not just
+    // moving the mouse over the overlay.
+    function onActivity() { if (!idleWarningRef.current) resetIdleTimer(); }
+    activityEvents.forEach(evt => window.addEventListener(evt, onActivity));
+    resetIdleTimer();
+    return () => {
+      activityEvents.forEach(evt => window.removeEventListener(evt, onActivity));
+      if (idleTimerRef.current) clearTimeout(idleTimerRef.current);
+      clearCountdown();
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  async function markNotifRead(id) {
+    try {
+      await api('/notifications/' + id + '/read', { method: 'PUT' });
+      setNotifications(prev => (prev || []).map(n => n.id === id ? { ...n, read: true } : n));
+    } catch (e) { /* silent, same as the dashboard/staff/therapist bell dropdowns */ }
+  }
+
+  /* Visiting the Notifications page is itself "reading" the inbox, mark
+     everything read automatically instead of requiring a manual click per
+     item, same behavior as the shared admin/staff/therapist inbox page. */
+  useEffect(() => {
+    if (page !== 'notifications') return;
+    if (!(notifications || []).some(n => !n.read)) return;
+    api('/notifications/read-all', { method: 'PUT' })
+      .then(() => setNotifications(prev => (prev || []).map(n => ({ ...n, read: true }))))
+      .catch(() => {});
+  }, [page]);
 
   function openProfileModal() {
     setProfileOpen(false);
@@ -339,7 +478,7 @@ export default function ParentPortal() {
   }
 
   async function saveContact() {
-    if (!PH_PHONE.test(contactInput)) { setContactErr('Phone number must be +63 followed by 10 digits (e.g. +639171234567).'); return; }
+    if (!PH_PHONE.test(contactInput)) { setContactErr('Phone number must be +63 followed by 10 digits (e.g. +63 917 123 4567).'); return; }
     setContactSaving(true);
     try {
       await updateProfile({ contact: contactInput });
@@ -359,40 +498,86 @@ export default function ParentPortal() {
   const pendingPayments = (payments || []).filter(p => p.status === 'pending' || p.status === 'overdue');
   const paidPayments = (payments || []).filter(p => p.status === 'paid');
   const refundedPayments = (payments || []).filter(p => p.status === 'refunded');
-  const upcomingReservations = (reservations || []).filter(r => r.date >= todayStr() && ['awaiting_payment', 'pending', 'confirmed', 'rescheduled'].includes(r.status));
-  const nextSession = upcomingReservations.find(r => r.status === 'confirmed') || upcomingReservations[0];
+  // A booking only still "blocks" a new one while it hasn't happened yet, once its own
+  // slot time has passed (even earlier today) it's finished, same as any other past date.
+  // This spans every linked child, callers that gate on "does THIS child already
+  // have a booking" must filter it down by client_id (see upcomingReservationsFor)
+  // instead of using it directly, one child's booking must never block another's.
+  const upcomingReservations = (reservations || []).filter(r => r.date >= todayStr() && !isSlotPast(r.date, r.time_slot) && ['awaiting_payment', 'pending', 'confirmed', 'rescheduled'].includes(r.status));
+  function upcomingReservationsFor(childId) {
+    return childId ? upcomingReservations.filter(r => r.client_id === childId) : [];
+  }
 
   /* ── Booking handlers ── */
   function pickSlot(label) { setSelectedSlot(label); setSlotError(false); }
   function changeDate(val) { setReservationDate(val); setSelectedSlot(''); setSlotError(false); }
-  async function submitReservation() {
-    if (bookingBusy) return; // guard against double-click / double-submit race
+  /** Pre-submit checks shared by the "Book" button (before opening the
+   *  confirmation modal) and the modal's own confirm step (re-checked there
+   *  too, in case something changed - e.g. the slot filled up - while the
+   *  modal was open). Returns false and surfaces the reason via toast/slotError. */
+  function validateBooking() {
     if (!reservationDate) {
       toast('Please select a reservation date.', 'fa-triangle-exclamation');
-      return;
+      return false;
     }
     if (!selectedSlot) {
       toast('Please select a time slot before submitting.', 'fa-triangle-exclamation');
       setSlotError(true);
-      return;
+      return false;
     }
     if (isSlotPast(reservationDate, selectedSlot)) {
       toast('That time slot has already passed. Please pick another.', 'fa-triangle-exclamation');
       setSelectedSlot('');
-      return;
+      return false;
     }
     if (!children || !children.length) {
       toast('No child linked to your account yet', 'fa-circle-exclamation');
-      return;
+      return false;
     }
     if (!bookingSessionType) {
       toast('Please select a session type before submitting.', 'fa-triangle-exclamation');
-      return;
+      return false;
     }
-    if (upcomingReservations.length > 0) {
+    // A Combined child may hold one OT session AND one Speech session at once,
+    // so this only blocks a second booking within the same discipline, mirrors
+    // the same exception the render side (hasActiveBooking) and the server apply.
+    const bookingChildForCheck = activeChild || children[0];
+    const checkDiscipline = disciplineOfType(bookingSessionType);
+    const childReservations = upcomingReservationsFor(bookingChildForCheck?.id);
+    const conflictingBooking = (bookingChildForCheck?.therapy_type === 'Both' && checkDiscipline)
+      ? childReservations.find(r => disciplineOfType(r.session_type) === checkDiscipline)
+      : childReservations[0];
+    if (conflictingBooking) {
       toast('You already have an upcoming booking for this child. You can only book one at a time, cancel it under "My Booking Requests", or wait until its date has passed, before submitting a new one.', 'fa-triangle-exclamation');
-      return;
+      return false;
     }
+    // Two siblings booked into the same discipline at the exact same date+time
+    // would need the same kind of specialist at once, that's the real
+    // conflict, not the date+time alone. Different disciplines (e.g. one
+    // sibling's Initial Assessment and another's Occupational Therapy) are
+    // separate processes and can share the same slot just fine.
+    const siblingConflict = checkDiscipline
+      ? upcomingReservations.find(r => r.client_id !== bookingChildForCheck?.id && r.date === reservationDate && r.time_slot === selectedSlot && disciplineOfType(r.session_type) === checkDiscipline)
+      : null;
+    if (siblingConflict) {
+      const siblingName = siblingConflict.clients?.full_name || children.find(c => c.id === siblingConflict.client_id)?.full_name || 'one of your other children';
+      toast(`${siblingName} already has a session booked at ${selectedSlot} on ${fmtDate(reservationDate)}. Please pick a different time.`, 'fa-triangle-exclamation');
+      return false;
+    }
+    return true;
+  }
+  function openBookingConfirm() {
+    if (bookingBusy) return; // guard against double-click / double-submit race
+    if (!validateBooking()) return;
+    setBookingConfirm(true);
+  }
+  async function confirmSubmitReservation() {
+    if (bookingBusy) return;
+    if (!validateBooking()) { setBookingConfirm(false); return; }
+    // The guardian may have more than one child linked and picked a specific
+    // one via the "Booking For" selector, activeChild reflects that choice,
+    // children[0] is only a fallback for the brief moment before it's set.
+    const bookingChildId = (activeChild || children[0]).id;
     setBookingBusy(true);
     try {
       const { payment, ...res } = await api('/reservations', {
@@ -400,23 +585,44 @@ export default function ParentPortal() {
         body: {
           date: reservationDate,
           time_slot: selectedSlot,
-          client_id: children[0].id,
+          client_id: bookingChildId,
           session_type: bookingSessionType
         }
       });
       setReservations(prev => [...(prev || []), res]);
       setSelectedSlot('');
-      // Refresh slots, same client_id as the booking above, so the list stays
-      // narrowed to that child's Assigned Therapist if one is set.
-      api('/reservations/slots?date=' + reservationDate + '&client_id=' + children[0].id).then(setSlotsForDate).catch(() => {});
+      setBookingConfirm(false);
+      // Refresh slots, same client_id/session_type as the booking above, so the
+      // list stays narrowed to that child's Assigned Therapist if one is set.
+      api('/reservations/slots?date=' + reservationDate + '&client_id=' + bookingChildId + '&session_type=' + encodeURIComponent(bookingSessionType)).then(setSlotsForDate).catch(() => {});
       toast('Slot held, complete payment to confirm your booking', 'fa-calendar-check');
       // No more staff-approved "request", the slot is held and this goes
       // straight to QRPh checkout, paying is what actually confirms it.
       if (payment) generateQr(payment);
     } catch (e) {
       toast(e.message || 'Failed to submit booking', 'fa-circle-exclamation');
+      // Keep the modal open on failure (e.g. the slot filled up in the
+      // meantime) so the parent can see the error and retry or back out.
     } finally {
       setBookingBusy(false);
+    }
+  }
+
+  /** Cancel one of the guardian's own booking requests (e.g. before completing payment). */
+  const [cancelTarget, setCancelTarget] = useState(null); // the reservation being confirmed for cancellation
+  const [cancelBusy, setCancelBusy] = useState(false);
+  async function confirmCancelReservation() {
+    if (!cancelTarget) return;
+    setCancelBusy(true);
+    try {
+      await api('/reservations/' + cancelTarget.id, { method: 'PUT', body: { status: 'cancelled' } });
+      setReservations(prev => (prev || []).map(r => r.id === cancelTarget.id ? { ...r, status: 'cancelled' } : r));
+      toast('Booking cancelled', 'fa-calendar-xmark');
+      setCancelTarget(null);
+    } catch (e) {
+      toast(e.message || 'Failed to cancel booking', 'fa-circle-exclamation');
+    } finally {
+      setCancelBusy(false);
     }
   }
 
@@ -430,6 +636,24 @@ export default function ParentPortal() {
       const digits = rest.replace(/\D/g, '').slice(0, 10); // exactly 10 digits after +63
       setPhoneNotes(n => ({ ...n, [field]: hadLetters ? 'Numbers only, letters are not allowed.' : '' }));
       setLinkForm(f => ({ ...f, [field]: `+63${digits}` }));
+    };
+  }
+
+  /** Live name input: letters/spaces/hyphens/apostrophes only, flag digits/symbols immediately. */
+  function handleNameInput(field) {
+    return e => {
+      const raw = e.target.value;
+      setNameNotes(n => ({ ...n, [field]: hasInvalidNameChars(raw) ? INVALID_NAME_MSG : '' }));
+      setLinkForm(f => ({ ...f, [field]: sanitizeNameInput(raw) }));
+    };
+  }
+
+  /** Live free-text input (Allergies, Daily Medication, ...): letters/numbers/common punctuation only, flag stray special characters immediately. */
+  function handleTextInput(field) {
+    return e => {
+      const raw = e.target.value;
+      setTextNotes(n => ({ ...n, [field]: hasUnsafeTextChars(raw) ? UNSAFE_TEXT_MSG : '' }));
+      setLinkForm(f => ({ ...f, [field]: filterSafeTextInput(raw) }));
     };
   }
 
@@ -462,7 +686,7 @@ export default function ParentPortal() {
     if (gAge < 0) return 'Date of birth cannot be in the future.';
     if (gAge < 18 || gAge > 120) return 'Parent/guardian must be an adult (18 years old and above).';
     const altPhone = linkForm.other_guardian_phone === '+63' ? '' : linkForm.other_guardian_phone;
-    if (altPhone && !PH_PHONE.test(altPhone)) return 'Alternate phone number must be +63 followed by 10 digits (e.g. +639171234567).';
+    if (altPhone && !PH_PHONE.test(altPhone)) return 'Alternate phone number must be +63 followed by 10 digits (e.g. +63 917 123 4567).';
     return null;
   }
 
@@ -528,6 +752,8 @@ export default function ParentPortal() {
       setConsentChecked(false);
       setLinkForm(EMPTY_LINK_FORM);
       setPhoneNotes({});
+      setNameNotes({});
+      setTextNotes({});
       setLinkStep(1);
       toast('Child profile registered successfully!', 'fa-check');
     } catch (ex) {
@@ -555,6 +781,56 @@ export default function ParentPortal() {
   }
 
 
+
+  /** Switches which linked child the dashboard/booking/etc. show, for guardians with more than one. */
+  const [childSwitching, setChildSwitching] = useState(false);
+  async function switchChild(childId) {
+    if (!childId || activeChild?.id === childId) return;
+    const fallback = children?.find(c => c.id === childId);
+    setChildSwitching(true);
+    try {
+      const detail = await api('/clients/' + childId).catch(() => fallback);
+      if (detail) setActiveChild(detail);
+    } finally {
+      setChildSwitching(false);
+    }
+  }
+  /** Same child switch as the dashboard's, plus clearing the currently
+   *  selected time slot, it belonged to whichever child was active before,
+   *  not necessarily one still open for the newly picked child. */
+  function switchBookingChild(childId) {
+    setSelectedSlot('');
+    setSlotError(false);
+    switchChild(childId);
+  }
+
+  /** Uploads (or replaces) the active child's profile photo, so their therapist can recognize their face. */
+  async function uploadChildPhoto(childId, e) {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    if (!file.type.startsWith('image/')) { toast('Please select an image file', 'fa-triangle-exclamation'); return; }
+    if (file.size > 5 * 1024 * 1024) { toast('Image must be under 5MB', 'fa-triangle-exclamation'); return; }
+    setPhotoUploading(true);
+    try {
+      const formData = new FormData();
+      formData.append('file', file);
+      const res = await fetch('/api/clients/' + childId + '/photo', {
+        method: 'POST',
+        headers: { Authorization: 'Bearer ' + getToken() },
+        body: formData
+      });
+      const updated = await res.json();
+      if (!res.ok) throw new Error(updated.error || 'Upload failed');
+      setChildren(prev => (prev || []).map(c => c.id === childId ? { ...c, photo_url: updated.photo_url } : c));
+      setActiveChild(prev => prev && prev.id === childId ? { ...prev, photo_url: updated.photo_url } : prev);
+      toast('Photo updated', 'fa-check');
+    } catch (err) {
+      toast('Upload failed: ' + err.message, 'fa-triangle-exclamation');
+    } finally {
+      setPhotoUploading(false);
+      e.target.value = '';
+    }
+  }
 
   /* ═══════════════════════════════════════════════════════════
      DASHBOARD
@@ -602,13 +878,75 @@ export default function ParentPortal() {
         </div>
 
         {/* Active child banner */}
-        <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 24, padding: '14px 18px', borderRadius: 14, background: 'linear-gradient(135deg,#0EA5E9,#0D9488)', color: '#fff' }}>
-          <div className="act-avatar" style={{ background: 'rgba(255,255,255,.18)', color: '#fff', width: 44, height: 44 }}><i className="fa-solid fa-child" /></div>
-          <div style={{ flex: 1 }}>
-            <div style={{ fontSize: 11.5, textTransform: 'uppercase', letterSpacing: '.06em', opacity: .85 }}>Active Child Profile</div>
-            <div style={{ fontFamily: "'Poppins',sans-serif", fontSize: 17, fontWeight: 700 }}>{child.full_name}</div>
+        <div style={{ position: 'relative', display: 'flex', alignItems: 'center', gap: 16, marginBottom: 24, padding: '18px 22px', borderRadius: 14, background: 'linear-gradient(135deg, var(--color-primary), var(--color-teal))', color: '#fff', overflow: 'hidden', boxShadow: '0 10px 28px rgba(15,23,42,.16)', flexWrap: 'wrap' }}>
+          {/* Purely decorative depth, clipped by the banner's own overflow:hidden */}
+          <div style={{ position: 'absolute', top: -46, right: -26, width: 170, height: 170, borderRadius: '50%', background: 'rgba(255,255,255,.10)', pointerEvents: 'none' }} />
+          <div style={{ position: 'absolute', bottom: -56, right: 110, width: 120, height: 120, borderRadius: '50%', background: 'rgba(255,255,255,.07)', pointerEvents: 'none' }} />
+
+          <label
+            title="Upload your child's photo, so their therapist can recognize them"
+            style={{ position: 'relative', width: 60, height: 60, flexShrink: 0, cursor: photoUploading ? 'default' : 'pointer', borderRadius: '50%', overflow: 'hidden', boxShadow: '0 0 0 3px rgba(255,255,255,.4), 0 4px 12px rgba(15,23,42,.18)' }}
+          >
+            {child.photo_url ? (
+              <img src={child.photo_url} alt={child.full_name} style={{ width: 60, height: 60, borderRadius: '50%', objectFit: 'cover', display: 'block' }} />
+            ) : (
+              <div className="act-avatar" style={{ background: 'rgba(255,255,255,.22)', color: '#fff', width: 60, height: 60, fontSize: 22 }}><i className="fa-solid fa-child" /></div>
+            )}
+            <div style={{ position: 'absolute', inset: 0, background: 'rgba(15,23,42,.45)', display: 'flex', alignItems: 'center', justifyContent: 'center', opacity: 0, transition: 'opacity .15s' }}
+              onMouseEnter={e => { e.currentTarget.style.opacity = 1; }} onMouseLeave={e => { e.currentTarget.style.opacity = 0; }}>
+              <i className={'fa-solid ' + (photoUploading ? 'fa-spinner fa-spin' : 'fa-camera')} style={{ fontSize: 14, color: '#fff' }} />
+            </div>
+            <input type="file" accept="image/*" disabled={photoUploading} onChange={e => uploadChildPhoto(child.id, e)} style={{ display: 'none' }} />
+          </label>
+
+          <div style={{ position: 'relative', flex: '1 1 160px', minWidth: 0 }}>
+            <div style={{ display: 'inline-flex', alignItems: 'center', gap: 5, fontSize: 11, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '.06em', opacity: .85, marginBottom: 3 }}>
+              <i className="fa-solid fa-star" style={{ fontSize: 9.5 }} />Active Child Profile
+            </div>
+            <div style={{ fontFamily: "'Poppins',sans-serif", fontSize: 19, fontWeight: 700, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{child.full_name}</div>
           </div>
-          <div style={{ textAlign: 'right', fontSize: 12.5, opacity: .95 }}>{child.client_code} · {child.therapy_type ? child.therapy_type + ' Program' : 'For assessment'}{age ? ' · Age ' + age : ''}</div>
+
+          <div style={{ position: 'relative', display: 'flex', gap: 8, flexWrap: 'wrap', justifyContent: 'flex-end' }}>
+            <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6, padding: '5px 12px', borderRadius: 20, background: 'rgba(255,255,255,.18)', fontSize: 11.5, fontWeight: 600, whiteSpace: 'nowrap' }}>
+              <i className="fa-solid fa-id-card" style={{ fontSize: 10 }} />{child.client_code}
+            </span>
+            <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6, padding: '5px 12px', borderRadius: 20, background: 'rgba(255,255,255,.18)', fontSize: 11.5, fontWeight: 600, whiteSpace: 'nowrap' }}>
+              <i className="fa-solid fa-hand-holding-heart" style={{ fontSize: 10 }} />{child.therapy_type ? child.therapy_type + ' Program' : 'For assessment'}
+            </span>
+            {age ? (
+              <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6, padding: '5px 12px', borderRadius: 20, background: 'rgba(255,255,255,.18)', fontSize: 11.5, fontWeight: 600, whiteSpace: 'nowrap' }}>
+                <i className="fa-solid fa-cake-candles" style={{ fontSize: 10 }} />Age {age}
+              </span>
+            ) : null}
+          </div>
+        </div>
+
+        {/* Switch between linked children (only shown once there's more than one) + link another */}
+        <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 24, flexWrap: 'wrap' }}>
+          {children.length > 1 && (
+            <select
+              className="form-select"
+              style={{ width: 'auto', height: 34, fontSize: 12.5 }}
+              value={child.id}
+              disabled={childSwitching}
+              onChange={e => switchChild(e.target.value)}
+            >
+              {children.map(c => <option key={c.id} value={c.id}>{c.full_name}</option>)}
+            </select>
+          )}
+          <button
+            onClick={() => {
+              // Always start from a clean slate, not whatever was left over from
+              // a cancelled attempt (the Cancel buttons below don't reset the form).
+              setLinkForm(EMPTY_LINK_FORM);
+              setLinkErr('');
+              setLinkStep(1);
+              setLinkChildModal(true);
+            }}
+            className="qa-btn" style={{ width: 'auto', padding: '8px 14px', fontSize: 12.5 }}
+          >
+            <i className="fa-solid fa-plus" style={{ color: '#0EA5E9', marginRight: 5 }} />Link Another Child
+          </button>
         </div>
 
         {/* Progress overview */}
@@ -617,8 +955,10 @@ export default function ParentPortal() {
             <div className="section-title" style={{ marginBottom: 4 }}>{child.full_name}'s Record</div>
             <div className="section-sub" style={{ marginBottom: 16 }}>{child.client_code} · {child.therapy_type ? child.therapy_type + ' Program' : 'Awaiting assessment'}</div>
             <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10, marginBottom: 14 }}>
-              <div><div style={{ fontSize: 10.5, color: '#94A3B8', fontWeight: 600, textTransform: 'uppercase', letterSpacing: '.3px', marginBottom: 2 }}>Diagnosis</div><div style={{ fontSize: 13, color: '#0F172A', fontWeight: 500 }}>{child.diagnosis || '-'}</div></div>
-              <div><div style={{ fontSize: 10.5, color: '#94A3B8', fontWeight: 600, textTransform: 'uppercase', letterSpacing: '.3px', marginBottom: 2 }}>Assigned Therapist</div><div style={{ fontSize: 13, color: '#0F172A', fontWeight: 500 }}>{child.assigned_therapist_name || 'Not yet assigned'}</div></div>
+              <div style={{ gridColumn: '1/-1' }}><div style={{ fontSize: 10.5, color: '#94A3B8', fontWeight: 600, textTransform: 'uppercase', letterSpacing: '.3px', marginBottom: 2 }}>Assigned Therapist</div><div style={{ fontSize: 13, color: '#0F172A', fontWeight: 500 }}>{[
+                child.assigned_ot_therapist_name && (child.therapy_type === 'Both' ? child.assigned_ot_therapist_name + ' (OT)' : child.assigned_ot_therapist_name),
+                child.assigned_speech_therapist_name && (child.therapy_type === 'Both' ? child.assigned_speech_therapist_name + ' (Speech)' : child.assigned_speech_therapist_name),
+              ].filter(Boolean).join(' · ') || 'Not yet assigned'}</div></div>
             </div>
             <div style={{ paddingTop: 12, borderTop: '1px solid #F1F5F9' }}>
               <div style={{ fontSize: 12, fontWeight: 700, color: '#334155', marginBottom: 10 }}>Development &amp; Functional Information</div>
@@ -661,16 +1001,23 @@ export default function ParentPortal() {
   function renderBooking() {
     const hasChildren = children && children.length > 0;
     const myReservations = (reservations || []).slice().sort((a, b) => (b.date || '').localeCompare(a.date || ''));
-    const hasActiveBooking = upcomingReservations.length > 0;
-    const activeBooking = upcomingReservations[0];
     const bookingChild = activeChild || (hasChildren ? children[0] : null);
     const sessionOptions = sessionTypesFor(bookingChild);
+    // A Combined child may hold one OT and one Speech upcoming booking at once,
+    // so the "already have an upcoming booking" gate only applies within the
+    // currently selected session type's own discipline for them; any other
+    // child (single discipline) keeps the original "any upcoming booking" gate.
+    const selectedDiscipline = disciplineOfType(bookingSessionType);
+    const childReservations = upcomingReservationsFor(bookingChild?.id);
+    const activeBooking = (bookingChild?.therapy_type === 'Both' && selectedDiscipline)
+      ? childReservations.find(r => disciplineOfType(r.session_type) === selectedDiscipline)
+      : childReservations[0];
+    const hasActiveBooking = !!activeBooking;
 
     return (
       <div className="spa-page" id="spa-booking">
         <div style={{ marginBottom: 24 }}>
           <h1 style={{ fontSize: 22, fontWeight: 700, color: '#0F172A', margin: '0 0 4px' }}>Book or Reschedule a Session</h1>
-          <p style={{ fontSize: 13.5, color: '#64748B', margin: 0 }}>Self-service reservations with real-time slot availability.</p>
         </div>
 
         {!hasChildren ? (
@@ -685,10 +1032,18 @@ export default function ParentPortal() {
                   <div><div className="section-title">New Reservation</div><div className="section-sub">Choose a date and an available time slot</div></div>
                   <span className="pill pill-blue">{selectedSlot ? selectedSlot + ' selected' : 'No time selected'}</span>
                 </div>
+                {children.length > 1 && (
+                  <div style={{ marginBottom: 14 }}>
+                    <label className="form-label">Booking For</label>
+                    <select className="form-select" style={{ background: '#fff' }} value={bookingChild?.id || ''} disabled={childSwitching} onChange={e => switchBookingChild(e.target.value)}>
+                      {children.map(c => <option key={c.id} value={c.id}>{c.full_name}</option>)}
+                    </select>
+                  </div>
+                )}
                 {hasActiveBooking && activeBooking.status === 'awaiting_payment' && (
                   <div style={{ background: '#FFFBEB', border: '1px solid #FDE68A', borderRadius: 9, padding: '12px 14px', marginBottom: 16, fontSize: 12.5, color: '#92400E', display: 'flex', alignItems: 'flex-start', gap: 8, flexWrap: 'wrap' }}>
                     <i className="fa-solid fa-hourglass-half" style={{ marginTop: 1 }} />
-                    <span style={{ flex: 1 }}>Your slot on {fmtDate(activeBooking.date)} · {activeBooking.time_slot} is held, awaiting your payment. Complete it soon, unpaid holds are released automatically.</span>
+                    <span style={{ flex: 1 }}>Your slot on {fmtDate(activeBooking.date)} · {activeBooking.time_slot} is held, status: Pending. Complete payment soon, unpaid holds are released automatically.</span>
                     <button className="btn-primary" style={{ fontSize: 11.5, padding: '6px 12px' }} onClick={() => {
                       const p = (payments || []).find(pm => pm.reservation_id === activeBooking.id);
                       if (p) generateQr(p);
@@ -701,59 +1056,165 @@ export default function ParentPortal() {
                     <span>You already have an upcoming booking, {fmtDate(activeBooking.date)} · {activeBooking.time_slot} ({activeBooking.status}). Only one booking per child is allowed at a time. Cancel it under "My Booking Requests", or wait until its date has passed, before submitting a new one.</span>
                   </div>
                 )}
-                <div style={{ marginBottom: 14, opacity: hasActiveBooking ? .55 : 1, pointerEvents: hasActiveBooking ? 'none' : 'auto' }}>
+                <div style={{ marginBottom: 14 }}>
                   <label className="form-label">Session Type</label>
                   {sessionOptions.length <= 1 ? (
                     <div className="form-input" style={{ display: 'flex', alignItems: 'center', color: '#475569', background: '#F8FAFC', fontWeight: 600 }}>
                       {sessionOptions[0] || 'No eligible session type'}
                     </div>
                   ) : (
-                    <select className="form-select" value={bookingSessionType} onChange={e => setBookingSessionType(e.target.value)}>
+                    <select className="form-select" style={{ background: '#fff' }} value={bookingSessionType} onChange={e => setBookingSessionType(e.target.value)}>
                       {sessionOptions.map(t => <option key={t} value={t}>{t}</option>)}
                     </select>
                   )}
-                  {!bookingChild?.assigned_therapist_name && !bookingChild?.therapy_type && (
+                  {!bookingChild?.assigned_ot_therapist_name && !bookingChild?.assigned_speech_therapist_name && !bookingChild?.therapy_type && (
                     <div style={{ fontSize: 11.5, color: '#64748B', marginTop: 5 }}><i className="fa-solid fa-circle-info" style={{ marginRight: 5 }} />Only an Initial Assessment can be booked until the clinic assigns a therapy type and therapist.</div>
                   )}
                 </div>
                 <div style={{ marginBottom: 14, opacity: hasActiveBooking ? .55 : 1, pointerEvents: hasActiveBooking ? 'none' : 'auto' }}>
-                  <label className="form-label">Requested Date</label>
-                  <input type="date" className="form-input" value={reservationDate} min={minBookableDateStr()} onChange={e => changeDate(e.target.value)} disabled={hasActiveBooking} />
-                </div>
-                <div style={{ marginBottom: 14, opacity: hasActiveBooking ? .55 : 1, pointerEvents: hasActiveBooking ? 'none' : 'auto' }}>
-                  <label className="form-label" style={slotError ? { color: '#DC2626' } : undefined}>Available Time Slots {slotError && <span style={{ fontWeight: 400 }}>- please pick one</span>}</label>
-                  <div className="slot-grid" style={slotError ? { border: '1px solid #FCA5A5', borderRadius: 10, padding: 8, background: '#FEF2F2' } : undefined}>
-                    {slotsForDate.length === 0 && (
-                      <div style={{ fontSize: 12.5, color: '#94A3B8', padding: '6px 2px' }}>No time slots for this date, no therapists are on shift.</div>
-                    )}
-                    {slotsForDate.map(s => {
-                      const t = s.time_slot;
-                      const full = s.available <= 0;
-                      const past = isSlotPast(reservationDate, t);
-                      const blocked = full || past || hasActiveBooking;
-                      const isSelected = t === selectedSlot;
-                      const cls = 'slot-btn' + (blocked ? '' : (isSelected ? ' active' : ''));
-                      const style = blocked ? { opacity: .45, cursor: 'not-allowed', background: '#F1F5F9', borderColor: '#E2E8F0', color: '#94A3B8' } : undefined;
-                      return (
-                        <button key={t} className={cls} style={style} disabled={blocked} onClick={blocked ? undefined : () => pickSlot(t)}>
-                          {t}
-                          {s.lunch_break && <span style={{ fontSize: 10, fontWeight: 400 }}> (Lunch Break)</span>}
-                          {!s.lunch_break && full && <span style={{ fontSize: 10, fontWeight: 400 }}> (Full)</span>}
-                          {!s.lunch_break && !full && past && <span style={{ fontSize: 10, fontWeight: 400 }}> (Past)</span>}
-                          {!s.lunch_break && !full && !past && s.capacity > 1 && <span style={{ fontSize: 10, fontWeight: 400 }}> · {s.available} left</span>}
+                  <label className="form-label">Requested Date &amp; Time</label>
+                  <div className="booking-cal-grid">
+                    <div>
+                      <div className="cal-nav">
+                        <button type="button" className="cal-nav-btn" disabled={calMonth <= ymFromDateStr(minBookableDateStr())} onClick={() => setCalMonth(m => addMonths(m, -1))}>
+                          <i className="fa-solid fa-chevron-left" />
                         </button>
-                      );
-                    })}
+                        <div className="cal-month-label">{monthLabel(calMonth)}</div>
+                        <button type="button" className="cal-nav-btn" onClick={() => setCalMonth(m => addMonths(m, 1))}>
+                          <i className="fa-solid fa-chevron-right" />
+                        </button>
+                      </div>
+                      <div className="cal-dow-row"><span>Sun</span><span>Mon</span><span>Tue</span><span>Wed</span><span>Thu</span><span>Fri</span><span>Sat</span></div>
+                      <div className="cal-day-grid">
+                        {Array.from({ length: firstWeekdayOfMonth(calMonth) }).map((_, i) => <div key={'pad' + i} className="cal-day is-outside" />)}
+                        {Array.from({ length: daysInMonth(calMonth) }).map((_, i) => {
+                          const day = i + 1;
+                          const dateStr = calMonth + '-' + String(day).padStart(2, '0');
+                          const disabled = dateStr < minBookableDateStr() || hasActiveBooking;
+                          const isSelected = dateStr === reservationDate;
+                          const isToday = dateStr === todayStr();
+                          const cls = 'cal-day' + (isSelected ? ' is-selected' : '') + (isToday && !isSelected ? ' is-today' : '');
+                          return (
+                            <button key={dateStr} type="button" className={cls} disabled={disabled} onClick={disabled ? undefined : () => changeDate(dateStr)}>
+                              {day}
+                            </button>
+                          );
+                        })}
+                      </div>
+                    </div>
+                    <div className="slots-col">
+                      <div className="slots-col-header" style={slotError ? { color: '#DC2626' } : undefined}>
+                        {reservationDate ? new Date(reservationDate + 'T00:00:00').toLocaleDateString('en-US', { weekday: 'long', month: 'long', day: 'numeric' }) : 'Select a date'}
+                        {slotError && <span style={{ fontWeight: 400, fontSize: 11.5 }}> &ndash; please pick a time</span>}
+                      </div>
+                      <div
+                        className="slot-list"
+                        style={{
+                          // Column-major fill (top-to-bottom then next column), so row
+                          // count must match the actual slot count, not a fixed guess.
+                          gridTemplateRows: 'repeat(' + Math.max(1, Math.ceil(slotsForDate.length / 2)) + ', auto)',
+                          ...(slotError ? { border: '1px solid #FCA5A5', borderRadius: 10, padding: 8, background: '#FEF2F2' } : null)
+                        }}
+                      >
+                        {slotsForDate.length === 0 && (() => {
+                          const holiday = holidays.find(h => h.date === reservationDate);
+                          return (
+                            <div style={{ fontSize: 12.5, color: '#94A3B8', padding: '6px 2px' }}>
+                              {holiday
+                                ? <>The clinic is closed on this date{holiday.label ? ' (' + holiday.label + ')' : ''}, please pick another day.</>
+                                : 'No time slots for this date, no therapists are on shift.'}
+                            </div>
+                          );
+                        })()}
+                        {slotsForDate.map(s => {
+                          const t = s.time_slot;
+                          // Initial Assessment has no dedicated therapist picked ahead of time,
+                          // so it's capped at one booking per hour clinic-wide, same rule as
+                          // the admin booking calendar (reservationsHelpers.effectiveSlotAvailable),
+                          // instead of the raw multi-therapist capacity every other type uses.
+                          const effAvailable = effectiveSlotAvailable(s, bookingSessionType);
+                          const full = effAvailable <= 0;
+                          const past = isSlotPast(reservationDate, t);
+                          const blocked = full || past || hasActiveBooking;
+                          const isSelected = t === selectedSlot;
+                          const cls = 'slot-btn' + (blocked ? '' : (isSelected ? ' active' : ''));
+                          const style = blocked ? { opacity: .45, cursor: 'not-allowed', background: '#F1F5F9', borderColor: '#E2E8F0', color: '#94A3B8' } : undefined;
+                          return (
+                            <button key={t} className={cls} style={style} disabled={blocked} onClick={blocked ? undefined : () => pickSlot(t)}>
+                              {t}
+                              {s.lunch_break && <span style={{ fontSize: 10, fontWeight: 400 }}> (Lunch Break)</span>}
+                              {!s.lunch_break && full && <span style={{ fontSize: 10, fontWeight: 400 }}> (Full)</span>}
+                              {!s.lunch_break && !full && past && <span style={{ fontSize: 10, fontWeight: 400 }}> (Past)</span>}
+                              {!s.lunch_break && !full && !past && bookingSessionType !== 'Initial Assessment' && s.capacity > 1 && <span style={{ fontSize: 10, fontWeight: 400 }}> · {s.available} left</span>}
+                            </button>
+                          );
+                        })}
+                      </div>
+                    </div>
                   </div>
                 </div>
-                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
-                  <div style={{ fontSize: 12, color: '#64748B', maxWidth: 340 }}><i className="fa-solid fa-shield-halved" style={{ color: '#0D9488', marginRight: 4 }} />Conflict prevention is active. Double-booked slots are automatically blocked.</div>
-                  <button className="btn-primary" disabled={bookingBusy || hasActiveBooking} onClick={submitReservation}>
-                    {bookingBusy ? <><i className="fa-solid fa-spinner fa-spin" style={{ marginRight: 6 }} />Submitting…</> : 'Submit Booking Request'}
-                  </button>
+                <div style={{ display: 'flex', justifyContent: 'flex-end', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
+                  <button className="btn-primary" disabled={bookingBusy || hasActiveBooking} onClick={openBookingConfirm}>Book</button>
                 </div>
               </div>
             </div>
+
+            {/* Booking details, shown once the active booking is actually reserved (paid/confirmed), not while still awaiting payment */}
+            {hasActiveBooking && ['confirmed', 'rescheduled'].includes(activeBooking.status) && (() => {
+              const bookedPayment = (payments || []).find(p => p.reservation_id === activeBooking.id);
+              return (
+                <div className="card" style={{ padding: '22px 24px', marginBottom: 24 }}>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 10, flexWrap: 'wrap', marginBottom: 16 }}>
+                    <div><div className="section-title">Booking Details</div><div className="section-sub">Your reserved session</div></div>
+                    <span className="pill pill-green"><i className="fa-solid fa-circle-check" style={{ marginRight: 5 }} />Reserved</span>
+                  </div>
+                  <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 14 }}>
+                    <div>
+                      <div style={{ fontSize: 10.5, color: '#94A3B8', fontWeight: 600, textTransform: 'uppercase', letterSpacing: '.3px', marginBottom: 2 }}>Child</div>
+                      <div style={{ fontSize: 13, color: '#0F172A', fontWeight: 500 }}>{bookingChild?.full_name || '-'}</div>
+                    </div>
+                    <div>
+                      <div style={{ fontSize: 10.5, color: '#94A3B8', fontWeight: 600, textTransform: 'uppercase', letterSpacing: '.3px', marginBottom: 2 }}>Session Type</div>
+                      <div style={{ fontSize: 13, color: '#0F172A', fontWeight: 500 }}>{activeBooking.session_type}</div>
+                    </div>
+                    <div>
+                      <div style={{ fontSize: 10.5, color: '#94A3B8', fontWeight: 600, textTransform: 'uppercase', letterSpacing: '.3px', marginBottom: 2 }}>Date &amp; Time</div>
+                      <div style={{ fontSize: 13, color: '#0F172A', fontWeight: 500 }}>{fmtDate(activeBooking.date)} · {activeBooking.time_slot}</div>
+                    </div>
+                    <div>
+                      <div style={{ fontSize: 10.5, color: '#94A3B8', fontWeight: 600, textTransform: 'uppercase', letterSpacing: '.3px', marginBottom: 2 }}>Therapist</div>
+                      <div style={{ fontSize: 13, color: '#0F172A', fontWeight: 500 }}>{activeBooking.therapist_name || 'Not yet assigned'}</div>
+                    </div>
+                    {activeBooking.room && (
+                      <div>
+                        <div style={{ fontSize: 10.5, color: '#94A3B8', fontWeight: 600, textTransform: 'uppercase', letterSpacing: '.3px', marginBottom: 2 }}>Room</div>
+                        <div style={{ fontSize: 13, color: '#0F172A', fontWeight: 500 }}>{activeBooking.room}</div>
+                      </div>
+                    )}
+                    {bookedPayment && (
+                      <>
+                        <div>
+                          <div style={{ fontSize: 10.5, color: '#94A3B8', fontWeight: 600, textTransform: 'uppercase', letterSpacing: '.3px', marginBottom: 2 }}>Invoice No.</div>
+                          <div style={{ fontSize: 13, color: '#0F172A', fontWeight: 500 }}>{bookedPayment.invoice_no || '-'}</div>
+                        </div>
+                        <div>
+                          <div style={{ fontSize: 10.5, color: '#94A3B8', fontWeight: 600, textTransform: 'uppercase', letterSpacing: '.3px', marginBottom: 2 }}>Amount Paid</div>
+                          <div style={{ fontSize: 13, color: '#0F172A', fontWeight: 500 }}>₱{Number(bookedPayment.amount).toLocaleString()}</div>
+                        </div>
+                        <div>
+                          <div style={{ fontSize: 10.5, color: '#94A3B8', fontWeight: 600, textTransform: 'uppercase', letterSpacing: '.3px', marginBottom: 2 }}>Payment Method</div>
+                          <div style={{ fontSize: 13, color: '#0F172A', fontWeight: 500 }}>{bookedPayment.method || '-'}</div>
+                        </div>
+                        <div>
+                          <div style={{ fontSize: 10.5, color: '#94A3B8', fontWeight: 600, textTransform: 'uppercase', letterSpacing: '.3px', marginBottom: 2 }}>Paid On</div>
+                          <div style={{ fontSize: 13, color: '#0F172A', fontWeight: 500 }}>{bookedPayment.paid_at ? fmtDate(bookedPayment.paid_at.slice(0, 10)) : '-'}</div>
+                        </div>
+                      </>
+                    )}
+                  </div>
+                </div>
+              );
+            })()}
 
             {/* Booking history */}
             <div className="card" style={{ padding: '22px 24px' }}>
@@ -765,7 +1226,7 @@ export default function ParentPortal() {
                   <div style={{ fontSize: 12.5, color: '#94A3B8', textAlign: 'center', padding: '20px 0' }}><i className="fa-solid fa-inbox" style={{ marginRight: 7 }} />No booking requests yet. Submit one above!</div>
                 ) : myReservations.slice(0, 10).map(r => {
                   const badge = r.status === 'confirmed' ? <span className="pill pill-green">Confirmed</span>
-                    : r.status === 'awaiting_payment' ? <span className="pill pill-amber">Awaiting Payment</span>
+                    : r.status === 'awaiting_payment' ? <span className="pill pill-amber">Pending</span>
                     : r.status === 'declined' ? <span className="pill pill-red">Declined</span>
                     : r.status === 'cancelled' ? <span className="pill pill-gray">Cancelled</span>
                     : r.status === 'rescheduled' ? <span className="pill pill-blue">Rescheduled</span>
@@ -782,10 +1243,13 @@ export default function ParentPortal() {
                         </div>
                       )}
                       {r.status === 'awaiting_payment' && (
-                        <button className="btn-primary" style={{ fontSize: 11, padding: '5px 10px', marginTop: 6 }} onClick={() => {
-                          const p = (payments || []).find(pm => pm.reservation_id === r.id);
-                          if (p) generateQr(p);
-                        }}>Complete Payment</button>
+                        <div style={{ display: 'flex', gap: 8, marginTop: 6 }}>
+                          <button className="btn-primary" style={{ fontSize: 11, padding: '5px 10px' }} onClick={() => {
+                            const p = (payments || []).find(pm => pm.reservation_id === r.id);
+                            if (p) generateQr(p);
+                          }}>Complete Payment</button>
+                          <button className="btn-secondary" style={{ fontSize: 11, padding: '5px 10px' }} onClick={() => setCancelTarget(r)}><i className="fa-solid fa-xmark" style={{ marginRight: 4 }} />Cancel Booking</button>
+                        </div>
                       )}
                     </div>
                   );
@@ -826,7 +1290,6 @@ export default function ParentPortal() {
       <div className="spa-page" id="spa-payment">
         <div style={{ marginBottom: 24 }}>
           <h1 style={{ fontSize: 22, fontWeight: 700, color: '#0F172A', margin: '0 0 4px' }}>Secure Payment Checkout</h1>
-          <p style={{ fontSize: 13.5, color: '#64748B', margin: 0 }}>Gateway integration · Itemized balances · Download invoices</p>
         </div>
 
         {/* Tabs */}
@@ -849,20 +1312,33 @@ export default function ParentPortal() {
                   <div className="section-sub">Pay any session instantly with a real QRPh code, scan with GCash, Maya, or any bank app</div>
                 </div>
                 <div>
-                  {pendingPayments.map(p => (
-                    <div className="balance-row" key={p.id}>
-                      <div>
-                        <div style={{ fontSize: 13, fontWeight: 600, color: '#0F172A' }}>{p.invoice_no || 'Session'}</div>
-                        <div style={{ fontSize: 11.5, color: '#94A3B8' }}>{fmtDate((p.created_at || '').slice(0, 10))} · <span className="pill pill-amber" style={{ fontSize: 9 }}>{p.status}</span></div>
+                  {pendingPayments.map(p => {
+                    // Cancelling only makes sense while the slot is still an unpaid
+                    // hold, once confirmed (e.g. staff booked it in person and picked
+                    // QRPh for a later payment), this is just an outstanding invoice,
+                    // not a hold to release, so no Cancel option for that case.
+                    const linkedRes = (reservations || []).find(r => r.id === p.reservation_id);
+                    const cancellable = linkedRes?.status === 'awaiting_payment';
+                    return (
+                      <div className="balance-row" key={p.id}>
+                        <div>
+                          <div style={{ fontSize: 13, fontWeight: 600, color: '#0F172A' }}>{p.invoice_no || 'Session'}</div>
+                          <div style={{ fontSize: 11.5, color: '#94A3B8' }}>{fmtDate((p.created_at || '').slice(0, 10))} · <span className="pill pill-amber" style={{ fontSize: 9 }}>{p.status}</span></div>
+                        </div>
+                        <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+                          <span style={{ fontSize: 13, fontWeight: 700, color: '#0F172A' }}>₱{Number(p.amount).toLocaleString()}</span>
+                          {cancellable && (
+                            <button className="btn-secondary" style={{ fontSize: 12, padding: '8px 14px' }} onClick={() => setCancelTarget(linkedRes)}>
+                              <i className="fa-solid fa-xmark" style={{ marginRight: 5 }} />Cancel
+                            </button>
+                          )}
+                          <button className="btn-primary" style={{ fontSize: 12, padding: '8px 14px' }} disabled={qrBusy} onClick={() => generateQr(p)}>
+                            <i className="fa-solid fa-qrcode" style={{ marginRight: 5 }} />Pay with QRPh
+                          </button>
+                        </div>
                       </div>
-                      <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-                        <span style={{ fontSize: 13, fontWeight: 700, color: '#0F172A' }}>₱{Number(p.amount).toLocaleString()}</span>
-                        <button className="btn-primary" style={{ fontSize: 12, padding: '8px 14px' }} disabled={qrBusy} onClick={() => generateQr(p)}>
-                          <i className="fa-solid fa-qrcode" style={{ marginRight: 5 }} />Pay with QRPh
-                        </button>
-                      </div>
-                    </div>
-                  ))}
+                    );
+                  })}
                 </div>
                 <div style={{ padding: '12px 20px', borderTop: '1px solid #F1F5F9', display: 'flex', alignItems: 'center', gap: 8, fontSize: 12, color: '#16A34A' }}>
                   <i className="fa-solid fa-lock" /> Payments are processed securely by PayMongo, KID Clinic never sees your bank or wallet details.
@@ -932,33 +1408,13 @@ export default function ParentPortal() {
      ═══════════════════════════════════════════════════════════ */
   function renderNotifications() {
     const allNotifs = notifications || [];
-    const unread = allNotifs.filter(n => !n.read);
-    const read = allNotifs.filter(n => n.read);
-
-    async function markRead(id) {
-      try {
-        await api('/notifications/' + id + '/read', { method: 'PUT' });
-        setNotifications(prev => (prev || []).map(n => n.id === id ? { ...n, read: true } : n));
-        toast('Notification marked as read', 'fa-check');
-      } catch (e) {
-        toast('Failed to mark read', 'fa-circle-exclamation');
-      }
-    }
 
     return (
       <div className="spa-page" id="spa-notifications">
         <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', marginBottom: 24, flexWrap: 'wrap', gap: 12 }}>
           <div>
             <h1 style={{ fontSize: 22, fontWeight: 700, color: '#0F172A', margin: '0 0 4px' }}>Notifications</h1>
-            <p style={{ fontSize: 13.5, color: '#64748B', margin: 0 }}>Session reminders, rescheduling changes, and payment updates.</p>
           </div>
-        </div>
-
-        {/* KPI cards */}
-        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit,minmax(165px,1fr))', gap: 16, marginBottom: 22 }}>
-          <div className="card stat-card" style={{ borderTop: '3px solid #0EA5E9' }}><div style={{ display: 'flex', justifyContent: 'space-between' }}><div><div className="stat-label">Unread</div><div className="stat-value">{unread.length}</div><div className={unread.length > 0 ? 'stat-change down' : 'stat-change up'}>{unread.length > 0 ? 'Needs attention' : 'All caught up'}</div></div><div className="stat-icon" style={{ background: '#E0F2FE', color: '#0EA5E9' }}><i className="fa-solid fa-bell" /></div></div></div>
-          <div className="card stat-card" style={{ borderTop: '3px solid #10B981' }}><div style={{ display: 'flex', justifyContent: 'space-between' }}><div><div className="stat-label">Total</div><div className="stat-value">{allNotifs.length}</div><div className="stat-change up">All notifications</div></div><div className="stat-icon" style={{ background: '#DCFCE7', color: '#10B981' }}><i className="fa-solid fa-inbox" /></div></div></div>
-          <div className="card stat-card" style={{ borderTop: '3px solid #F59E0B' }}><div style={{ display: 'flex', justifyContent: 'space-between' }}><div><div className="stat-label">Next Session</div><div className="stat-value">{nextSession ? fmtShortDate(nextSession.date) : '-'}</div><div className="stat-change up">{nextSession ? nextSession.time_slot : 'None scheduled'}</div></div><div className="stat-icon" style={{ background: '#FEF3C7', color: '#F59E0B' }}><i className="fa-solid fa-calendar-check" /></div></div></div>
         </div>
 
         {/* Notification list */}
@@ -969,7 +1425,7 @@ export default function ParentPortal() {
         ) : (
           <div className="card" style={{ padding: '22px 0 0' }}>
             <div style={{ padding: '0 24px 16px', borderBottom: '1px solid #F1F5F9', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-              <div><div className="section-title">All Notifications</div><div className="section-sub">Session reminders, rescheduling changes, and payment updates</div></div>
+              <div><div className="section-title">All Notifications</div></div>
             </div>
             <div style={{ padding: '8px 24px 0' }}>
               {allNotifs.map(n => (
@@ -981,7 +1437,7 @@ export default function ParentPortal() {
                     {n.body && <div style={{ fontSize: 12, color: '#64748B', marginTop: 2 }}>{n.body}</div>}
                     <div style={{ fontSize: 11, color: '#94A3B8', marginTop: 4 }}>{n.created_at ? new Date(n.created_at).toLocaleString() : ''}</div>
                   </div>
-                  {!n.read && <button className="btn-edit" style={{ fontSize: 11 }} onClick={() => markRead(n.id)}>Mark read</button>}
+                  {!n.read && <button className="btn-edit" style={{ fontSize: 11 }} onClick={() => markNotifRead(n.id)}>Mark read</button>}
                 </div>
               ))}
             </div>
@@ -1013,6 +1469,7 @@ export default function ParentPortal() {
           <a className={'nav-item' + (page === 'notifications' ? ' active' : '')} onClick={() => goPage('notifications')}><span className="icon"><i className="fa-solid fa-bell" /></span> Notifications {unreadCount > 0 && <span className="nav-badge">{unreadCount}</span>}</a>
         </nav>
       </aside>
+      <div id="sidebar-backdrop" className={sidebarOpen ? 'open' : ''} onClick={() => setSidebarOpen(false)} />
 
       <div id="main">
         <header id="topnav">
@@ -1028,7 +1485,7 @@ export default function ParentPortal() {
                 </div>
                 <div style={{ maxHeight: 320, overflowY: 'auto' }}>
                   {(notifications || []).slice(0, 5).map((n, i) => (
-                    <div key={n.id || i} style={{ display: 'flex', alignItems: 'flex-start', gap: 12, padding: '12px 16px', background: !n.read ? '#F0F9FF' : '#fff', borderBottom: '1px solid #F8FAFC' }}>
+                    <div key={n.id || i} style={{ display: 'flex', alignItems: 'flex-start', gap: 12, padding: '12px 16px', cursor: n.read ? 'default' : 'pointer', background: !n.read ? '#F0F9FF' : '#fff', borderBottom: '1px solid #F8FAFC' }} onClick={() => !n.read && markNotifRead(n.id)}>
                       <div style={{ width: 34, height: 34, borderRadius: 9, flexShrink: 0, background: '#E0F2FE', color: '#0EA5E9', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
                         <i className={'fa-solid ' + (n.icon || 'fa-bell')} style={{ fontSize: 13 }} />
                       </div>
@@ -1104,6 +1561,79 @@ export default function ParentPortal() {
           </div>
         </Modal>
       )}
+
+      {idleWarning && (
+        <Modal onClose={stayLoggedIn} title="Still there?" width={400}>
+          <div style={{ textAlign: 'center', padding: '6px 0 4px' }}>
+            <div style={{ width: 56, height: 56, borderRadius: '50%', background: '#FFFBEB', display: 'flex', alignItems: 'center', justifyContent: 'center', margin: '0 auto 14px' }}>
+              <i className="fa-solid fa-clock" style={{ fontSize: 22, color: '#B45309' }} />
+            </div>
+            <div style={{ fontSize: 14, fontWeight: 700, color: '#0F172A', marginBottom: 6 }}>You've been idle for a while</div>
+            <div style={{ fontSize: 12.5, color: '#64748B', marginBottom: 18 }}>
+              For your security, you'll be logged out in <b style={{ color: '#B45309' }}>{idleCountdown}s</b> unless you stay logged in.
+            </div>
+            <div style={{ display: 'flex', gap: 10 }}>
+              <button className="btn-secondary" style={{ flex: 1, padding: 10 }} onClick={doLogout}>Log Out</button>
+              <button className="btn-primary" style={{ flex: 1, padding: 10 }} onClick={stayLoggedIn}>Continue Session</button>
+            </div>
+          </div>
+        </Modal>
+      )}
+
+      {cancelTarget && (
+        <Modal onClose={() => !cancelBusy && setCancelTarget(null)} title="Cancel Booking" width={420}>
+          <div style={{ textAlign: 'center', padding: '6px 0 4px' }}>
+            <div style={{ width: 56, height: 56, borderRadius: '50%', background: '#FEF2F2', display: 'flex', alignItems: 'center', justifyContent: 'center', margin: '0 auto 14px' }}>
+              <i className="fa-solid fa-calendar-xmark" style={{ fontSize: 22, color: '#DC2626' }} />
+            </div>
+            <div style={{ fontSize: 14, fontWeight: 700, color: '#0F172A', marginBottom: 6 }}>Cancel this booking?</div>
+            <div style={{ fontSize: 12.5, color: '#64748B', marginBottom: 4 }}>{fmtDate(cancelTarget.date)} · {cancelTarget.time_slot}</div>
+            <div style={{ fontSize: 12.5, color: '#64748B', marginBottom: 18 }}>{cancelTarget.session_type}{cancelTarget.clients?.full_name ? ' · ' + cancelTarget.clients.full_name : ''}</div>
+            <div style={{ fontSize: 11.5, color: '#94A3B8', marginBottom: 18 }}>This releases the held slot since it hasn't been paid yet. You can submit a new booking any time.</div>
+            <div style={{ display: 'flex', gap: 10 }}>
+              <button className="btn-secondary" style={{ flex: 1, padding: 10 }} disabled={cancelBusy} onClick={() => setCancelTarget(null)}>Keep Booking</button>
+              <button style={{ flex: 1, padding: 10, borderRadius: 8, border: 'none', background: '#DC2626', color: '#fff', fontSize: 13, fontWeight: 700, cursor: 'pointer', opacity: cancelBusy ? .7 : 1 }} disabled={cancelBusy} onClick={confirmCancelReservation}>
+                {cancelBusy ? <><i className="fa-solid fa-spinner fa-spin" style={{ marginRight: 6 }} />Cancelling…</> : 'Yes, Cancel'}
+              </button>
+            </div>
+          </div>
+        </Modal>
+      )}
+
+      {bookingConfirm && (() => {
+        const confirmChild = activeChild || (children && children.length ? children[0] : null);
+        return (
+          <Modal onClose={() => !bookingBusy && setBookingConfirm(false)} title="Confirm Booking" width={420}>
+            <div style={{ textAlign: 'center', padding: '6px 0 4px' }}>
+              <div style={{ width: 56, height: 56, borderRadius: '50%', background: '#EFF6FF', display: 'flex', alignItems: 'center', justifyContent: 'center', margin: '0 auto 14px' }}>
+                <i className="fa-solid fa-calendar-check" style={{ fontSize: 22, color: '#0EA5E9' }} />
+              </div>
+              <div style={{ fontSize: 14, fontWeight: 700, color: '#0F172A', marginBottom: 14 }}>Please confirm the details below</div>
+              <div style={{ textAlign: 'left', background: '#F8FAFC', border: '1px solid #F1F5F9', borderRadius: 10, padding: '12px 14px', marginBottom: 14, display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
+                <div>
+                  <div style={{ fontSize: 10.5, color: '#94A3B8', fontWeight: 600, textTransform: 'uppercase', letterSpacing: '.3px', marginBottom: 2 }}>Child</div>
+                  <div style={{ fontSize: 12.5, color: '#0F172A', fontWeight: 600 }}>{confirmChild?.full_name || '-'}</div>
+                </div>
+                <div>
+                  <div style={{ fontSize: 10.5, color: '#94A3B8', fontWeight: 600, textTransform: 'uppercase', letterSpacing: '.3px', marginBottom: 2 }}>Session Type</div>
+                  <div style={{ fontSize: 12.5, color: '#0F172A', fontWeight: 600 }}>{bookingSessionType || '-'}</div>
+                </div>
+                <div style={{ gridColumn: '1 / -1' }}>
+                  <div style={{ fontSize: 10.5, color: '#94A3B8', fontWeight: 600, textTransform: 'uppercase', letterSpacing: '.3px', marginBottom: 2 }}>Date &amp; Time</div>
+                  <div style={{ fontSize: 12.5, color: '#0F172A', fontWeight: 600 }}>{fmtDate(reservationDate)} · {selectedSlot}</div>
+                </div>
+              </div>
+              <div style={{ fontSize: 11.5, color: '#94A3B8', marginBottom: 18 }}>Submitting holds this slot for you. Complete payment afterward to confirm it, unpaid holds are released automatically.</div>
+              <div style={{ display: 'flex', gap: 10 }}>
+                <button className="btn-secondary" style={{ flex: 1, padding: 10 }} disabled={bookingBusy} onClick={() => setBookingConfirm(false)}>Go Back</button>
+                <button className="btn-primary" style={{ flex: 1, padding: 10 }} disabled={bookingBusy} onClick={confirmSubmitReservation}>
+                  {bookingBusy ? <><i className="fa-solid fa-spinner fa-spin" style={{ marginRight: 6 }} />Submitting…</> : 'Confirm Booking'}
+                </button>
+              </div>
+            </div>
+          </Modal>
+        );
+      })()}
 
       {/* Printable invoice/receipt */}
       <style>{`
@@ -1232,7 +1762,7 @@ export default function ParentPortal() {
             </div>
             <div>
               <label className="form-label">Phone Number *</label>
-              <input className="form-input" type="tel" value={contactInput} onChange={handleContactInput} placeholder="+639XXXXXXXXX" maxLength={13} />
+              <input className="form-input" type="tel" value={formatPhoneDisplay(contactInput)} onChange={handleContactInput} placeholder="+63 000 000 0000" maxLength={16} />
               {contactErr && <div style={{ fontSize: 11.5, color: '#DC2626', fontWeight: 600, marginTop: 4 }}>{contactErr}</div>}
             </div>
             <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8 }}>
@@ -1337,15 +1867,18 @@ export default function ParentPortal() {
                 <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12, marginBottom: 12 }}>
                   <div>
                     <label className="form-label">Last Name *</label>
-                    <input className="form-input" value={linkForm.last_name} onChange={e => setLinkForm(f => ({ ...f, last_name: e.target.value }))} placeholder="Child's last name" required />
+                    <input className="form-input" value={linkForm.last_name} onChange={handleNameInput('last_name')} placeholder="Child's last name" required />
+                    {nameNotes.last_name && <div style={{ fontSize: 11.5, color: '#DC2626', fontWeight: 600, marginTop: 4 }}>{nameNotes.last_name}</div>}
                   </div>
                   <div>
                     <label className="form-label">First Name *</label>
-                    <input className="form-input" value={linkForm.first_name} onChange={e => setLinkForm(f => ({ ...f, first_name: e.target.value }))} placeholder="Child's first name" required />
+                    <input className="form-input" value={linkForm.first_name} onChange={handleNameInput('first_name')} placeholder="Child's first name" required />
+                    {nameNotes.first_name && <div style={{ fontSize: 11.5, color: '#DC2626', fontWeight: 600, marginTop: 4 }}>{nameNotes.first_name}</div>}
                   </div>
                   <div>
                     <label className="form-label">Middle Name <span style={{ fontWeight: 400, color: '#94A3B8' }}>(optional)</span></label>
-                    <input className="form-input" value={linkForm.middle_name} onChange={e => setLinkForm(f => ({ ...f, middle_name: e.target.value }))} placeholder="Child's middle name" />
+                    <input className="form-input" value={linkForm.middle_name} onChange={handleNameInput('middle_name')} placeholder="Child's middle name" />
+                    {nameNotes.middle_name && <div style={{ fontSize: 11.5, color: '#DC2626', fontWeight: 600, marginTop: 4 }}>{nameNotes.middle_name}</div>}
                   </div>
                   <div>
                     <label className="form-label">Date of Birth *</label>
@@ -1362,11 +1895,13 @@ export default function ParentPortal() {
                   </div>
                   <div>
                     <label className="form-label">Allergies <span style={{ fontWeight: 400, color: '#94A3B8' }}>(optional)</span></label>
-                    <input className="form-input" value={linkForm.allergies} onChange={e => setLinkForm(f => ({ ...f, allergies: e.target.value }))} placeholder="Food, medicine, etc." />
+                    <input className="form-input" value={linkForm.allergies} onChange={handleTextInput('allergies')} placeholder="Food, medicine, etc." />
+                    {textNotes.allergies && <div style={{ fontSize: 11.5, color: '#DC2626', fontWeight: 600, marginTop: 4 }}>{textNotes.allergies}</div>}
                   </div>
                   <div>
                     <label className="form-label">Daily Medication <span style={{ fontWeight: 400, color: '#94A3B8' }}>(optional)</span></label>
-                    <input className="form-input" value={linkForm.daily_medication} onChange={e => setLinkForm(f => ({ ...f, daily_medication: e.target.value }))} placeholder="Only if relevant to therapy sessions" />
+                    <input className="form-input" value={linkForm.daily_medication} onChange={handleTextInput('daily_medication')} placeholder="Only if relevant to therapy sessions" />
+                    {textNotes.daily_medication && <div style={{ fontSize: 11.5, color: '#DC2626', fontWeight: 600, marginTop: 4 }}>{textNotes.daily_medication}</div>}
                   </div>
                 </div>
               </>
@@ -1394,12 +1929,12 @@ export default function ParentPortal() {
                   </div>
                   <div>
                     <label className="form-label">Phone Number</label>
-                    <input className="form-input" type="tel" value={user?.contact || ''} disabled style={{ background: '#F1F5F9' }} />
+                    <input className="form-input" type="tel" value={formatPhoneDisplay(user?.contact || '')} disabled style={{ background: '#F1F5F9' }} />
                     <div style={{ fontSize: 11.5, color: '#94A3B8', marginTop: 4 }}>From your account, update it in My Profile if it's changed.</div>
                   </div>
                   <div>
                     <label className="form-label">Alternate Phone Number <span style={{ fontWeight: 400, color: '#94A3B8' }}>(optional)</span></label>
-                    <input className="form-input" type="tel" value={linkForm.other_guardian_phone} onChange={handlePhoneInput('other_guardian_phone')} placeholder="+639XXXXXXXXX" maxLength={13} />
+                    <input className="form-input" type="tel" value={formatPhoneDisplay(linkForm.other_guardian_phone)} onChange={handlePhoneInput('other_guardian_phone')} placeholder="+63 000 000 0000" maxLength={16} />
                     {phoneNotes.other_guardian_phone && <div style={{ fontSize: 11.5, color: '#DC2626', fontWeight: 600, marginTop: 4 }}>{phoneNotes.other_guardian_phone}</div>}
                   </div>
                 </div>

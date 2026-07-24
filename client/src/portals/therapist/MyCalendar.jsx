@@ -17,18 +17,35 @@ const MON_SHORT = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep'
 const DAY_SHORT = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
 const ALL_WORK_DAYS = [true, true, true, true, true, true, false];
 
+/** Monday of the week containing `d`. */
+function mondayOf(d) {
+  const dow = d.getDay();
+  const m = new Date(d);
+  m.setDate(d.getDate() - ((dow === 0 ? 7 : dow) - 1));
+  return m;
+}
+/** How many weeks (relative to today's week) a "YYYY-MM-DD" date falls in,
+ *  used so picking a date on the week-jump input lands on the correct week
+ *  regardless of which day of that week was picked. */
+function weekOffsetForDate(dateStr, today) {
+  const target = new Date(dateStr + 'T00:00:00');
+  return Math.round((mondayOf(target) - mondayOf(today)) / (7 * 24 * 60 * 60 * 1000));
+}
+
 export default function MyCalendar({ toast, therapistName }) {
   const [shift, setShift] = useState(null);
   const [reservations, setReservations] = useState([]);
   const [loading, setLoading] = useState(true);
+  // Weeks relative to the current week, Prev/Next step this; the date-jump
+  // input recomputes it from whatever date is picked.
+  const [weekOffset, setWeekOffset] = useState(0);
 
   const today = useMemo(() => { const d = new Date(); d.setHours(0, 0, 0, 0); return d; }, []);
   const weekStart = useMemo(() => {
-    const dow = today.getDay();
-    const d = new Date(today);
-    d.setDate(today.getDate() - ((dow === 0 ? 7 : dow) - 1));
+    const d = mondayOf(today);
+    d.setDate(d.getDate() + weekOffset * 7);
     return d;
-  }, [today]);
+  }, [today, weekOffset]);
   const weekDays = useMemo(() => {
     const out = [];
     for (let i = 0; i < 7; i++) { const d = new Date(weekStart); d.setDate(weekStart.getDate() + i); out.push(d); }
@@ -79,9 +96,17 @@ export default function MyCalendar({ toast, therapistName }) {
               <div className="section-title">My Calendar</div>
               <div className="section-sub">Week of {weekLabel}</div>
             </div>
-            <div style={{ display: 'flex', gap: 14, flexWrap: 'wrap' }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 14, flexWrap: 'wrap' }}>
               <span className="pill pill-blue" style={{ fontSize: 11 }}><i className="fa-regular fa-clock" style={{ marginRight: 5 }} />{hourLabel(shift.start_hour)} – {hourLabel(shift.end_hour)}</span>
               <span className="pill pill-gray" style={{ fontSize: 11 }}><i className="fa-regular fa-calendar-xmark" style={{ marginRight: 5 }} />Off: {daysOffLabel}</span>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                <button className="topnav-btn" style={{ width: 28, height: 28 }} onClick={() => setWeekOffset(o => o - 1)} title="Previous week"><i className="fa-solid fa-chevron-left" style={{ fontSize: 10 }} /></button>
+                <button className="topnav-btn" style={{ width: 28, height: 28 }} onClick={() => setWeekOffset(o => o + 1)} title="Next week"><i className="fa-solid fa-chevron-right" style={{ fontSize: 10 }} /></button>
+                {weekOffset !== 0 && (
+                  <button className="btn-secondary" style={{ fontSize: 11.5, padding: '5px 10px' }} onClick={() => setWeekOffset(0)}>This Week</button>
+                )}
+                <input type="date" className="form-input" style={{ width: 'auto', height: 28, fontSize: 12, padding: '0 8px' }} title="Jump to week containing this date" onChange={e => { if (e.target.value) setWeekOffset(weekOffsetForDate(e.target.value, today)); }} />
+              </div>
             </div>
           </div>
           <div style={{ overflowX: 'auto' }}>

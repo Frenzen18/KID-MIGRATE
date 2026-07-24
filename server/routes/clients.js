@@ -1,12 +1,25 @@
 import { Router } from 'express';
+import multer from 'multer';
 import { db } from '../supabase.js';
 import { requireAuth, requireRole } from '../middleware/auth.js';
 import { nextClientCode } from '../usercode.js';
 import { logAudit } from '../lib/audit.js';
 import { calendarAge } from '../age.js';
+import { isValidName, isSafeText } from '../validate.js';
 
 /** Client IDs carry the enrollment year: CLI-YYYY-NNNN. */
 const NEW_CODE_FORMAT = /^CLI-\d{4}-\d{4}$/;
+
+/** Same image-only, 5MB-max upload gate as server/routes/cms.js, kept local since only a client's own photo route needs it here. */
+const ALLOWED_IMAGE_TYPES = new Set(['image/jpeg', 'image/png', 'image/gif', 'image/webp']);
+const photoUpload = multer({
+  storage: multer.memoryStorage(),
+  limits: { fileSize: 5 * 1024 * 1024 },
+  fileFilter: (req, file, cb) => cb(null, ALLOWED_IMAGE_TYPES.has(file.mimetype))
+});
+
+/** Mirrors client/src/components/DevFunctionalField.jsx's LETTERS_ONLY_SECTIONS. */
+const LETTERS_ONLY_SECTIONS = ['Behavior & Social', 'Motor Skills'];
 
 /** Strips PostgREST filter-DSL special characters (,()."*) so user search text can't inject extra filter clauses. */
 function sanitizeSearchTerm(s) {
@@ -33,7 +46,19 @@ async function validateDevFunctionalData(raw) {
       if (Array.isArray(f.options) && f.options.includes(val)) out[f.id] = val;
     } else {
       const trimmed = String(val).trim();
-      if (trimmed) out[f.id] = trimmed;
+      if (trimmed) {
+        // "Behavior & Social"/"Motor Skills" free-text fields (behavior
+        // concerns, sensory sensitivities, fine motor concerns, ...) are a
+        // write-up, not a value with a legitimate digit, so they're held to
+        // the stricter letters-only rule instead of the general safe-text
+        // one (mirrors DevFunctionalField.jsx).
+        if (LETTERS_ONLY_SECTIONS.includes(f.section)) {
+          if (!isValidName(trimmed)) return { error: `"${f.label}" can only contain letters, spaces, hyphens, and apostrophes.` };
+        } else if (!isSafeText(trimmed)) {
+          return { error: `"${f.label}" can only contain letters, numbers, and common punctuation.` };
+        }
+        out[f.id] = trimmed;
+      }
     }
   }
 
@@ -126,6 +151,9 @@ router.post('/self-register', async (req, res) => {
   }
   if (!childFirst || !childLast) return res.status(400).json({ error: 'Child\'s first name and last name are required.' });
   const childMiddle = (b.middle_name || '').trim();
+  if (!isValidName(childFirst) || !isValidName(childLast) || (childMiddle && !isValidName(childMiddle))) {
+    return res.status(400).json({ error: 'Names can only contain letters, spaces, hyphens, and apostrophes.' });
+  }
   const childFull = childMiddle ? `${childFirst} ${childMiddle} ${childLast}` : `${childFirst} ${childLast}`;
   if (!b.dob) return res.status(400).json({ error: 'Date of birth is required.' });
   if (!b.gender) return res.status(400).json({ error: 'Gender is required.' });
@@ -156,6 +184,12 @@ router.post('/self-register', async (req, res) => {
   }
   if (b.other_guardian_phone && !PH_PHONE.test(b.other_guardian_phone)) {
     return res.status(400).json({ error: 'Alternate contact number must start with 09 or +63.' });
+  }
+  if ((b.guardian_name && !isValidName(b.guardian_name)) || (b.other_guardian_name && !isValidName(b.other_guardian_name))) {
+    return res.status(400).json({ error: 'Names can only contain letters, spaces, hyphens, and apostrophes.' });
+  }
+  if ((b.allergies && !isSafeText(b.allergies)) || (b.daily_medication && !isSafeText(b.daily_medication))) {
+    return res.status(400).json({ error: 'Allergies and Daily Medication can only contain letters, numbers, and common punctuation.' });
   }
 
   const relationship = ['Parent', 'Guardian', 'Caretaker'].includes(b.guardian_relationship)
@@ -220,6 +254,9 @@ router.post('/', requireRole('admin', 'staff'), async (req, res) => {
     last_ = parts.slice(1).join(' ');
   }
   if (!first) return res.status(400).json({ error: 'Child\'s name is required' });
+  if (!isValidName(first) || (last_ && !isValidName(last_)) || (b.guardian_name && !isValidName(b.guardian_name))) {
+    return res.status(400).json({ error: 'Names can only contain letters, spaces, hyphens, and apostrophes.' });
+  }
   const fullName = last_ ? `${first} ${last_}` : first;
   // Auto-generated unique client ID: CLI-YYYY-NNNN
   const client_code = await nextClientCode();
@@ -234,9 +271,9 @@ router.post('/', requireRole('admin', 'staff'), async (req, res) => {
     guardian_name: b.guardian_name || null,
     guardian_contact: b.guardian_contact || null,
     parent_id: b.parent_id || null,
-    diagnosis: b.diagnosis || null,
     therapy_type: b.therapy_type || null, // set by the clinic after assessment
-    assigned_therapist_name: b.assigned_therapist_name || null,
+    assigned_ot_therapist_name: b.assigned_ot_therapist_name || null,
+    assigned_speech_therapist_name: b.assigned_speech_therapist_name || null,
     status: b.status || 'active'
   }).select().single();
   if (error) return res.status(500).json({ error: error.message });
@@ -253,16 +290,22 @@ router.post('/', requireRole('admin', 'staff'), async (req, res) => {
 /**
  * PUT /api/clients/:id, admin/staff can edit the full profile; an ot/speech
  * therapist may only update Development & Functional Information (their own
- * clinical observations), never administrative fields like status, diagnosis,
- * or who's assigned, those stay admin/staff-only.
+ * clinical observations), never administrative fields like status or who's
+ * assigned, those stay admin/staff-only.
  */
 router.put('/:id', requireRole('admin', 'staff', 'ot', 'speech'), async (req, res) => {
   const isTherapist = ['ot', 'speech'].includes(req.user.role);
   const allowed = isTherapist ? [] : [
-    'full_name','first_name','last_name','dob','gender','guardian_name','guardian_contact','parent_id','diagnosis','therapy_type','status','assigned_therapist_name'
+    'full_name','first_name','last_name','dob','gender','guardian_name','guardian_contact','parent_id','therapy_type','status','assigned_ot_therapist_name','assigned_speech_therapist_name'
   ];
   const patch = {};
   for (const k of allowed) if (k in req.body) patch[k] = req.body[k];
+
+  for (const k of ['full_name', 'first_name', 'last_name', 'guardian_name']) {
+    if (patch[k] && !isValidName(patch[k])) {
+      return res.status(400).json({ error: 'Names can only contain letters, spaces, hyphens, and apostrophes.' });
+    }
+  }
 
   // Development & Functional Information, any of admin/staff/ot/speech may
   // submit this (validated dynamically against the current field definitions,
@@ -293,20 +336,146 @@ router.put('/:id', requireRole('admin', 'staff', 'ot', 'speech'), async (req, re
   res.json(data);
 });
 
-/** DELETE /api/clients/:id, admin only */
-/** DELETE /api/clients/:id, archive a client profile (soft delete, all associated records are kept) */
+/**
+ * POST /api/clients/:id/photo, upload/replace a child's profile photo. A
+ * guardian may only upload for their own child, so the therapist looking
+ * after them can recognize their face; admin/staff can upload for any client.
+ */
+router.post('/:id/photo', (req, res, next) => {
+  photoUpload.single('file')(req, res, err => {
+    if (err) return res.status(400).json({ error: err.message || 'Upload failed' });
+    next();
+  });
+}, async (req, res) => {
+  if (!req.file) return res.status(400).json({ error: 'Only JPEG, PNG, GIF, or WEBP images are allowed (max 5MB).' });
+  if (!['parent', 'admin', 'staff'].includes(req.user.role)) {
+    return res.status(403).json({ error: 'Not allowed to upload a photo for this client.' });
+  }
+
+  const { data: client } = await db.from('clients').select('id, parent_id, full_name').eq('id', req.params.id).maybeSingle();
+  if (!client) return res.status(404).json({ error: 'Client not found' });
+  if (req.user.role === 'parent' && client.parent_id !== req.user.id) {
+    return res.status(403).json({ error: 'Not your child record' });
+  }
+
+  // Extension derived from the validated MIME type, not the client-supplied
+  // filename, avoids storing a file whose extension/content type disagree.
+  const EXT_FOR_TYPE = { 'image/jpeg': 'jpg', 'image/png': 'png', 'image/gif': 'gif', 'image/webp': 'webp' };
+  const ext = EXT_FOR_TYPE[req.file.mimetype] || 'jpg';
+  const path = `clients/${req.params.id}-${Date.now()}.${ext}`;
+
+  const { error: upErr } = await db.storage.from('uploads').upload(path, req.file.buffer, {
+    contentType: req.file.mimetype,
+    upsert: false
+  });
+  if (upErr) return res.status(500).json({ error: 'Failed to upload: ' + upErr.message });
+
+  const { data: urlData } = db.storage.from('uploads').getPublicUrl(path);
+  const { data, error } = await db.from('clients').update({ photo_url: urlData.publicUrl }).eq('id', req.params.id).select().single();
+  if (error) return res.status(500).json({ error: error.message });
+
+  await logAudit({
+    table_name: 'clients', record_id: req.params.id, action: 'update',
+    description: `Updated profile photo for ${client.full_name}`,
+    updated_by: req.user.id
+  });
+
+  res.json(data);
+});
+
+/**
+ * Bucket the archived-record snapshot is uploaded to on DELETE /:id and read
+ * back from on GET /:id/archive-file, a full point-in-time backup of the
+ * client's record (profile + clinical history), separate from the DB row
+ * itself, which stays in place (archived: true) so Restore is instant.
+ */
+const ARCHIVE_BUCKET = 'Client Records';
+
+/** Gathers everything DELETE /:id archives, one full JSON snapshot of a client's record. */
+async function buildClientSnapshot(clientId) {
+  const [{ data: client }, { data: notes }, { data: attendance }, { data: gasEntries }, { data: reservations }, { data: payments }] = await Promise.all([
+    db.from('clients').select('*').eq('id', clientId).single(),
+    db.from('session_notes').select('*').eq('client_id', clientId),
+    db.from('attendance').select('*').eq('client_id', clientId),
+    db.from('gas_entries').select('*').eq('client_id', clientId),
+    db.from('reservations').select('*').eq('client_id', clientId),
+    db.from('payments').select('*').eq('client_id', clientId)
+  ]);
+  if (!client) return null;
+
+  let gas_entry_scores = [];
+  if (gasEntries?.length) {
+    const { data: scores } = await db.from('gas_entry_scores').select('*').in('entry_id', gasEntries.map(e => e.id));
+    gas_entry_scores = scores || [];
+  }
+
+  return {
+    snapshot_taken_at: new Date().toISOString(),
+    client,
+    session_notes: notes || [],
+    attendance: attendance || [],
+    gas_entries: gasEntries || [],
+    gas_entry_scores,
+    reservations: reservations || [],
+    payments: payments || []
+  };
+}
+
+/** DELETE /api/clients/:id, admin only, archive a client profile: backs up the full record to
+ *  Storage (bucket "Client Records") and flags the row archived (soft delete, all associated
+ *  records are kept in the DB too, so Restore is instant). */
 router.delete('/:id', requireRole('admin'), async (req, res) => {
-  const { data: existing } = await db.from('clients').select('full_name').eq('id', req.params.id).maybeSingle();
-  const { error } = await db.from('clients').update({ archived: true }).eq('id', req.params.id);
+  const { data: existing } = await db.from('clients').select('full_name, client_code').eq('id', req.params.id).maybeSingle();
+  if (!existing) return res.status(404).json({ error: 'Client not found' });
+
+  const snapshot = await buildClientSnapshot(req.params.id);
+  const path = `${existing.client_code || req.params.id}.json`;
+  const { error: upErr } = await db.storage.from(ARCHIVE_BUCKET).upload(path, Buffer.from(JSON.stringify(snapshot, null, 2)), {
+    contentType: 'application/json',
+    upsert: true
+  });
+  if (upErr) return res.status(500).json({ error: 'Failed to back up record: ' + upErr.message });
+
+  const { error } = await db.from('clients').update({ archived: true, archive_snapshot_path: path }).eq('id', req.params.id);
   if (error) return res.status(500).json({ error: error.message });
 
   await logAudit({
     table_name: 'clients', record_id: req.params.id, action: 'archive',
-    description: `Archived client record${existing?.full_name ? ' for ' + existing.full_name : ''}`,
+    description: `Archived client record${existing?.full_name ? ' for ' + existing.full_name : ''} (backed up to Storage)`,
     updated_by: req.user.id
   });
 
   res.json({ ok: true });
+});
+
+/** PUT /api/clients/:id/restore, admin only, un-archives a client, the row and all its
+ *  clinical history were never removed, so this just flips the flag back. */
+router.put('/:id/restore', requireRole('admin'), async (req, res) => {
+  const { data: existing } = await db.from('clients').select('full_name').eq('id', req.params.id).maybeSingle();
+  if (!existing) return res.status(404).json({ error: 'Client not found' });
+
+  const { error } = await db.from('clients').update({ archived: false }).eq('id', req.params.id);
+  if (error) return res.status(500).json({ error: error.message });
+
+  await logAudit({
+    table_name: 'clients', record_id: req.params.id, action: 'restore',
+    description: `Restored client record${existing?.full_name ? ' for ' + existing.full_name : ''} from archive`,
+    updated_by: req.user.id
+  });
+
+  res.json({ ok: true });
+});
+
+/** GET /api/clients/:id/archive-file, admin only, a short-lived signed URL to download the
+ *  Storage backup taken when this client was last archived (the bucket isn't public). */
+router.get('/:id/archive-file', requireRole('admin'), async (req, res) => {
+  const { data: client } = await db.from('clients').select('archive_snapshot_path').eq('id', req.params.id).maybeSingle();
+  if (!client?.archive_snapshot_path) return res.status(404).json({ error: 'No backup on file for this client yet.' });
+
+  const { data, error } = await db.storage.from(ARCHIVE_BUCKET).createSignedUrl(client.archive_snapshot_path, 60);
+  if (error) return res.status(500).json({ error: 'Failed to generate download link: ' + error.message });
+
+  res.json({ url: data.signedUrl });
 });
 
 /** POST /api/clients/:id/notes, therapist/admin/staff add a session note */

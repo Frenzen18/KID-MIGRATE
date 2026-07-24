@@ -42,7 +42,7 @@ router.get('/public', async (req, res) => {
   res.json({ posts: posts || [], announcements: anns || [], announcement: anns?.[0] || null, homepage });
 });
 
-router.use(requireAuth, requireRole('admin', 'staff'));
+router.use(requireAuth, requireRole('admin'));
 
 /** POST /api/cms/upload, upload image to Supabase Storage */
 router.post('/upload', (req, res, next) => {
@@ -106,7 +106,7 @@ router.post('/posts', async (req, res) => {
     const status = b.status || 'published';
     const row = {
       title: b.title, body: b.body || '', category: b.category || 'General',
-      image_url: b.image_url || null, status,
+      image_url: b.image_url || null, photo_credit: b.photo_credit || null, status,
       published_at: status === 'published' ? new Date().toISOString() : null
     };
     console.log('CMS POST insert:', JSON.stringify(row));
@@ -134,7 +134,7 @@ router.post('/posts', async (req, res) => {
 router.put('/posts/:id', async (req, res) => {
   const b = req.body || {};
   const patch = {};
-  for (const k of ['title','body','category','image_url','status']) if (k in b) patch[k] = b[k];
+  for (const k of ['title','body','category','image_url','photo_credit','status']) if (k in b) patch[k] = b[k];
   if (b.status === 'published') patch.published_at = new Date().toISOString();
   const { data, error } = await db.from('cms_posts').update(patch).eq('id', req.params.id).select().single();
   if (error) return res.status(500).json({ error: error.message });

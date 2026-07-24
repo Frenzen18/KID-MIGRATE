@@ -1,7 +1,7 @@
 import { db } from '../supabase.js';
 import { verifyWebhookSignature } from './paymongo.js';
 import { logAudit } from './audit.js';
-import { notifyEvent } from './notify.js';
+import { notifyEvent, therapistUserId } from './notify.js';
 
 const PAID_EVENTS = new Set(['payment.paid', 'qr.paid']);
 
@@ -90,6 +90,18 @@ export async function markPaidByIntentId(intentId) {
           body: `Payment received, your session on ${reservation.date} at ${reservation.time_slot} is confirmed.`,
           icon: 'fa-calendar-check',
           target_user: reservation.created_by
+        });
+      }
+      // The assigned therapist only had a tentative hold to go on until now,
+      // this is the first moment the session is real, they need to know too.
+      const therapistId = await therapistUserId(reservation.therapist_name);
+      if (therapistId) {
+        const { data: client } = await db.from('clients').select('full_name').eq('id', reservation.client_id).maybeSingle();
+        await notifyEvent('notify_session_change', {
+          title: 'New session confirmed',
+          body: `${client?.full_name || 'A client'}'s ${reservation.session_type} session on ${reservation.date} at ${reservation.time_slot} is now confirmed on your schedule.`,
+          icon: 'fa-calendar-check',
+          target_user: therapistId
         });
       }
     }

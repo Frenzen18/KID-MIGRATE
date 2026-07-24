@@ -14,6 +14,33 @@
 .history-item { border:1px solid #E2E8F0; border-radius:12px; padding:14px; background:#F8FAFC; }
 @media (max-width:640px){ .slot-grid{ grid-template-columns:repeat(2,minmax(0,1fr)); } }
 
+/* == booking date/time picker (calendar + slot list) == */
+.booking-cal-grid { display:grid; grid-template-columns:minmax(0,260px) 1fr; gap:24px; }
+.cal-nav { display:flex; align-items:center; justify-content:space-between; margin-bottom:10px; }
+.cal-nav-btn { width:28px; height:28px; flex-shrink:0; border-radius:8px; border:1px solid #E2E8F0; background:#fff; color:#475569; display:flex; align-items:center; justify-content:center; cursor:pointer; font-size:11px; transition:all .15s; }
+.cal-nav-btn:hover:not(:disabled) { background:#EFF6FF; border-color:#BAE6FD; color:#0284C7; }
+.cal-nav-btn:disabled { opacity:.35; cursor:not-allowed; }
+.cal-month-label { font-size:13px; font-weight:700; color:#0F172A; }
+.cal-dow-row { display:grid; grid-template-columns:repeat(7,1fr); text-align:center; font-size:10px; font-weight:700; color:#94A3B8; text-transform:uppercase; letter-spacing:.3px; margin-bottom:4px; }
+.cal-day-grid { display:grid; grid-template-columns:repeat(7,1fr); gap:2px; }
+.cal-day { aspect-ratio:1; border:none; background:transparent; border-radius:8px; font-size:12px; font-weight:600; color:#334155; cursor:pointer; display:flex; align-items:center; justify-content:center; transition:all .15s; font-family:'Inter',sans-serif; }
+.cal-day:hover:not(:disabled) { background:#EFF6FF; color:#0284C7; }
+.cal-day:disabled { color:#CBD5E1; cursor:not-allowed; }
+.cal-day.is-today { color:#0EA5E9; font-weight:800; }
+.cal-day.is-selected, .cal-day.is-selected:hover { background:linear-gradient(135deg,#0EA5E9,#0D9488); color:#fff; }
+.cal-day.is-outside { visibility:hidden; cursor:default; }
+.slots-col { border-left:1px solid #F1F5F9; padding-left:20px; min-width:0; }
+.slots-col-header { font-size:13px; font-weight:700; color:#0F172A; margin-bottom:12px; }
+/* Column-major 2-up grid: rows fill top-to-bottom first (7,8,9,10 in col 1,
+   then 11,12,1,2 in col 2), not left-to-right. Row count is set inline
+   per render since it depends on how many slots that day has. */
+.slot-list { display:grid; grid-auto-flow:column; grid-template-columns:repeat(2,minmax(0,1fr)); gap:10px 16px; max-height:340px; overflow-y:auto; padding-right:6px; }
+.slot-list .slot-btn { padding:12px; text-align:center; }
+@media (max-width:720px) {
+  .booking-cal-grid { grid-template-columns:1fr; }
+  .slots-col { border-left:none; padding-left:0; border-top:1px solid #F1F5F9; padding-top:16px; }
+}
+
 /* == progress == */
 .prog-tab{padding:8px 18px;border-radius:9px;border:1px solid #E2E8F0;background:#F8FAFC;font-size:13px;font-weight:600;color:#64748B;cursor:pointer;transition:all .18s}
 .prog-tab.active{background:#0EA5E9;color:#fff;border-color:#0EA5E9}

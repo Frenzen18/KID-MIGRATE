@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useAuth } from '../../auth.jsx';
-import { useToast } from '../../components/ui.jsx';
+import { useToast, Modal } from '../../components/ui.jsx';
 import BrandLogo from '../../components/BrandLogo.jsx';
 import { api } from '../../api.js';
 import './admin.css';
@@ -24,6 +24,11 @@ const ADMIN_PAGE_KEYS = [
   'payments', 'notifications', 'audit', 'reports', 'settings'
 ];
 
+/** Same fallback-to-initial-letters helper StaffPortal/TherapistPortal already use for their own profile avatar. */
+function initials(name) {
+  return (name || '').split(' ').filter(Boolean).slice(0, 2).map(w => w[0]).join('').toUpperCase() || 'A';
+}
+
 /** "5 min ago" / "3 hrs ago" / "Jun 27" style relative timestamp for notification rows. */
 function relativeTime(iso) {
   if (!iso) return '';
@@ -39,7 +44,7 @@ function relativeTime(iso) {
 }
 
 export default function AdminPortal() {
-  const { logout } = useAuth();
+  const { user, logout } = useAuth();
   const nav = useNavigate();
   const toast = useToast();
 
@@ -57,6 +62,12 @@ export default function AdminPortal() {
 
   /* shared modal system (ported from shared.js openModal/closeModal) */
   const [modal, setModal] = useState(null);
+
+  // CMS (specifically Branding & Theme) reports here whenever it has unsaved edits,
+  // navigating to a different module would otherwise discard them with no warning,
+  // the way an actual browser reload/close already warns via its own beforeunload.
+  const [hasUnsavedCms, setHasUnsavedCms] = useState(false);
+  const [pendingNav, setPendingNav] = useState(null); // page key waiting on the confirm below
 
   /* Real notifications, fetched from /api/notifications, refreshed periodically so
      the bell and inbox reflect what's actually happening (bookings, payments, etc.). */
@@ -98,13 +109,25 @@ export default function AdminPortal() {
     return () => { document.removeEventListener('click', onDoc); document.removeEventListener('keydown', onEsc); };
   }, []);
 
-  function go(key) {
+  function actuallyGo(key) {
     setPage(key);
     localStorage.setItem('kid_admin_page', key);
     setSidebarOpen(false);
     window.scrollTo(0, 0);
     const c = document.getElementById('content');
     if (c) c.scrollTop = 0;
+  }
+
+  function go(key) {
+    if (page === 'cms' && key !== 'cms' && hasUnsavedCms) { setPendingNav(key); return; }
+    actuallyGo(key);
+  }
+
+  function confirmLeaveCms() {
+    const key = pendingNav;
+    setPendingNav(null);
+    setHasUnsavedCms(false); // leaving discards the draft, Branding.jsx's own unmount cleanup restores the real saved theme
+    actuallyGo(key);
   }
 
   function toggleNotif() { setProfileOpen(false); setNotifOpen(o => !o); }
@@ -169,6 +192,7 @@ export default function AdminPortal() {
           {nav_item('reports', 'fa-chart-bar', 'Reports')}
         </nav>
       </aside>
+      <div id="sidebar-backdrop" className={sidebarOpen ? 'open' : ''} onClick={() => setSidebarOpen(false)} />
 
       <div id="main">
         <header id="topnav">
@@ -176,6 +200,7 @@ export default function AdminPortal() {
           <div style={{ flex: 1 }} />
           <div style={{ display: 'flex', alignItems: 'center', gap: 10, position: 'relative' }}>
             <div style={{ position: 'relative' }}>
+              <button className="topnav-btn" id="notif-btn" onClick={toggleNotif}><i className="fa-regular fa-bell" />{unreadCount > 0 && <span className="notif-dot" />}</button>
               <div id="notif-panel" className={notifOpen ? 'open' : ''}>
                 <div style={{ padding: '14px 16px', borderBottom: '1px solid #F1F5F9', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
                   <span style={{ fontFamily: "'Poppins',sans-serif", fontWeight: 600, fontSize: 14, color: '#0F172A' }}>
@@ -208,9 +233,9 @@ export default function AdminPortal() {
             </div>
             <div style={{ position: 'relative' }}>
               <div style={{ display: 'flex', alignItems: 'center', gap: 8, cursor: 'pointer', padding: '4px 6px', borderRadius: 10 }} id="profile-btn" onClick={toggleProfile}>
-                <div className="avatar">SA</div>
+                <div className="avatar">{initials(user?.name)}</div>
                 <div style={{ display: 'flex', flexDirection: 'column', lineHeight: 1.2 }}>
-                  <span style={{ fontSize: 13, fontWeight: 600, color: '#0F172A', fontFamily: "'Poppins',sans-serif" }}>Dr. Ana Reyes</span>
+                  <span style={{ fontSize: 13, fontWeight: 600, color: '#0F172A', fontFamily: "'Poppins',sans-serif" }}>{user?.name || 'Admin'}</span>
                   <span style={{ fontSize: 11, color: '#64748B' }}>System Administrator</span>
                 </div>
                 <i className="fa-solid fa-chevron-down" style={{ fontSize: 10, color: '#94A3B8', marginLeft: 2 }} />
@@ -228,7 +253,7 @@ export default function AdminPortal() {
           {page === 'dashboard' && <Dashboard {...pageProps} />}
           {page === 'users' && <Users {...pageProps} />}
           {page === 'clients' && <Clients {...pageProps} />}
-          {page === 'cms' && <Cms {...pageProps} />}
+          {page === 'cms' && <Cms {...pageProps} onUnsavedChange={setHasUnsavedCms} />}
           {page === 'reservations' && <Reservations {...pageProps} />}
           {page === 'payments' && <Payments {...pageProps} />}
           {page === 'notifications' && <Notifications {...pageProps} />}
@@ -239,6 +264,20 @@ export default function AdminPortal() {
       </div>
 
       <AdminModals modal={modal} closeModal={closeModal} toast={toast} />
+
+      {pendingNav && (
+        <Modal title={<><i className="fa-solid fa-triangle-exclamation" style={{ color: '#B45309', marginRight: 8 }} />Unsaved Changes</>} onClose={() => setPendingNav(null)} width={440}>
+          <div style={{ textAlign: 'center', padding: '10px 0 20px' }}>
+            <div style={{ width: 52, height: 52, borderRadius: 14, background: '#FEF9C3', display: 'flex', alignItems: 'center', justifyContent: 'center', margin: '0 auto 14px', fontSize: 22, color: '#B45309' }}><i className="fa-solid fa-triangle-exclamation" /></div>
+            <div style={{ fontSize: 15, fontWeight: 600, color: '#0F172A', marginBottom: 8 }}>Leave without saving?</div>
+            <div style={{ fontSize: 13, color: '#64748B', marginBottom: 24, lineHeight: 1.6 }}>You have unsaved changes in Branding &amp; Theme. Leaving now will discard them.</div>
+            <div style={{ display: 'flex', gap: 10, justifyContent: 'center' }}>
+              <button className="btn-secondary" onClick={() => setPendingNav(null)}>Stay on This Page</button>
+              <button style={{ padding: '9px 20px', borderRadius: 9, border: 'none', background: '#EF4444', fontSize: 13, fontWeight: 600, color: '#fff', cursor: 'pointer' }} onClick={confirmLeaveCms}>Leave &amp; Discard</button>
+            </div>
+          </div>
+        </Modal>
+      )}
     </>
   );
 }

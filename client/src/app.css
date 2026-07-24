@@ -38,21 +38,25 @@
 
 /* progress chart tooltip */
 .cp-wrap{position:relative}
-.cp-tip{position:absolute;z-index:50;background:#0F172A;color:#fff;border-radius:12px;padding:12px 14px;font-size:12px;line-height:1.5;width:max-content;max-width:260px;box-shadow:0 12px 32px rgba(15,23,42,.4);pointer-events:none;transform:translate(-50%,-112%)}
+.cp-tip{position:absolute;z-index:50;background:#0F172A;color:#fff;border-radius:12px;padding:12px 14px;font-size:12px;line-height:1.5;width:max-content;max-width:290px;overflow-wrap:break-word;word-break:break-word;box-shadow:0 12px 32px rgba(15,23,42,.4);pointer-events:none;transform:translate(-50%,-112%)}
 .cp-tip .tt-section{font-size:10px;font-weight:700;color:#94A3B8;text-transform:uppercase;letter-spacing:.06em;margin:6px 0 3px}
 .cp-tip .tt-tag{background:rgba(255,255,255,.12);border-radius:5px;padding:2px 7px;font-size:10.5px;margin:1px 2px 1px 0;display:inline-block}
 
 /* login page (ported design), migrated to the portal's sky-blue/teal/Inter
    palette (was navy #1F4E9E / cream #D9D4C9 / Karla+DM Sans) so the auth
-   flow matches the rest of the app instead of feeling like a different product. */
-.login-body{min-height:100vh;display:flex;align-items:center;justify-content:center;background-color:#EDF2FA;background-image:radial-gradient(circle,#C5D4EE 1px,transparent 1px);background-size:28px 28px;padding:24px;font-family:'Inter',sans-serif;background-position:0 0;animation:bgDrift 40s linear infinite}
-.login-card{display:grid;grid-template-columns:360px 440px;border-radius:12px;overflow:hidden;border:1px solid var(--color-border-subtle);box-shadow:0 16px 48px rgba(15,23,42,.10);max-width:800px;width:100%;background:#fff;animation:authCardIn .55s cubic-bezier(.22,1,.36,1) both}
-.login-left{background:var(--color-primary);padding:48px 40px;display:flex;flex-direction:column;justify-content:center;align-items:center;gap:18px;text-align:center;position:relative;overflow:hidden}
+   flow matches the rest of the app instead of feeling like a different product.
+   Backdrop blobs + a deep tinted card shadow mirror the landing page's
+   "floating card on a colored canvas" language instead of a flat dotted grid. */
+.login-body{position:relative;min-height:100vh;display:flex;align-items:center;justify-content:center;background-color:#EDF2FA;background-image:radial-gradient(circle,#C5D4EE 1px,transparent 1px);background-size:28px 28px;padding:24px;font-family:'Inter',sans-serif;background-position:0 0;animation:bgDrift 40s linear infinite;overflow:hidden}
+.login-body::before{content:'';position:absolute;top:-180px;right:-160px;width:520px;height:520px;border-radius:50%;background:radial-gradient(circle at 35% 35%, color-mix(in srgb, var(--color-landing-primary) 20%, transparent), transparent 42%);filter:blur(50px);pointer-events:none}
+.login-body::after{content:'';position:absolute;bottom:-220px;left:-200px;width:480px;height:480px;border-radius:50%;background:radial-gradient(circle at 60% 40%, color-mix(in srgb, var(--color-landing-primary) 14%, transparent), transparent 42%);filter:blur(50px);pointer-events:none}
+.login-card{position:relative;z-index:1;display:grid;grid-template-columns:360px 440px;border-radius:24px;overflow:hidden;border:1px solid var(--color-border-subtle);box-shadow:0 40px 80px -24px color-mix(in srgb, var(--color-landing-primary) 35%, transparent);max-width:800px;width:100%;background:#fff;animation:authCardIn .55s cubic-bezier(.22,1,.36,1) both}
+.login-left{background:linear-gradient(155deg, var(--color-landing-primary) 0%, color-mix(in srgb, var(--color-landing-primary) 55%, #0F172A) 100%);padding:48px 40px;display:flex;flex-direction:column;justify-content:center;align-items:center;gap:18px;text-align:center;position:relative;overflow:hidden}
 .login-left::before{content:'';position:absolute;inset:-40%;background:radial-gradient(circle,rgba(255,255,255,.10) 0%,transparent 60%);animation:sheen 7s ease-in-out infinite}
 .login-left>*{position:relative;z-index:1}
 .login-left .login-icon-ring{animation:floatY 4.5s ease-in-out infinite}
-.login-card input{transition:border-color .18s ease,box-shadow .18s ease,transform .12s ease}
-.login-card input:focus{border-color:#1F4E9E !important;box-shadow:0 0 0 3px rgba(31,78,158,.1)}
+.login-card input{border-radius:10px;transition:border-color .18s ease,box-shadow .18s ease,transform .12s ease}
+.login-card input:focus{border-color:var(--color-landing-primary) !important;box-shadow:0 0 0 3px color-mix(in srgb, var(--color-landing-primary) 12%, transparent)}
 .login-card form>div{animation:authFieldIn .5s cubic-bezier(.22,1,.36,1) both}
 .login-card form>div:nth-of-type(1){animation-delay:.02s}
 .login-card form>div:nth-of-type(2){animation-delay:.07s}
@@ -60,7 +64,7 @@
 .login-card form>div:nth-of-type(4){animation-delay:.17s}
 .login-card form>div:nth-of-type(5){animation-delay:.22s}
 .auth-submit-btn{transition:transform .15s ease,box-shadow .15s ease,opacity .15s ease}
-.auth-submit-btn:hover:not(:disabled){transform:translateY(-1px);box-shadow:0 8px 20px rgba(31,78,158,.28)}
+.auth-submit-btn:hover:not(:disabled){transform:translateY(-1px);box-shadow:0 8px 20px color-mix(in srgb, var(--color-landing-primary) 28%, transparent)}
 .auth-submit-btn:active:not(:disabled){transform:translateY(0) scale(.98)}
 .auth-alert-in{animation:authFieldIn .3s ease both}
 .auth-fade-in{animation:chartFadeIn .4s ease both}

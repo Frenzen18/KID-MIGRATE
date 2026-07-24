@@ -37,15 +37,40 @@ export default function Payments({ go, toast }) {
   const [methodFilter, setMethodFilter] = useState('');
   const [statusFilter, setStatusFilter] = useState('');
   const [invoiceSearch, setInvoiceSearch] = useState('');
+
+  // Per-client filter, same "search by code, pick from a datalist autocomplete"
+  // pattern Security Audit Logs already uses for its per-user filter, a payment
+  // belongs to a client (not a staff/admin account), so client is the "user"
+  // this module filters by. Client-side, matching how method/status/invoice
+  // are already filtered here (this page never re-queries the server).
+  const [clients, setClients] = useState([]);
+  const [clientFilter, setClientFilter] = useState(''); // resolved client_id
+  const [clientSearchText, setClientSearchText] = useState('');
+  useEffect(() => { api('/clients').then(data => setClients(data || [])).catch(() => setClients([])); }, []);
+
+  function selectClient(id) {
+    setClientFilter(id);
+    const found = id ? clients.find(c => c.id === id) : null;
+    setClientSearchText(found ? (found.client_code || found.full_name) : '');
+  }
+  /** Typing/picking in the "Search by client" field (native datalist autocomplete). */
+  function handleClientSearchChange(val) {
+    setClientSearchText(val);
+    if (!val) { selectClient(''); return; }
+    const match = clients.find(c => c.client_code === val || c.id === val);
+    if (match) selectClient(match.id);
+  }
+
   const filteredTxns = payments.filter(p =>
     (!methodFilter || (METHOD_CHANNEL[p.method] || p.method) === methodFilter)
     && (!statusFilter || p.status === statusFilter)
+    && (!clientFilter || p.client_id === clientFilter)
     && (!invoiceSearch.trim() || (p.invoice_no || '').toLowerCase().includes(invoiceSearch.trim().toLowerCase()))
   );
 
   const PAGE_SIZE = 20;
   const [page, setPage] = useState(1);
-  useEffect(() => { setPage(1); }, [methodFilter, statusFilter, invoiceSearch]);
+  useEffect(() => { setPage(1); }, [methodFilter, statusFilter, clientFilter, invoiceSearch]);
   const pageCount = Math.max(1, Math.ceil(filteredTxns.length / PAGE_SIZE));
   const pagedTxns = filteredTxns.slice((page - 1) * PAGE_SIZE, page * PAGE_SIZE);
 
@@ -79,6 +104,22 @@ export default function Payments({ go, toast }) {
               <i className="fa-solid fa-magnifying-glass" style={{ position: 'absolute', left: 11, top: '50%', transform: 'translateY(-50%)', fontSize: 11.5, color: '#94A3B8' }} />
               <input className="form-input" style={{ width: 180, height: 34, fontSize: 12.5, paddingLeft: 30 }} placeholder="Search invoice no." value={invoiceSearch} onChange={e => setInvoiceSearch(e.target.value)} />
             </div>
+            <div style={{ position: 'relative' }}>
+              <input
+                list="payments-client-ids"
+                className="form-input"
+                style={{ width: 170, height: 34, fontSize: 12.5 }}
+                placeholder="Search by client ID…"
+                value={clientSearchText}
+                onChange={e => handleClientSearchChange(e.target.value)}
+              />
+              <datalist id="payments-client-ids">
+                {clients.map(c => <option key={c.id} value={c.client_code || c.id}>{c.full_name}</option>)}
+              </datalist>
+            </div>
+            {clientFilter && (
+              <button className="btn-secondary" style={{ height: 34, fontSize: 12.5 }} onClick={() => selectClient('')}>Clear client</button>
+            )}
             <select className="form-select" style={{ width: 'auto', height: 34, fontSize: 12.5 }} value={statusFilter} onChange={e => setStatusFilter(e.target.value)}>
               <option value="">All Status</option><option value="paid">Paid</option><option value="pending">Pending</option><option value="overdue">Overdue</option><option value="refunded">Refunded</option>
             </select>
@@ -97,8 +138,8 @@ export default function Payments({ go, toast }) {
                 <td style={{ paddingLeft: 24, fontWeight: 600, fontSize: 12.5 }}>{p.invoice_no || '-'}</td>
                 <td><div style={{ fontWeight: 600 }}>{p.clients?.full_name || '-'}</div><div style={{ fontSize: 11, color: '#94A3B8' }}>{p.clients?.guardian_name || ''}</div></td>
                 <td><span className={'pill ' + (CHANNEL_PILL[METHOD_CHANNEL[p.method]] || 'pill')} style={{ fontSize: 10 }}>{METHOD_CHANNEL[p.method] || p.method}</span></td>
-                <td style={{ fontFamily: 'monospace', fontSize: 12, color: '#0284C7' }}>{p.reference || '-'}</td>
-                <td style={{ fontWeight: 700, color: p.status === 'refunded' ? '#B45309' : '#059669' }}>₱{Number(p.amount).toLocaleString()}</td>
+                <td style={{ fontFamily: 'monospace', fontSize: 12, color: 'var(--cat-1)' }}>{p.reference || '-'}</td>
+                <td style={{ fontWeight: 700, color: p.status === 'refunded' ? 'var(--color-warning)' : 'var(--color-success)' }}>₱{Number(p.amount).toLocaleString()}</td>
                 <td style={{ fontSize: 12.5 }}>{fmtDate(p.created_at)}</td>
                 <td><span className={'pill ' + STATUS_PILL[p.status]} style={{ fontSize: 10 }}>{p.status}</span></td>
                 <td style={{ textAlign: 'right', paddingRight: 24 }}><button className="btn-edit" style={{ fontSize: 11 }} onClick={() => setInvoice(p)}><i className="fa-solid fa-file-invoice" /> View</button></td>
@@ -200,7 +241,7 @@ export default function Payments({ go, toast }) {
                   <div style={{ display: 'flex', justifyContent: 'space-between', padding: '5px 10px', fontSize: 12.5 }}><span style={{ color: '#64748B' }}>Subtotal</span><span style={{ fontWeight: 600, color: '#0F172A' }}>₱{Number(invoice.amount).toLocaleString()}</span></div>
                   <div style={{ display: 'flex', justifyContent: 'space-between', padding: '10px 10px', marginTop: 4, background: '#F8FAFC', borderRadius: 8 }}>
                     <span style={{ fontWeight: 700, color: '#0F172A' }}>Total {invoice.status === 'refunded' ? 'Refunded' : 'Due/Paid'}</span>
-                    <span style={{ fontFamily: "'Poppins',sans-serif", fontSize: 17, fontWeight: 700, color: '#10B981' }}>₱{Number(invoice.amount).toLocaleString()}</span>
+                    <span style={{ fontFamily: "'Poppins',sans-serif", fontSize: 17, fontWeight: 700, color: 'var(--color-success)' }}>₱{Number(invoice.amount).toLocaleString()}</span>
                   </div>
                 </div>
               </div>
@@ -210,7 +251,7 @@ export default function Payments({ go, toast }) {
                 <div style={{ fontSize: 10.5, fontWeight: 700, color: '#94A3B8', textTransform: 'uppercase', letterSpacing: '.06em', marginBottom: 8 }}>Payment Details</div>
                 <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8, fontSize: 12.5 }}>
                   <div><span style={{ color: '#64748B' }}>Method: </span><span style={{ fontWeight: 600 }}>{invoice.method}</span></div>
-                  <div><span style={{ color: '#64748B' }}>Reference: </span><span style={{ fontFamily: 'monospace', fontWeight: 600, color: '#0284C7' }}>{invoice.reference || '-'}</span></div>
+                  <div><span style={{ color: '#64748B' }}>Reference: </span><span style={{ fontFamily: 'monospace', fontWeight: 600, color: 'var(--cat-1)' }}>{invoice.reference || '-'}</span></div>
                   {invoice.paid_at && <div><span style={{ color: '#64748B' }}>Paid At: </span><span style={{ fontWeight: 600 }}>{fmtDate(invoice.paid_at)}</span></div>}
                 </div>
               </div>

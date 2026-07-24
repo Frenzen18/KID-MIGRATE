@@ -105,7 +105,11 @@ export function AuthProvider({ children }) {
 
   /** Forced first-login password change (or a general self-service change). Clears must_change_password on success. */
   async function changePassword(currentPassword, newPassword) {
-    await api('/auth/change-password', { method: 'POST', body: { currentPassword, newPassword } });
+    const data = await api('/auth/change-password', { method: 'POST', body: { currentPassword, newPassword } });
+    // Changing the password server-side revokes the token this request was
+    // just authenticated with, every subsequent call would 401 until a fresh
+    // login otherwise, so swap in the new one the server hands back here.
+    if (data.token) localStorage.setItem('kid_token', data.token);
     updateUser({ must_change_password: false });
   }
 

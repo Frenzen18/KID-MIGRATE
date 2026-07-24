@@ -1,4 +1,5 @@
 import AddUserModal from './modals/AddUserModal.jsx';
+import BulkAddUserModal from './modals/BulkAddUserModal.jsx';
 import EditUserModal from './modals/EditUserModal.jsx';
 import DeleteUserModal from './modals/DeleteUserModal.jsx';
 import EditClientModal from './modals/EditClientModal.jsx';
@@ -23,6 +24,7 @@ import AssignTherapistModal from './modals/AssignTherapistModal.jsx';
  */
 const MODAL_COMPONENTS = {
   'add-user': AddUserModal,
+  'bulk-add-users': BulkAddUserModal,
   'edit-user': EditUserModal,
   'delete-user': DeleteUserModal,
   'edit-client': EditClientModal,

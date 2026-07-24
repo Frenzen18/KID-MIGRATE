@@ -1,3 +1,5 @@
+import { db } from '../supabase.js';
+
 /**
  * Standard session rates (PHP). No pricing table exists yet in the schema,  * these mirror the figures already used across the app's mock billing UI
  * (OT ₱1,400 / Speech ₱1,200 / combined ₱2,800). Adjust here if rates change.
@@ -17,7 +19,13 @@ export function rateFor(sessionType) {
   return SESSION_RATES.Default;
 }
 
-/** INV-YYYYMMDD-### */
-export function genInvoiceNo() {
-  return 'INV-' + new Date().toISOString().slice(0, 10).replaceAll('-', '') + '-' + String(Math.floor(Math.random() * 900) + 100);
+/**
+ * INV-YYYYMMDD-##### — the numeric part is a global Postgres sequence
+ * (invoice_no_seq, see supabase/migration_invoice_sequence.sql), so invoice
+ * numbers always count up strictly instead of a random per-invoice suffix.
+ */
+export async function genInvoiceNo() {
+  const { data, error } = await db.rpc('next_invoice_no');
+  if (error) throw new Error('Failed to generate invoice number: ' + error.message);
+  return data;
 }

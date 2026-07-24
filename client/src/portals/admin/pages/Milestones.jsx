@@ -58,9 +58,15 @@ function gasScoreTone(score) {
   return 'red';
 }
 
+const MILESTONES_TAB_KEYS = ['scorecard', 'entries'];
+
 export default function Milestones({ go, toast, openModal }) {
   /* ── Tab switching ── */
-  const [tab, setTab] = useState('scorecard');
+  const [tab, setTab] = useState(() => {
+    const saved = localStorage.getItem('kid_admin_milestones_tab');
+    return MILESTONES_TAB_KEYS.includes(saved) ? saved : 'scorecard';
+  });
+  useEffect(() => { localStorage.setItem('kid_admin_milestones_tab', tab); }, [tab]);
 
   /* ── Page-local modals ── */
   const [msModal, setMsModal] = useState(null); // { type, param, name, lockDate }
@@ -98,8 +104,11 @@ export default function Milestones({ go, toast, openModal }) {
       .then(([rows, clients]) => {
         const ids = new Set((rows || []).filter(r => !['cancelled', 'declined'].includes(r.status)).map(r => r.client_id));
         // Plus any child an admin/staff explicitly assigned to this therapist via
-        // Edit Client Profile, even before a first real session was booked.
-        for (const c of clients || []) if (c.assigned_therapist_name === user.name) ids.add(c.id);
+        // Edit Client Profile, even before a first real session was booked. A locked
+        // account's own role is directly 'ot'/'speech', so it maps straight onto
+        // that client's own discipline-specific assigned-therapist field.
+        const assignedField = user.role === 'speech' ? 'assigned_speech_therapist_name' : 'assigned_ot_therapist_name';
+        for (const c of clients || []) if (c[assignedField] === user.name) ids.add(c.id);
         setGasAssignedClientIds(ids);
         if (!gasClients.length) setGasClients(clients || []);
       })
@@ -200,9 +209,14 @@ export default function Milestones({ go, toast, openModal }) {
 
     // The child already has a designated therapist from Client Records, use it
     // directly. There's nothing to pick when the assignment already exists.
+    // A Combined client has two independent assignments (one OT, one Speech),
+    // so which one applies depends on the discipline tab currently selected,
+    // never a single shared field, otherwise an entry could get silently
+    // attributed to the wrong discipline's therapist.
     const client = gasClients.find(c => c.id === gasForm.client_id);
-    if (client?.assigned_therapist_name) {
-      setGasForm(f => ({ ...f, therapist_name: client.assigned_therapist_name }));
+    const assignedField = DISCIPLINE_THERAPY_CODE[gasDiscipline] === 'Speech' ? 'assigned_speech_therapist_name' : 'assigned_ot_therapist_name';
+    if (client?.[assignedField]) {
+      setGasForm(f => ({ ...f, therapist_name: client[assignedField] }));
       setGasAssignedTherapists([]);
       return;
     }
@@ -216,7 +230,7 @@ export default function Milestones({ go, toast, openModal }) {
       .catch(() => setGasAssignedTherapists([]))
       .finally(() => setGasAssignedLoading(false));
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [gasForm.client_id, lockedDiscipline]);
+  }, [gasForm.client_id, lockedDiscipline, gasDiscipline]);
 
   // The child's actually-assigned therapists if they have session history; otherwise every
   // registered therapist, so a brand-new child's very first session can still be logged.
@@ -488,6 +502,9 @@ export default function Milestones({ go, toast, openModal }) {
   const [gasEditAssignedTherapists, setGasEditAssignedTherapists] = useState([]);
   const [gasEntrySelected, setGasEntrySelected] = useState(new Set()); // bulk-select, mirrors Users.jsx
   const [gasBulkArchiving, setGasBulkArchiving] = useState(false);
+  // Confirm-before-archive, a real modal instead of the native browser confirm()
+  // dialog: null | { type: 'bulk', count } | { type: 'single', entry }
+  const [gasArchiveConfirm, setGasArchiveConfirm] = useState(null);
 
   const gasDisciplineEntries = (gasEntriesFilter === 'all' ? gasAllEntries : gasAllEntries.filter(e => e.discipline === gasEntriesFilter))
     .filter(e => !gasEntryDateFrom || e.session_date >= gasEntryDateFrom)
@@ -495,7 +512,9 @@ export default function Milestones({ go, toast, openModal }) {
   const gasVisibleEntries = gasEntryIdSearch.trim()
     ? gasDisciplineEntries.filter(e => {
         const q = gasEntryIdSearch.trim().toLowerCase();
-        return String(e.id).toLowerCase().includes(q) || String(e.client?.client_code || '').toLowerCase().includes(q);
+        return String(e.id).toLowerCase().includes(q)
+          || String(e.client?.client_code || '').toLowerCase().includes(q)
+          || String(e.client?.full_name || '').toLowerCase().includes(q);
       })
     : gasDisciplineEntries;
   const gasEntryPageCount = Math.max(1, Math.ceil(gasVisibleEntries.length / GAS_ENTRIES_PER_PAGE));
@@ -518,10 +537,15 @@ export default function Milestones({ go, toast, openModal }) {
     setGasEntrySelected(gasAllVisibleSelected ? new Set() : new Set(gasPagedEntries.map(e => e.id)));
   }
 
-  async function bulkArchiveGasEntries() {
+  function bulkArchiveGasEntries() {
+    if (!gasEntrySelected.size) return;
+    setGasArchiveConfirm({ type: 'bulk', count: gasEntrySelected.size });
+  }
+
+  async function doBulkArchiveGasEntries() {
     const ids = [...gasEntrySelected];
+    setGasArchiveConfirm(null);
     if (!ids.length) return;
-    if (!confirm(`Archive ${ids.length} GAS entr${ids.length === 1 ? 'y' : 'ies'}? Archived entries drop off this list and out of progress charts, but stay on record.`)) return;
     setGasBulkArchiving(true);
     try {
       await Promise.all(ids.map(id => api('/gas/entries/' + id, { method: 'DELETE' })));
@@ -560,8 +584,12 @@ export default function Milestones({ go, toast, openModal }) {
     setGasEntryModal(null);
   }
 
-  async function archiveGasEntry(entry) {
-    if (!confirm('Archive this GAS entry? It drops off this list and out of progress charts, but stays on record.')) return;
+  function archiveGasEntry(entry) {
+    setGasArchiveConfirm({ type: 'single', entry });
+  }
+
+  async function doArchiveGasEntry(entry) {
+    setGasArchiveConfirm(null);
     setGasArchiving(entry.id);
     try {
       await api('/gas/entries/' + entry.id, { method: 'DELETE' });
@@ -708,9 +736,13 @@ export default function Milestones({ go, toast, openModal }) {
                           style={{ display: 'flex', alignItems: 'center', gap: 12, padding: '10px 14px', borderRadius: 10, border: '1px solid #E2E8F0', cursor: 'pointer', transition: 'background .15s' }}
                           onMouseEnter={e => e.currentTarget.style.background = '#F8FAFC'} onMouseLeave={e => e.currentTarget.style.background = 'transparent'}
                         >
-                          <div style={{ width: 36, height: 36, borderRadius: 9, background: 'linear-gradient(135deg,#0EA5E9,#0D9488)', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 12.5, fontWeight: 700, color: '#fff', flexShrink: 0 }}>
-                            {(c.full_name || '').split(' ').map(w => w[0]).join('').toUpperCase().slice(0, 2)}
-                          </div>
+                          {c.photo_url ? (
+                            <img src={c.photo_url} alt={c.full_name} style={{ width: 36, height: 36, borderRadius: 9, objectFit: 'cover', flexShrink: 0 }} />
+                          ) : (
+                            <div style={{ width: 36, height: 36, borderRadius: 9, background: 'linear-gradient(135deg,#0EA5E9,#0D9488)', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 12.5, fontWeight: 700, color: '#fff', flexShrink: 0 }}>
+                              {(c.full_name || '').split(' ').map(w => w[0]).join('').toUpperCase().slice(0, 2)}
+                            </div>
+                          )}
                           <div style={{ flex: 1, minWidth: 0 }}>
                             <div style={{ fontSize: 13.5, fontWeight: 600, color: '#0F172A' }}>{c.full_name}</div>
                             <div style={{ fontSize: 11.5, color: '#94A3B8' }}>{c.client_code}</div>
@@ -794,8 +826,8 @@ export default function Milestones({ go, toast, openModal }) {
                           {!lockedDiscipline ? (
                             <div style={{ position: 'relative' }}>
                               <label className="form-label">Therapist</label>
-                              {gasSelectedClient?.assigned_therapist_name ? (
-                                <input className="form-input" value={gasSelectedClient.assigned_therapist_name} disabled />
+                              {gasSelectedClient?.[DISCIPLINE_THERAPY_CODE[gasDiscipline] === 'Speech' ? 'assigned_speech_therapist_name' : 'assigned_ot_therapist_name'] ? (
+                                <input className="form-input" value={gasSelectedClient[DISCIPLINE_THERAPY_CODE[gasDiscipline] === 'Speech' ? 'assigned_speech_therapist_name' : 'assigned_ot_therapist_name']} disabled />
                               ) : (
                                 <>
                                   <input
@@ -847,7 +879,6 @@ export default function Milestones({ go, toast, openModal }) {
                         ) : (
                           <div style={{ maxHeight: 420, overflowY: 'auto', paddingRight: 2 }}>
                             {[
-                              { key: 'medical', label: 'Medical History Summary', body: gasClientRecord?.diagnosis || 'No medical history on file.' },
                               { key: 'notes', label: 'Recent Session Notes', body: (gasClientRecord?.session_notes || []).slice(-5).reverse().map(n => `${n.session_date} · ${n.domain}: ${n.score}${n.remark ? ' — ' + n.remark : ''}`).join('\n') || 'No session notes yet.' },
                               { key: 'allergies', label: 'Allergies', body: gasClientRecord?.allergies || 'None recorded.' },
                               { key: 'meds', label: 'Medical Alerts / Medication', body: gasClientRecord?.daily_medication || 'None recorded.' },
@@ -983,7 +1014,7 @@ export default function Milestones({ go, toast, openModal }) {
           <div style={{ padding: '0 24px 16px', borderBottom: '1px solid #F1F5F9', display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: 10 }}>
             <div><div className="section-title">All Session Entries</div></div>
             <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
-              <div className="dir-search"><i className="fa-solid fa-magnifying-glass" /><input type="text" className="filter-input" placeholder="Search entry or client ID…" style={{ paddingLeft: 30, height: 34, fontSize: 12.5, width: 170 }} value={gasEntryIdSearch} onChange={e => { setGasEntryIdSearch(e.target.value); setGasEntryPage(1); setGasEntrySelected(new Set()); }} /></div>
+              <div className="dir-search"><i className="fa-solid fa-magnifying-glass" /><input type="text" className="filter-input" placeholder="Search client name, code, or entry ID…" style={{ paddingLeft: 30, height: 34, fontSize: 12.5, width: 210 }} value={gasEntryIdSearch} onChange={e => { setGasEntryIdSearch(e.target.value); setGasEntryPage(1); setGasEntrySelected(new Set()); }} /></div>
               <input type="date" className="form-input" title="From date" style={{ width: 'auto', height: 34, fontSize: 12.5 }} value={gasEntryDateFrom} max={gasEntryDateTo || undefined} onChange={e => { setGasEntryDateFrom(e.target.value); setGasEntryPage(1); setGasEntrySelected(new Set()); }} />
               <input type="date" className="form-input" title="To date" style={{ width: 'auto', height: 34, fontSize: 12.5 }} value={gasEntryDateTo} min={gasEntryDateFrom || undefined} onChange={e => { setGasEntryDateTo(e.target.value); setGasEntryPage(1); setGasEntrySelected(new Set()); }} />
               {(gasEntryDateFrom || gasEntryDateTo) && (
@@ -1027,7 +1058,10 @@ export default function Milestones({ go, toast, openModal }) {
                       <div style={{ fontSize: 11, color: '#94A3B8' }}>{e.client?.client_code}</div>
                     </td>
                     <td style={{ fontSize: 12 }}>{e.discipline}</td>
-                    <td style={{ fontSize: 12.5 }}>{e.session_date}</td>
+                    <td style={{ fontSize: 12.5 }}>
+                      {e.session_date}
+                      {e.is_late && <span className="pill pill-red" style={{ marginLeft: 6, fontSize: 10.5 }} title="Logged more than a day after the session">Late</span>}
+                    </td>
                     <td style={{ fontSize: 12.5 }}>{e.therapist_name || '-'}</td>
                     <td><span className={'pill pill-' + gasScoreTone(e.gas_t_score)}>{e.gas_t_score}</span></td>
                     <td style={{ textAlign: 'right', paddingRight: 24 }}>
@@ -1074,6 +1108,31 @@ export default function Milestones({ go, toast, openModal }) {
           toast={toast}
           onSubmitted={() => loadGasData(gasDiscipline)}
         />
+      )}
+
+      {gasArchiveConfirm && (
+        <Modal title={<><i className="fa-solid fa-box-archive" style={{ color: '#B45309', marginRight: 8 }} />Archive GAS {gasArchiveConfirm.type === 'bulk' ? 'Entries' : 'Entry'}?</>} onClose={() => setGasArchiveConfirm(null)} width={440}>
+          <div style={{ textAlign: 'center', padding: '10px 0 20px' }}>
+            <div style={{ width: 52, height: 52, borderRadius: 14, background: '#FEF9C3', display: 'flex', alignItems: 'center', justifyContent: 'center', margin: '0 auto 14px', fontSize: 22, color: '#B45309' }}><i className="fa-solid fa-box-archive" /></div>
+            <div style={{ fontSize: 15, fontWeight: 600, color: '#0F172A', marginBottom: 8 }}>
+              {gasArchiveConfirm.type === 'bulk'
+                ? `Archive ${gasArchiveConfirm.count} GAS entr${gasArchiveConfirm.count === 1 ? 'y' : 'ies'}?`
+                : 'Archive this GAS entry?'}
+            </div>
+            <div style={{ fontSize: 13, color: '#64748B', marginBottom: 24, lineHeight: 1.6 }}>
+              {gasArchiveConfirm.type === 'bulk' ? 'Archived entries drop' : 'It drops'} off this list and out of progress charts, but stay{gasArchiveConfirm.type === 'bulk' ? '' : 's'} on record.
+            </div>
+            <div style={{ display: 'flex', gap: 10, justifyContent: 'center' }}>
+              <button className="btn-secondary" onClick={() => setGasArchiveConfirm(null)}>Cancel</button>
+              <button
+                style={{ padding: '9px 20px', borderRadius: 9, border: 'none', background: '#F59E0B', fontSize: 13, fontWeight: 600, color: '#fff', cursor: 'pointer' }}
+                onClick={() => gasArchiveConfirm.type === 'bulk' ? doBulkArchiveGasEntries() : doArchiveGasEntry(gasArchiveConfirm.entry)}
+              >
+                Archive
+              </button>
+            </div>
+          </div>
+        </Modal>
       )}
 
       {gasEntryModal && gasEntryModal.mode === 'view' && (
@@ -1124,6 +1183,7 @@ export default function Milestones({ go, toast, openModal }) {
               </>
             );
           })()}
+
           <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 10 }}>
             <button className="btn-secondary" onClick={closeGasEntryModal}>Close</button>
           </div>

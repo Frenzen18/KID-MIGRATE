@@ -9,7 +9,9 @@ function AuthLink({ preview, to, className, children }) {
   return <Link to={to} className={className}>{children}</Link>;
 }
 
-/** Fades a section in the first time it scrolls into view, gives the page life without re-triggering on every scroll. */
+/** Fades a section in every time it scrolls into view and back out every time
+    it leaves, so scrolling past it and back up replays the animation instead
+    of it staying visible forever after the first reveal. */
 function useReveal() {
   const ref = useRef(null);
   const [visible, setVisible] = useState(false);
@@ -17,7 +19,7 @@ function useReveal() {
     const el = ref.current;
     if (!el) return;
     const obs = new IntersectionObserver(([entry]) => {
-      if (entry.isIntersecting) { setVisible(true); obs.disconnect(); }
+      setVisible(entry.isIntersecting);
     }, { threshold: 0.12 });
     obs.observe(el);
     return () => obs.disconnect();
@@ -43,6 +45,7 @@ export default function Landing() {
   const [newsPage, setNewsPage] = useState(0);
   const [homepage, setHomepage] = useState(null);
   const [openPost, setOpenPost] = useState(null);
+  const [fullImage, setFullImage] = useState(null);
   const [brand, setBrand] = useState(null);
 
   useEffect(() => {
@@ -77,7 +80,7 @@ export default function Landing() {
     <div className="ld">
       {/* NAV */}
       <nav className="ld-nav">
-        <Link to="/" className="ld-nav-brand">
+        <Link to="/" className="ld-nav-brand" onClick={e => { e.preventDefault(); window.scrollTo({ top: 0, behavior: 'smooth' }); }}>
           {brand?.logo_url
             ? <img src={brand.logo_url} alt={brand.clinic_name || 'Clinic logo'} style={{ width: 34, height: 34, borderRadius: 8, objectFit: 'cover' }} />
             : <div className="ld-nav-icon">{(brand?.clinic_name || 'KID').charAt(0)}</div>}
@@ -88,7 +91,6 @@ export default function Landing() {
         </Link>
         <div className="ld-nav-links">
           <a href="#news" onClick={e => scrollToSection(e, 'news')}>News</a>
-          <a href="#announcements" onClick={e => scrollToSection(e, 'announcements')}>Announcements</a>
           <a href="#promise" onClick={e => scrollToSection(e, 'promise')}>Our Approach</a>
           <a href="#about" onClick={e => scrollToSection(e, 'about')}>About</a>
         </div>
@@ -97,20 +99,27 @@ export default function Landing() {
         </div>
       </nav>
 
-      {/* ANNOUNCEMENT BAND */}
+      {/* ANNOUNCEMENT OVERLAY, shown on every visit (plain component state, not
+          persisted) as a floating card that pops in under the nav, same spot
+          the old banner lived in, but it overlays the hero on top of the page
+          flow instead of pushing it down, and there's no dark backdrop, so it
+          never blocks or dims the rest of the landing page like a modal would. */}
       {!annDismissed && announcements.length > 0 && (
-        <div className="ld-ann-band" id="announcements">
-          <div className="ld-ann-inner">
-            <span className="ld-ann-label">Announcement</span>
-            <div className="ld-ann-text" style={{ transition: 'opacity .3s', flex: 1 }}>{announcements[annIndex]?.body || ''}</div>
-            {announcements.length > 1 && (
-              <div style={{ display: 'flex', gap: 4, alignItems: 'center', marginLeft: 12 }}>
-                {announcements.map((_, i) => (
-                  <span key={i} onClick={() => setAnnIndex(i)} style={{ width: 8, height: 8, borderRadius: '50%', background: i === annIndex ? '#0F172A' : 'rgba(0,0,0,.2)', cursor: 'pointer', transition: 'background .2s' }} />
-                ))}
-              </div>
-            )}
-            <button onClick={() => setAnnDismissed(true)} style={{ background: 'none', border: 'none', color: 'rgba(0,0,0,.5)', fontSize: 18, cursor: 'pointer', padding: '4px 8px', marginLeft: 8, lineHeight: 1 }} aria-label="Dismiss announcement">×</button>
+        <div className="ld-ann-overlay">
+          <div className="ld-ann-card">
+            <div className="ld-ann-card-icon"><i className="fa-solid fa-bullhorn" /></div>
+            <div style={{ flex: 1, minWidth: 0 }}>
+              <div className="ld-ann-card-label">Announcement</div>
+              <div className="ld-ann-card-text">{announcements[annIndex]?.body || ''}</div>
+              {announcements.length > 1 && (
+                <div style={{ display: 'flex', gap: 6, alignItems: 'center', marginTop: 9 }}>
+                  {announcements.map((_, i) => (
+                    <span key={i} onClick={() => setAnnIndex(i)} style={{ width: 7, height: 7, borderRadius: '50%', background: i === annIndex ? 'var(--color-landing-primary)' : 'var(--color-border)', cursor: 'pointer', transition: 'background .2s' }} />
+                  ))}
+                </div>
+              )}
+            </div>
+            <button className="ld-ann-card-close" onClick={() => setAnnDismissed(true)} aria-label="Dismiss announcement">×</button>
           </div>
         </div>
       )}
@@ -119,7 +128,7 @@ export default function Landing() {
       <section className="ld-hero-sec">
         <div className="ld-hero-inner">
           <div className="ld-hero-in">
-            <div className="ld-hero-kicker">{brand?.clinic_name || 'Bloomsdale Therapy Center'}{brand?.address ? ' · ' + brand.address : ' · Imus, Cavite'}</div>
+            <div className="ld-hero-kicker"><span className="ld-badge">{brand?.clinic_name || 'Bloomsdale Therapy Center'}{brand?.address ? ' · ' + brand.address : ' · Imus, Cavite'}</span></div>
             <h1 className="ld-hero-title">{(() => {
               const text = homepage?.headline || 'Every child deserves the chance to thrive.';
               const words = text.split(' ');
@@ -129,13 +138,10 @@ export default function Landing() {
               return text;
             })()}</h1>
             <p className="ld-hero-sub">{homepage?.sub || 'We provide pediatric speech and occupational therapy in a warm, child-centered environment. Book sessions, follow your child\'s progress, and stay connected with our clinic, all in one place.'}</p>
-            <div className="ld-hero-cta">
-              <a href="#news" className="ld-cta-b" onClick={e => scrollToSection(e, 'news')}>Read the latest news →</a>
-            </div>
           </div>
           <div className="ld-hero-photo ld-hero-photo-in">
             <img src={homepage?.photo ? (homepage.photo.startsWith('http') ? homepage.photo : '/' + homepage.photo) : '/KID INDEX HTML PICTURES 1.webp'} alt="A mother and her daughter laughing together" />
-            <div className="ld-photo-caption">Families at the heart of everything we do</div>
+            {homepage?.photoCredit && <div className="ld-photo-credit">{homepage.photoCredit}</div>}
           </div>
         </div>
       </section>
@@ -144,32 +150,56 @@ export default function Landing() {
       <section className={'ld-promise ld-reveal' + (promiseVisible ? ' ld-reveal-in' : '')} id="promise" ref={promiseRef}>
         <div className="ld-promise-inner">
           <div className="ld-promise-img">
-            <img src="/KID INDEX HTML PICTURES 2.jpg" alt="A parent holding a young child's hand outdoors" />
+            <img src={homepage?.approachPhoto ? (homepage.approachPhoto.startsWith('http') ? homepage.approachPhoto : '/' + homepage.approachPhoto) : '/KID INDEX HTML PICTURES 2.jpg'} alt="A parent holding a young child's hand outdoors" />
+            {homepage?.approachPhotoCredit && <div className="ld-photo-credit">{homepage.approachPhotoCredit}</div>}
           </div>
           <div>
-            <div className="ld-s-tag">Our Approach</div>
-            <div className="ld-s-title" style={{ marginBottom: 16 }}>Small steps, <em>celebrated together.</em></div>
+            <div className="ld-s-tag"><span className="ld-badge">Our Approach</span></div>
+            <div className="ld-s-title" style={{ marginBottom: 16 }}>{(() => {
+              const text = homepage?.approachTitle || 'Small steps, celebrated together.';
+              const words = text.split(' ');
+              if (words.length > 2) {
+                return <>{words.slice(0, -2).join(' ')} <em>{words.slice(-2).join(' ')}</em></>;
+              }
+              return text;
+            })()}</div>
             <p className="ld-promise-lead">{homepage?.clinicServices || 'At Bloomsdale, therapy is a partnership with your family. Our therapists turn sessions into play, challenges into progress, and milestones into moments worth sharing.'}</p>
             <div className="ld-promise-points">
-              <div className="ld-ppoint"><div className="ld-ppoint-num">01</div><div className="ld-ppoint-tx">Personalized speech and occupational therapy plans built around each child</div></div>
-              <div className="ld-ppoint"><div className="ld-ppoint-num">02</div><div className="ld-ppoint-tx">Milestone tracking that parents can follow between sessions</div></div>
-              <div className="ld-ppoint"><div className="ld-ppoint-num">03</div><div className="ld-ppoint-tx">A calm, sensory-friendly space where children feel safe to learn</div></div>
+              {(() => {
+                const points = Array.isArray(homepage?.approachPoints) && homepage.approachPoints.length === 3 ? homepage.approachPoints : [
+                  'Personalized speech and occupational therapy plans built around each child',
+                  'Milestone tracking that parents can follow between sessions',
+                  'A calm, sensory-friendly space where children feel safe to learn'
+                ];
+                return points.map((pt, i) => (
+                  <div className="ld-ppoint" key={i}>
+                    <div className="ld-ppoint-rail">
+                      <div className="ld-ppoint-num">{i + 1}</div>
+                      {i < points.length - 1 && <div className="ld-ppoint-line" />}
+                    </div>
+                    <div className="ld-ppoint-tx">{pt}</div>
+                  </div>
+                ));
+              })()}
             </div>
           </div>
         </div>
       </section>
 
       {/* NEWS & ANNOUNCEMENTS */}
-      <div id="news" className={'ld-reveal' + (newsVisible ? ' ld-reveal-in' : '')} ref={newsRef}>
+      <div id="news" className={'ld-news-sec ld-reveal' + (newsVisible ? ' ld-reveal-in' : '')} ref={newsRef}>
         <div className="ld-section">
-          <div className="ld-s-tag">News &amp; Announcements</div>
+          <div className="ld-s-tag"><span className="ld-badge">News</span></div>
           <div className="ld-s-title">What's happening <em>at the clinic.</em></div>
           <p className="ld-s-sub">The latest news, program updates, and important announcements from Bloomsdale Therapy Center.</p>
           <div className="ld-news-grid">
             {cmsPosts.length > 0 ? cmsPosts.slice(newsPage * 3, newsPage * 3 + 3).map(post => (
               <div className="ld-news-card" key={post.id} onClick={() => setOpenPost(post)}>
                 {post.image_url ? (
-                  <div className="ld-news-thumb"><img src={post.image_url} alt={post.title} /></div>
+                  <div className="ld-news-thumb">
+                    <img src={post.image_url} alt={post.title} />
+                    {post.photo_credit && <div className="ld-photo-credit">{post.photo_credit}</div>}
+                  </div>
                 ) : (
                   <div className="ld-news-thumb placeholder">
                     <svg viewBox="0 0 24 24"><path d="M6 9H4.5a2.5 2.5 0 0 1 0-5H6" /><path d="M18 9h1.5a2.5 2.5 0 0 0 0-5H18" /><path d="M4 22h16" /><path d="M10 14.66V17c0 .55-.47.98-.97 1.21C7.85 18.75 7 20.24 7 22" /><path d="M14 14.66V17c0 .55.47.98.97 1.21C16.15 18.75 17 20.24 17 22" /><path d="M18 2H6v7a6 6 0 0 0 12 0V2Z" /></svg>
@@ -240,17 +270,6 @@ export default function Landing() {
             <div className="fn">{brand?.clinic_name || 'KID'}</div>
             <div className="fs">{homepage?.clinicAbout || 'AI-Assisted Information Management System for Pediatric Speech and Occupational Therapy Clinics.'}<br /><br />Lyceum of the Philippines University – Cavite<br />College of Information Technology and Computer Science<br />BS Information Technology: Web and Mobile Technology</div>
           </div>
-          <div className="ld-foot-col">
-            <h4>System</h4>
-            <a href="#promise" onClick={e => scrollToSection(e, 'promise')}>Our Approach</a>
-            <AuthLink preview={preview} to="/login">Guardian/Caretaker Portal</AuthLink>
-          </div>
-          <div className="ld-foot-col">
-            <h4>Clinic</h4>
-            <a href="#news" onClick={e => scrollToSection(e, 'news')}>News</a>
-            <a href="#announcements" onClick={e => scrollToSection(e, 'announcements')}>Announcements</a>
-            <a href="#about" onClick={e => scrollToSection(e, 'about')}>About the Clinic</a>
-          </div>
         </div>
         <div className="ld-foot-bottom">
           <div className="ld-foot-copy">© 2026 KID: AI-Assisted Clinic Management System · LPU-Cavite CITCS</div>
@@ -263,11 +282,14 @@ export default function Landing() {
         <div className="ld-post-modal-overlay" onClick={() => setOpenPost(null)}>
           <div className="ld-post-modal" onClick={e => e.stopPropagation()}>
             <button className="ld-post-modal-close" onClick={() => setOpenPost(null)} aria-label="Close">×</button>
-            {openPost.image_url && (
-              <div className="ld-post-modal-thumb">
-                <img src={openPost.image_url.startsWith('http') || openPost.image_url.startsWith('/') ? openPost.image_url : '/' + openPost.image_url} alt={openPost.title} />
-              </div>
-            )}
+            {openPost.image_url && (() => {
+              const src = openPost.image_url.startsWith('http') || openPost.image_url.startsWith('/') ? openPost.image_url : '/' + openPost.image_url;
+              return (
+                <div className="ld-post-modal-thumb" style={{ cursor: 'zoom-in' }} onClick={() => setFullImage(src)} title="Click to view full size">
+                  <img src={src} alt={openPost.title} />
+                </div>
+              );
+            })()}
             <div className="ld-post-modal-body">
               {openPost.category && <span className="ld-news-cat">{openPost.category}</span>}
               <h3>{openPost.title}</h3>
@@ -277,6 +299,17 @@ export default function Landing() {
               <p className="ld-post-modal-text">{openPost.body}</p>
             </div>
           </div>
+        </div>
+      )}
+
+      {/* FULL-SIZE IMAGE LIGHTBOX */}
+      {fullImage && (
+        <div
+          onClick={() => setFullImage(null)}
+          style={{ position: 'fixed', inset: 0, background: 'rgba(15,23,42,.9)', zIndex: 300, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 24, cursor: 'zoom-out' }}
+        >
+          <button onClick={() => setFullImage(null)} aria-label="Close" style={{ position: 'absolute', top: 20, right: 24, width: 40, height: 40, borderRadius: '50%', border: 'none', background: 'rgba(255,255,255,.15)', color: '#fff', fontSize: 22, cursor: 'pointer' }}>×</button>
+          <img src={fullImage} alt="" style={{ maxWidth: '100%', maxHeight: '90vh', borderRadius: 8, boxShadow: '0 24px 64px rgba(0,0,0,.5)' }} onClick={e => e.stopPropagation()} />
         </div>
       )}
     </div>

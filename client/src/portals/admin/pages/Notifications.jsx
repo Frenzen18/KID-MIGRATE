@@ -23,16 +23,32 @@ function fullDateTime(iso) {
 }
 
 export default function Notifications({ go, toast, openModal, role = 'admin' }) {
-  // An 'ot'/'speech' therapist only ever sees the Reminders tab, inbox,
-  // push-send, configuration, and audit are clinic-wide concerns, not theirs.
-  const remindersOnly = role === 'ot' || role === 'speech';
+  // An 'ot'/'speech' therapist sees Reminders and their own Notifications
+  // inbox, push-send and configuration stay clinic-wide, admin/staff-only.
+  const isTherapist = role === 'ot' || role === 'speech';
 
   /* ── Tab switching ── */
-  const [tab, setTab] = useState('reminders');
+  const NOTIF_TAB_KEYS = isTherapist ? ['reminders', 'inbox'] : ['reminders', 'inbox', 'push', 'config'];
+  const notifTabStorageKey = 'kid_' + role + '_notifications_tab';
+  const [tab, setTab] = useState(() => {
+    const saved = localStorage.getItem(notifTabStorageKey);
+    return NOTIF_TAB_KEYS.includes(saved) ? saved : 'reminders';
+  });
+
+  // The "By Role" target list, minus whichever role is doing the composing,
+  // sending a role-broadcast to your own role is never what someone wants
+  // here, "All Users" already covers the "everyone including me" case.
+  const PUSH_ROLE_OPTIONS = [
+    { value: 'admin', label: 'Administrators' },
+    { value: 'staff', label: 'Staff' },
+    { value: 'ot', label: 'Occupational Therapists' },
+    { value: 'speech', label: 'Speech-Language Therapists' },
+    { value: 'parent', label: 'Parents / Guardians' }
+  ].filter(opt => opt.value !== role);
 
   /* ── Push trigger form state ── */
   const [pushTargetType, setPushTargetType] = useState('role');
-  const [pushRole, setPushRole] = useState('admin');
+  const [pushRole, setPushRole] = useState(PUSH_ROLE_OPTIONS[0]?.value || 'staff');
   const [pushUserId, setPushUserId] = useState('');
   const [pushTitle, setPushTitle] = useState('');
   const [pushBody, setPushBody] = useState('');
@@ -43,7 +59,7 @@ export default function Notifications({ go, toast, openModal, role = 'admin' }) 
 
   const [staffUsers, setStaffUsers] = useState([]);
   useEffect(() => {
-    if (remindersOnly) return;
+    if (isTherapist) return;
     api('/users').then(data => setStaffUsers((data || []).filter(u => u.active !== false))).catch(() => setStaffUsers([]));
   }, []);
 
@@ -57,14 +73,14 @@ export default function Notifications({ go, toast, openModal, role = 'admin' }) 
       .catch(() => setSentByMe([]))
       .finally(() => setSentLoading(false));
   };
-  useEffect(() => { if (!remindersOnly) fetchSentByMe(); else setSentLoading(false); }, []);
+  useEffect(() => { if (!isTherapist) fetchSentByMe(); else setSentLoading(false); }, []);
 
   /* ── 12.4 Configuration, real, persisted settings ── */
   const [settings, setSettings] = useState(null);
   const [settingsLoading, setSettingsLoading] = useState(true);
   const [settingsSaving, setSettingsSaving] = useState(false);
   useEffect(() => {
-    if (remindersOnly) { setSettingsLoading(false); return; }
+    if (isTherapist) { setSettingsLoading(false); return; }
     api('/notifications/settings')
       .then(setSettings)
       .catch(() => toast('Failed to load notification settings', 'fa-triangle-exclamation'))
@@ -97,7 +113,18 @@ export default function Notifications({ go, toast, openModal, role = 'admin' }) 
       .catch(() => setInbox([]))
       .finally(() => setInboxLoading(false));
   };
-  useEffect(() => { if (!remindersOnly) fetchInbox(); else setInboxLoading(false); }, []);
+  useEffect(() => { fetchInbox(); }, []);
+
+  /* Visiting this page is itself "reading" the inbox, mark everything read
+     automatically instead of requiring a manual click per item, same
+     behavior as the notification bell dropdown elsewhere in the app. */
+  useEffect(() => {
+    if (inboxLoading) return;
+    if (!inbox.some(n => !n.read)) return;
+    api('/notifications/read-all', { method: 'PUT' })
+      .then(() => setInbox(list => list.map(n => ({ ...n, read: true }))))
+      .catch(() => {});
+  }, [inboxLoading]);
 
   async function markInboxRead(id) {
     try {
@@ -141,6 +168,7 @@ export default function Notifications({ go, toast, openModal, role = 'admin' }) 
 
   function switchNotifTab(t) {
     setTab(t);
+    localStorage.setItem(notifTabStorageKey, t);
   }
 
   async function sendPushNotif() {
@@ -189,9 +217,9 @@ export default function Notifications({ go, toast, openModal, role = 'admin' }) 
       {/* Section tabs */}
       <div style={{ display: 'flex', gap: 6, marginBottom: 20, flexWrap: 'wrap' }}>
         <button className={'notif-tab' + (tab === 'reminders' ? ' active' : '')} onClick={() => switchNotifTab('reminders')}><i className="fa-solid fa-clock" style={{ marginRight: 6 }} />Reminders</button>
-        {!remindersOnly && <button className={'notif-tab' + (tab === 'inbox' ? ' active' : '')} onClick={() => switchNotifTab('inbox')}><i className="fa-solid fa-inbox" style={{ marginRight: 6 }} />Notifications</button>}
-        {!remindersOnly && <button className={'notif-tab' + (tab === 'push' ? ' active' : '')} onClick={() => switchNotifTab('push')}><i className="fa-solid fa-paper-plane" style={{ marginRight: 6 }} />Push Trigger</button>}
-        {!remindersOnly && <button className={'notif-tab' + (tab === 'config' ? ' active' : '')} onClick={() => switchNotifTab('config')}><i className="fa-solid fa-sliders" style={{ marginRight: 6 }} />Configuration</button>}
+        <button className={'notif-tab' + (tab === 'inbox' ? ' active' : '')} onClick={() => switchNotifTab('inbox')}><i className="fa-solid fa-inbox" style={{ marginRight: 6 }} />Notifications</button>
+        {!isTherapist && <button className={'notif-tab' + (tab === 'push' ? ' active' : '')} onClick={() => switchNotifTab('push')}><i className="fa-solid fa-paper-plane" style={{ marginRight: 6 }} />Push Trigger</button>}
+        {!isTherapist && <button className={'notif-tab' + (tab === 'config' ? ' active' : '')} onClick={() => switchNotifTab('config')}><i className="fa-solid fa-sliders" style={{ marginRight: 6 }} />Configuration</button>}
       </div>
 
       {/* ═══════ 12.1 REMINDERS TABLE ═══════ */}
@@ -289,11 +317,7 @@ export default function Notifications({ go, toast, openModal, role = 'admin' }) 
               <div id="push-role-wrap" style={{ display: pushTargetType === 'role' ? 'block' : 'none' }}>
                 <label className="form-label">Role</label>
                 <select className="form-select" value={pushRole} onChange={e => setPushRole(e.target.value)}>
-                  <option value="admin">Administrators</option>
-                  <option value="staff">Staff</option>
-                  <option value="ot">Occupational Therapists</option>
-                  <option value="speech">Speech-Language Therapists</option>
-                  <option value="parent">Parents / Guardians</option>
+                  {PUSH_ROLE_OPTIONS.map(opt => <option key={opt.value} value={opt.value}>{opt.label}</option>)}
                 </select>
               </div>
               <div id="push-user-wrap" style={{ display: pushTargetType === 'specific' ? 'block' : 'none' }}>
@@ -437,7 +461,7 @@ export default function Notifications({ go, toast, openModal, role = 'admin' }) 
         )}
       </div>
 
-      <div className="page-footer"><span style={{ fontSize: 12, color: '#94A3B8' }}>© 2026 KID Clinic Information Management System · All rights reserved</span><div style={{ display: 'flex', gap: 16 }}><span style={{ fontSize: 12, color: '#94A3B8', cursor: 'pointer' }}>Privacy Policy</span><span style={{ fontSize: 12, color: '#94A3B8', cursor: 'pointer' }}>Support</span></div></div>
+      <div className="page-footer"><span style={{ fontSize: 12, color: '#94A3B8' }}>© 2026 KID Clinic Information Management System · All rights reserved</span></div>
 
     </div>
   );

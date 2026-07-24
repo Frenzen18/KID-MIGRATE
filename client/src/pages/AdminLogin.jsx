@@ -43,7 +43,7 @@ export default function AdminLogin() {
     <div style={{ minHeight: '100vh', background: '#0B1120', display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 24, fontFamily: 'Inter,sans-serif' }}>
       <div style={{ width: '100%', maxWidth: 400 }}>
         <div style={{ textAlign: 'center', marginBottom: 28 }}>
-          <div style={{ width: 56, height: 56, borderRadius: 14, background: '#1F4E9E', display: 'inline-flex', alignItems: 'center', justifyContent: 'center', marginBottom: 16 }}>
+          <div style={{ width: 56, height: 56, borderRadius: 14, background: 'var(--color-landing-primary)', display: 'inline-flex', alignItems: 'center', justifyContent: 'center', marginBottom: 16 }}>
             <i className="fa-solid fa-shield-halved" style={{ color: '#fff', fontSize: 24 }} />
           </div>
           <div style={{ fontFamily: 'Poppins,sans-serif', fontSize: 22, fontWeight: 600, color: '#E6EAF2' }}>KID Clinic Administration</div>
@@ -83,7 +83,7 @@ export default function AdminLogin() {
                 </button>
               </div>
             </div>
-            <button disabled={busy} style={{ width: '100%', padding: 13, background: '#1F4E9E', color: '#fff', border: 'none', borderRadius: 8, fontFamily: 'Inter,sans-serif', fontSize: 15, fontWeight: 700, cursor: 'pointer', opacity: busy ? .7 : 1 }}>
+            <button disabled={busy} style={{ width: '100%', padding: 13, background: 'var(--color-landing-primary)', color: '#fff', border: 'none', borderRadius: 8, fontFamily: 'Inter,sans-serif', fontSize: 15, fontWeight: 700, cursor: 'pointer', opacity: busy ? .7 : 1 }}>
               {busy ? 'Signing in…' : 'Sign In'}
             </button>
           </form>

@@ -14,7 +14,10 @@ import { useMemo, useState } from 'react';
  *   entries: Array of GAS entry objects from GET /api/gas/entries?client_id=X
  */
 
-const GOAL_COLORS = ['#0EA5E9', '#F59E0B', '#818CF8', '#10B981', '#EC4899', '#EF4444', '#14B8A6', '#A855F7'];
+// Same 8-slot categorical order used everywhere else (Dashboard's own Goal
+// Scale Trend, chart series, role badges, see --cat-1..8 in shared.css), this
+// component used to carry its own separate, differently-ordered copy.
+const GOAL_COLORS = ['var(--cat-1)', 'var(--cat-2)', 'var(--cat-3)', 'var(--cat-4)', 'var(--cat-5)', 'var(--cat-6)', 'var(--cat-7)', 'var(--cat-8)'];
 
 const DISCIPLINE_META = {
   'Occupational Therapy': { icon: 'fa-hands', color: '#0EA5E9', gradient: ['#0EA5E9', '#0EA5E9'] },
@@ -163,9 +166,13 @@ function DisciplineChart({ discipline, entries }) {
 
           {tip && (
             <div className="cp-tip" style={{ left: tip.left, top: tip.top }}>
-              <div style={{ fontWeight: 700, display: 'flex', alignItems: 'center', gap: 6, fontSize: 11.5, marginBottom: 2 }}>
-                <span style={{ width: 9, height: 9, borderRadius: 3, background: tip.color, display: 'inline-block' }} />
-                {tip.goal} · Level {tip.level > 0 ? '+' + tip.level : tip.level}
+              {/* Goal name gets its own wrapping line, a long goal title crammed into
+                  one flex row with the color dot + level used to overflow/run on
+                  instead of wrapping cleanly. */}
+              <div style={{ fontWeight: 700, fontSize: 12, marginBottom: 3 }}>{tip.goal}</div>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 11, color: '#CBD5E1', marginBottom: 6 }}>
+                <span style={{ width: 9, height: 9, borderRadius: 3, background: tip.color, display: 'inline-block', flexShrink: 0 }} />
+                Level {tip.level > 0 ? '+' + tip.level : tip.level}
               </div>
               <div style={{ fontSize: 11, color: '#94A3B8', marginBottom: 6 }}>
                 <i className="fa-regular fa-calendar" style={{ marginRight: 4 }} />

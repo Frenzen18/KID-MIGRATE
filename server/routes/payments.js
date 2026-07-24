@@ -7,9 +7,17 @@ import { genInvoiceNo } from '../lib/billing.js';
 import { generateQrph, retrievePaymentIntent, retryQrphOnIntent } from '../lib/paymongo.js';
 import { markPaidByIntentId } from '../lib/paymongoWebhook.js';
 import { sendMail } from '../mailer.js';
+import { makeLimiter, isProd, MIN } from '../lib/rateLimit.js';
 
 const router = Router();
 router.use(requireAuth);
+
+// Each QR generation calls PayMongo's API (real cost/quota), cap it per IP so
+// it can't be hammered into a runaway PayMongo bill or rate-limit trip.
+const qrphLimiter = makeLimiter(isProd ? MIN : 10 * 1000, 10, 'Too many QR requests. Please wait a moment and try again.');
+// The status endpoint is meant to be polled every few seconds while a checkout
+// modal is open, so it needs a much more generous budget than one-shot QR generation.
+const qrphStatusLimiter = makeLimiter(isProd ? MIN : 10 * 1000, 60, 'Too many status checks. Please wait a moment and try again.');
 
 /** GET /api/payments, staff/admin all; parents see their children's */
 router.get('/', async (req, res) => {
@@ -27,7 +35,10 @@ router.get('/', async (req, res) => {
 router.post('/', requireRole('admin', 'staff'), async (req, res) => {
   const b = req.body || {};
   if (!b.client_id || !b.amount) return res.status(400).json({ error: 'client_id and amount are required' });
-  const invoice_no = genInvoiceNo();
+  if (!Number.isFinite(Number(b.amount)) || Number(b.amount) <= 0) {
+    return res.status(400).json({ error: 'amount must be a positive number' });
+  }
+  const invoice_no = await genInvoiceNo();
   const { data, error } = await db.from('payments').insert({
     client_id: b.client_id, amount: b.amount, method: b.method || 'Cash',
     reference: b.reference || null, status: b.status || 'paid',
@@ -191,12 +202,15 @@ router.post('/:id/refund', requireRole('admin', 'staff'), async (req, res) => {
 });
 
 /** POST /api/payments/:id/qrph, generate (or reuse) a PayMongo QRPh code for this invoice */
-router.post('/:id/qrph', async (req, res) => {
+router.post('/:id/qrph', qrphLimiter, async (req, res) => {
   const { data: payment, error } = await db.from('payments').select('*, clients(full_name, parent_id)').eq('id', req.params.id).single();
   if (error || !payment) return res.status(404).json({ error: 'Payment not found' });
-  if (req.user.role === 'parent' && payment.clients?.parent_id !== req.user.id) {
-    return res.status(403).json({ error: 'Not your invoice' });
-  }
+  // Billing is admin/staff-only, or the parent paying their own child's invoice.
+  // Not a therapist role (ot/speech), which has no business generating a live
+  // PayMongo payment QR for any client's invoice.
+  const canAccess = req.user.role === 'admin' || req.user.role === 'staff'
+    || (req.user.role === 'parent' && payment.clients?.parent_id === req.user.id);
+  if (!canAccess) return res.status(403).json({ error: 'Not your invoice' });
   if (payment.status === 'paid') return res.status(400).json({ error: 'This invoice is already paid' });
 
   // Reuse an existing unexpired QR, but only if it's still actually payable,
@@ -252,12 +266,12 @@ router.post('/:id/qrph', async (req, res) => {
 });
 
 /** GET /api/payments/:id/qrph/status, polling fallback for environments without a public webhook URL yet */
-router.get('/:id/qrph/status', async (req, res) => {
+router.get('/:id/qrph/status', qrphStatusLimiter, async (req, res) => {
   const { data: payment, error } = await db.from('payments').select('*, clients(parent_id)').eq('id', req.params.id).single();
   if (error || !payment) return res.status(404).json({ error: 'Payment not found' });
-  if (req.user.role === 'parent' && payment.clients?.parent_id !== req.user.id) {
-    return res.status(403).json({ error: 'Not your invoice' });
-  }
+  const canAccess = req.user.role === 'admin' || req.user.role === 'staff'
+    || (req.user.role === 'parent' && payment.clients?.parent_id === req.user.id);
+  if (!canAccess) return res.status(403).json({ error: 'Not your invoice' });
   if (payment.status === 'paid') return res.json({ status: 'paid' });
   if (!payment.pm_payment_intent_id) return res.json({ status: 'no_qr' });
 

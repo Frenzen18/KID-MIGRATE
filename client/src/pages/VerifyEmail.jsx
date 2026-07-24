@@ -77,7 +77,7 @@ export default function VerifyEmail() {
     }
   }
 
-  const input = { width: '100%', padding: '14px 16px', border: '1.5px solid var(--color-border)', borderRadius: 8, fontFamily: 'Inter,sans-serif', fontSize: 14, outline: 'none', background: '#fff', boxSizing: 'border-box', transition: 'border-color .2s' };
+  const input = { width: '100%', padding: '14px 16px', border: '1.5px solid var(--color-border)', borderRadius: 10, fontFamily: 'Inter,sans-serif', fontSize: 14, outline: 'none', background: '#fff', boxSizing: 'border-box', transition: 'border-color .2s' };
   const label = { display: 'block', fontSize: 13, fontWeight: 600, color: 'var(--color-text-muted)', marginBottom: 8 };
 
   return (
@@ -95,7 +95,7 @@ export default function VerifyEmail() {
               </p>
 
               {err && (
-                <div style={{ background: '#FEF2F2', border: '1px solid #FECACA', borderRadius: 8, padding: '10px 14px', fontSize: 13, color: 'var(--color-danger)', marginBottom: 16, fontWeight: 600 }}>
+                <div style={{ background: '#FEF2F2', border: '1px solid #FECACA', borderRadius: 10, padding: '10px 14px', fontSize: 13, color: 'var(--color-danger)', marginBottom: 16, fontWeight: 600 }}>
                   <i className="fa-solid fa-circle-exclamation" style={{ marginRight: 6 }} />{err}
                 </div>
               )}
@@ -105,7 +105,7 @@ export default function VerifyEmail() {
                   <label style={label}>Email Address</label>
                   <input style={input} type="email" value={email} onChange={e => setEmail(e.target.value)} placeholder="you@email.com" required />
                 </div>
-                <button disabled={busy} style={{ width: '100%', padding: 13, background: '#1F4E9E', color: '#fff', border: 'none', borderRadius: 8, fontFamily: 'Inter,sans-serif', fontSize: 15, fontWeight: 700, cursor: 'pointer', opacity: busy ? .7 : 1 }}>
+                <button className="auth-submit-btn" disabled={busy} style={{ width: '100%', padding: 13, background: 'var(--color-landing-primary)', color: '#fff', border: 'none', borderRadius: 10, fontFamily: 'Inter,sans-serif', fontSize: 15, fontWeight: 700, cursor: 'pointer', opacity: busy ? .7 : 1 }}>
                   {busy ? 'Sending…' : 'Send Verification Code'}
                 </button>
               </form>
@@ -121,12 +121,12 @@ export default function VerifyEmail() {
               </p>
 
               {err && (
-                <div style={{ background: '#FEF2F2', border: '1px solid #FECACA', borderRadius: 8, padding: '10px 14px', fontSize: 13, color: 'var(--color-danger)', marginBottom: 16, fontWeight: 600 }}>
+                <div style={{ background: '#FEF2F2', border: '1px solid #FECACA', borderRadius: 10, padding: '10px 14px', fontSize: 13, color: 'var(--color-danger)', marginBottom: 16, fontWeight: 600 }}>
                   <i className="fa-solid fa-circle-exclamation" style={{ marginRight: 6 }} />{err}
                 </div>
               )}
               {resendMsg && (
-                <div style={{ background: '#F0FDF4', border: '1px solid #BBF7D0', borderRadius: 8, padding: '10px 14px', fontSize: 13, color: '#15803D', marginBottom: 16, fontWeight: 600 }}>
+                <div style={{ background: '#F0FDF4', border: '1px solid #BBF7D0', borderRadius: 10, padding: '10px 14px', fontSize: 13, color: '#15803D', marginBottom: 16, fontWeight: 600 }}>
                   {resendMsg}
                 </div>
               )}
@@ -144,13 +144,13 @@ export default function VerifyEmail() {
                     required
                   />
                 </div>
-                <button disabled={busy || code.length !== 6} style={{ width: '100%', padding: 13, background: '#1F4E9E', color: '#fff', border: 'none', borderRadius: 8, fontFamily: 'Inter,sans-serif', fontSize: 15, fontWeight: 700, cursor: 'pointer', opacity: (busy || code.length !== 6) ? .7 : 1 }}>
+                <button className="auth-submit-btn" disabled={busy || code.length !== 6} style={{ width: '100%', padding: 13, background: 'var(--color-landing-primary)', color: '#fff', border: 'none', borderRadius: 10, fontFamily: 'Inter,sans-serif', fontSize: 15, fontWeight: 700, cursor: 'pointer', opacity: (busy || code.length !== 6) ? .7 : 1 }}>
                   {busy ? 'Verifying…' : 'Verify Email'}
                 </button>
               </form>
 
               <div style={{ textAlign: 'center', marginTop: 16 }}>
-                <button onClick={resendCode} style={{ background: 'none', border: 'none', color: '#1F4E9E', fontSize: 13, fontWeight: 600, cursor: 'pointer' }}>
+                <button onClick={resendCode} style={{ background: 'none', border: 'none', color: 'var(--color-landing-primary)', fontSize: 13, fontWeight: 600, cursor: 'pointer' }}>
                   Didn't receive it? Resend code
                 </button>
               </div>
@@ -167,7 +167,7 @@ export default function VerifyEmail() {
               <p style={{ fontSize: 14, color: 'var(--color-text-muted)', lineHeight: 1.6, marginBottom: 24 }}>
                 Your account is now active. You can sign in to the parent portal.
               </p>
-              <button onClick={() => nav('/login')} style={{ width: '100%', padding: 13, background: '#1F4E9E', color: '#fff', border: 'none', borderRadius: 8, fontFamily: 'Inter,sans-serif', fontSize: 15, fontWeight: 700, cursor: 'pointer' }}>
+              <button className="auth-submit-btn" onClick={() => nav('/login')} style={{ width: '100%', padding: 13, background: 'var(--color-landing-primary)', color: '#fff', border: 'none', borderRadius: 10, fontFamily: 'Inter,sans-serif', fontSize: 15, fontWeight: 700, cursor: 'pointer' }}>
                 Go to Sign In
               </button>
             </div>
@@ -175,7 +175,7 @@ export default function VerifyEmail() {
 
           {step !== 'success' && (
             <div style={{ textAlign: 'center', marginTop: 24 }}>
-              <Link to="/" style={{ color: '#1F4E9E', fontSize: 13, fontWeight: 600, textDecoration: 'none' }}>
+              <Link to="/" style={{ color: 'var(--color-landing-primary)', fontSize: 13, fontWeight: 600, textDecoration: 'none' }}>
                 <i className="fa-solid fa-arrow-left" style={{ marginRight: 5 }} />Back to website
               </Link>
             </div>

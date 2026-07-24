@@ -1,6 +1,7 @@
 import { Router } from 'express';
 import { db } from '../supabase.js';
 import { requireAuth, requireRole } from '../middleware/auth.js';
+import { labelToHour } from './shifts.js';
 
 const router = Router();
 // Staff/OT/Speech get the same report generator as admin, except Security Audit
@@ -18,6 +19,27 @@ function dateRange(req) {
   return { from, to };
 }
 const endOfDay = to => to + 'T23:59:59.999';
+
+/** Today's date (YYYY-MM-DD) in Philippine time (UTC+8), independent of server timezone. */
+function todayPH() {
+  return new Date(Date.now() + 8 * 60 * 60 * 1000).toISOString().slice(0, 10);
+}
+function nowMinutesPH() {
+  const d = new Date(Date.now() + 8 * 60 * 60 * 1000);
+  return d.getUTCHours() * 60 + d.getUTCMinutes();
+}
+const SESSION_MIN = 60;
+/** Same "in progress right now" window the Reservations page's isOngoingReservation() uses,
+ *  reused here so the Reservation Summary report's "Ongoing" filter matches the live page. */
+function isOngoingRes(r) {
+  if (!['confirmed', 'rescheduled'].includes(r.status)) return false;
+  if (r.date !== todayPH()) return false;
+  const h = labelToHour(r.time_slot);
+  if (h == null) return false;
+  const startMin = h * 60;
+  const nowMin = nowMinutesPH();
+  return nowMin >= startMin && nowMin < startMin + SESSION_MIN;
+}
 
 /** GET /api/reports/summary?from=&to=, sessions, enrollments, revenue, avg milestone for the period */
 router.get('/summary', async (req, res) => {
@@ -75,7 +97,17 @@ const ROLE_DISCIPLINE = { ot: 'Occupational Therapy', speech: 'Speech-Language T
 router.get('/dashboard', async (req, res) => {
   const { from, to } = dateRange(req);
   const lockedDiscipline = ROLE_DISCIPLINE[req.user.role] || null;
-  const showGas = req.user.role !== 'staff';
+
+  // ?sections=milestones,employees,demographics (or omitted/"all"), lets the
+  // Reports page generate just the pieces of the Dashboard Overview it wants,
+  // same three sections the live Admin Dashboard shows.
+  const requestedSections = (req.query.sections || 'all').split(',').map(s => s.trim()).filter(Boolean);
+  const wantAll = requestedSections.length === 0 || requestedSections.includes('all');
+  const wantMilestones = wantAll || requestedSections.includes('milestones');
+  const wantEmployees = wantAll || requestedSections.includes('employees');
+  const wantDemographics = wantAll || requestedSections.includes('demographics');
+
+  const showGas = req.user.role !== 'staff' && wantMilestones;
 
   let gasTrend = null;
   if (showGas) {
@@ -105,8 +137,8 @@ router.get('/dashboard', async (req, res) => {
     };
   }
 
-  let employees = null, demo = null;
-  if (!lockedDiscipline) {
+  let employees = null;
+  if (!lockedDiscipline && wantEmployees) {
     const [{ data: therapists, error: tErr }, { data: reservations, error: rErr }] = await Promise.all([
       db.from('profiles').select('id, full_name, role').in('role', ['ot', 'speech']).eq('active', true),
       db.from('reservations').select('client_id, therapist_name, session_type, status')
@@ -129,7 +161,10 @@ router.get('/dashboard', async (req, res) => {
     const specialtyCounts = { OT: 0, Speech: 0, Both: 0, Unassigned: 0 };
     for (const r of rows) specialtyCounts[r.specialty]++;
     employees = { total: (therapists || []).length, specialtyCounts, teamSessionsTotal: rows.reduce((s, r) => s + r.totalSessions, 0), rows };
+  }
 
+  let demo = null;
+  if (!lockedDiscipline && wantDemographics) {
     const { data: clients, error: clErr } = await db.from('clients').select('gender, dob').eq('archived', false);
     if (clErr) return res.status(500).json({ error: clErr.message });
     const gender = { Male: 0, Female: 0, Unspecified: 0 };
@@ -151,8 +186,7 @@ router.get('/dashboard', async (req, res) => {
   }
 
   const summary = [
-    { label: 'Active Therapists', value: employees ? String(employees.total) : '-' },
-    { label: 'Team Sessions (all-time)', value: employees ? String(employees.teamSessionsTotal) : '-' },
+    { label: 'Therapists', value: employees ? String(employees.total) : '-' },
     { label: 'Total Clients', value: demo ? String(demo.total) : '-' }
   ];
   if (gasTrend) summary.push({ label: 'GAS Entries (OT / Speech)', value: `${gasTrend.otCount} / ${gasTrend.speechCount}` });
@@ -165,29 +199,28 @@ router.get('/dashboard', async (req, res) => {
   });
 });
 
-/** GET /api/reports/revenue?from=&to=, itemized invoices + collected/outstanding/refunded totals */
-router.get('/revenue', async (req, res) => {
+// QRPh is a guardian's own self-checkout (online); Cash/Check only ever get
+// set when staff/admin book and collect payment in person (offline). Mirrors
+// client/src/portals/admin/pages/Payments.jsx's METHOD_CHANNEL grouping, so
+// the report's "Method" filter matches the live Payments page's options.
+const METHODS_FOR_CHANNEL = { Online: ['QRPh'], Offline: ['Cash', 'Check'], Unpaid: ['Unpaid'] };
+
+/** GET /api/reports/transactions?from=&to=&status=&channel=, itemized invoice list */
+router.get('/transactions', async (req, res) => {
   const { from, to } = dateRange(req);
-  const { data: payments, error } = await db.from('payments')
+  let q = db.from('payments')
     .select('*, clients(full_name, client_code), reservations(session_type, date, time_slot)')
     .gte('created_at', from).lte('created_at', endOfDay(to))
     .order('created_at', { ascending: false });
+  if (req.query.status) q = q.eq('status', req.query.status);
+  const channelMethods = METHODS_FOR_CHANNEL[req.query.channel];
+  if (channelMethods) q = q.in('method', channelMethods);
+  const { data: payments, error } = await q;
   if (error) return res.status(500).json({ error: error.message });
 
-  const paid = payments.filter(p => p.status === 'paid');
-  const pending = payments.filter(p => p.status === 'pending' || p.status === 'overdue');
-  const refunded = payments.filter(p => p.status === 'refunded');
-  const byMethod = {};
-  for (const p of paid) byMethod[p.method] = (byMethod[p.method] || 0) + Number(p.amount);
-
   res.json({
-    title: 'Revenue Report', range: { from, to },
-    summary: [
-      { label: 'Total Collected', value: '₱' + paid.reduce((s, p) => s + Number(p.amount), 0).toLocaleString() },
-      { label: 'Outstanding', value: '₱' + pending.reduce((s, p) => s + Number(p.amount), 0).toLocaleString() },
-      { label: 'Refunded', value: '₱' + refunded.reduce((s, p) => s + Number(p.amount), 0).toLocaleString() },
-      ...Object.entries(byMethod).map(([m, v]) => ({ label: 'via ' + m, value: '₱' + v.toLocaleString() }))
-    ],
+    title: 'Transaction Report', range: { from, to },
+    summary: [],
     columns: [
       { key: 'invoice_no', label: 'Invoice' }, { key: 'client', label: 'Client' }, { key: 'session', label: 'Session' },
       { key: 'method', label: 'Method' }, { key: 'amount', label: 'Amount' }, { key: 'status', label: 'Status' }, { key: 'date', label: 'Date' }
@@ -267,9 +300,10 @@ router.get('/milestones', requireRole('admin'), async (req, res) => {
 router.get('/therapists', async (req, res) => {
   const { from, to } = dateRange(req);
   const [{ data: therapists, error: tErr }, { data: reservations }, { data: assignedClients }] = await Promise.all([
-    db.from('profiles').select('id, full_name').in('role', ['ot', 'speech']).eq('active', true),
+    db.from('profiles').select('id, full_name, role').in('role', ['ot', 'speech']).eq('active', true),
     db.from('reservations').select('client_id, therapist_name, status').gte('date', from).lte('date', to),
-    db.from('clients').select('id, assigned_therapist_name').not('assigned_therapist_name', 'is', null)
+    db.from('clients').select('id, assigned_ot_therapist_name, assigned_speech_therapist_name')
+      .or('assigned_ot_therapist_name.not.is.null,assigned_speech_therapist_name.not.is.null')
   ]);
   if (tErr) return res.status(500).json({ error: tErr.message });
 
@@ -277,7 +311,8 @@ router.get('/therapists', async (req, res) => {
   const rows = (therapists || []).map(t => {
     const own = activeRes.filter(r => r.therapist_name === t.full_name);
     const caseload = new Set(own.map(r => r.client_id));
-    (assignedClients || []).forEach(c => { if (c.assigned_therapist_name === t.full_name) caseload.add(c.id); });
+    const assignedField = t.role === 'speech' ? 'assigned_speech_therapist_name' : 'assigned_ot_therapist_name';
+    (assignedClients || []).forEach(c => { if (c[assignedField] === t.full_name) caseload.add(c.id); });
     return {
       therapist: t.full_name,
       sessions: String(own.length),
@@ -300,17 +335,40 @@ router.get('/therapists', async (req, res) => {
   });
 });
 
-/** GET /api/reports/reservations?from=&to=, bookings by status/channel for the period */
+/** GET /api/reports/reservations?from=&to=&status=, bookings by status/channel for the period.
+ *  `status` mirrors the same options as the Adjust & Cancel Schedules filter: 'pending' also
+ *  matches 'awaiting_payment' (same "Pending" label the live page shows), and 'ongoing' is a
+ *  computed, not stored, status, matched with isOngoingRes() against the current PH time. */
 router.get('/reservations', async (req, res) => {
   const { from, to } = dateRange(req);
-  const { data: reservations, error } = await db.from('reservations')
+  let q = db.from('reservations')
     .select('*, clients(full_name, client_code)')
     .gte('date', from).lte('date', to)
     .order('date');
+  const statusFilter = req.query.status;
+  if (statusFilter && statusFilter !== 'all' && statusFilter !== 'ongoing') {
+    if (statusFilter === 'pending') q = q.in('status', ['pending', 'awaiting_payment']);
+    else q = q.eq('status', statusFilter);
+  }
+  let { data: reservations, error } = await q;
   if (error) return res.status(500).json({ error: error.message });
+  if (statusFilter === 'ongoing') reservations = (reservations || []).filter(isOngoingRes);
 
-  const byStatus = {};
-  for (const r of reservations) byStatus[r.status] = (byStatus[r.status] || 0) + 1;
+  // Fixed set, same categories/labels/order as the Adjust & Cancel Schedules status
+  // filter, always listed (even at 0) so the total-per-status breakdown reads the
+  // same regardless of which status filter (if any) narrowed the rows above.
+  // "Pending" folds in 'awaiting_payment', same grouping the live page shows.
+  const STATUS_LABELS = [
+    ['pending', 'Pending'], ['ongoing', 'Ongoing'], ['confirmed', 'Confirmed'],
+    ['rescheduled', 'Rescheduled'], ['cancelled', 'Cancelled'], ['completed', 'Completed'],
+    ['no_show', 'No-Show']
+  ];
+  const statusCounts = Object.fromEntries(STATUS_LABELS.map(([k]) => [k, 0]));
+  for (const r of reservations) {
+    if (r.status === 'pending' || r.status === 'awaiting_payment') statusCounts.pending++;
+    else if (statusCounts[r.status] != null) statusCounts[r.status]++;
+    if (isOngoingRes(r)) statusCounts.ongoing++;
+  }
   const byChannel = {};
   for (const r of reservations) {
     const c = r.channel === 'parent-portal' ? 'Parent Portal' : 'Staff-Entered';
@@ -321,7 +379,7 @@ router.get('/reservations', async (req, res) => {
     title: 'Reservation Summary', range: { from, to },
     summary: [
       { label: 'Total Bookings', value: String(reservations.length) },
-      ...Object.entries(byStatus).map(([s, v]) => ({ label: s[0].toUpperCase() + s.slice(1), value: String(v) })),
+      ...STATUS_LABELS.map(([k, label]) => ({ label, value: String(statusCounts[k]) })),
       ...Object.entries(byChannel).map(([c, v]) => ({ label: c, value: String(v) }))
     ],
     columns: [

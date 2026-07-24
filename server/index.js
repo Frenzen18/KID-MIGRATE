@@ -1,6 +1,7 @@
 import express from 'express';
 import 'express-async-errors'; // patches Express so a throw/reject inside an async route handler reaches the error middleware below instead of crashing the process or dropping the connection
 import cors from 'cors';
+import helmet from 'helmet';
 import dotenv from 'dotenv';
 import authRoutes from './routes/auth.js';
 import clientRoutes from './routes/clients.js';
@@ -22,6 +23,11 @@ import { expireUnpaidBookingHolds } from './lib/bookingHolds.js';
 
 dotenv.config();
 const app = express();
+
+// Standard security headers (HSTS, X-Content-Type-Options, X-Frame-Options, etc).
+// This is a pure JSON API with no pages of its own to protect with a Content-
+// Security-Policy, so that one directive is left off rather than fighting it.
+app.use(helmet({ contentSecurityPolicy: false }));
 
 // Restrict browser cross-origin access to known frontend origin(s) instead of
 // allowing any site to call this API. Set ALLOWED_ORIGINS (comma-separated)
@@ -63,7 +69,7 @@ app.use('/api/settings', settingsRoutes);
 // central error fallback
 app.use((err, req, res, next) => {
   console.error(err);
-  res.status(500).json({ error: 'Internal server error' });
+  res.status(500).json({ error: 'Something went wrong. Please try again.' });
 });
 
 const port = process.env.PORT || 4000;
@@ -78,7 +84,7 @@ runReminderSweep();
 
 // Releases guardian booking holds left unpaid past their deadline (see
 // server/lib/bookingHolds.js). A short interval since the hold itself is
-// short (15 min, BOOKING_HOLD_MINUTES in routes/reservations.js), otherwise
+// short (10 min, BOOKING_HOLD_MINUTES in routes/reservations.js), otherwise
 // an abandoned slot could sit unreleased for most of the sweep period.
 const BOOKING_HOLD_SWEEP_INTERVAL_MS = 2 * 60 * 1000;
 setInterval(expireUnpaidBookingHolds, BOOKING_HOLD_SWEEP_INTERVAL_MS);

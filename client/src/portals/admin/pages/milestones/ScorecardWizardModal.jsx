@@ -3,6 +3,7 @@ import { Modal } from '../../../../components/ui.jsx';
 import { api } from '../../../../api.js';
 import GasProgressChart from '../../../../components/GasProgressChart.jsx';
 import ProgressChart from '../../../../components/ProgressChart.jsx';
+import { formatPhoneDisplay } from '../../../../phoneInput.js';
 
 /* 3-stage Scorecard workflow (Before / During / After Session), opened by
    clicking a client in a therapist's Client Records instead of navigating to
@@ -19,6 +20,15 @@ const STEPS = [
 const GAS_LEVEL_FIELD = { '-2': 'level_m2', '-1': 'level_m1', '0': 'level_0', '1': 'level_p1', '2': 'level_p2' };
 
 function todayStr() { return new Date().toISOString().split('T')[0]; }
+
+function relativeSavedLabel(iso) {
+  const diffMin = Math.round((Date.now() - new Date(iso).getTime()) / 60000);
+  if (diffMin < 1) return 'just now';
+  if (diffMin < 60) return diffMin + ' min ago';
+  const diffHr = Math.round(diffMin / 60);
+  if (diffHr < 24) return diffHr + ' hr ago';
+  return new Date(iso).toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+}
 
 /** Kiresuk & Sherman GAS T-score; rho = 0.3. Mirrors server/routes/gas.js and Milestones.jsx. */
 function computeGasTScore(scored) {
@@ -40,9 +50,48 @@ export default function ScorecardWizardModal({ client, therapistName, discipline
   const [parentObservation, setParentObservation] = useState('');
   const [remarks, setRemarks] = useState('');
   const [summaryDraft, setSummaryDraft] = useState('');
+  const [summaryLoading, setSummaryLoading] = useState(false);
   const [scores, setScores] = useState({});
   const [submitting, setSubmitting] = useState(false);
   const [recordExpanded, setRecordExpanded] = useState(null);
+
+  // Draft autosave, local to this browser, one draft per client+discipline. Never
+  // submitted server-side, so an interrupted session (or one that just needs to
+  // be picked up again later) isn't lost, purely a therapist convenience.
+  const draftKey = 'kid_gas_draft_' + client.id + '_' + discipline;
+  const [pendingDraft, setPendingDraft] = useState(null); // a draft found on mount, not yet applied
+  const [draftSavedAt, setDraftSavedAt] = useState(null);
+  useEffect(() => {
+    try {
+      const raw = localStorage.getItem(draftKey);
+      if (raw) setPendingDraft(JSON.parse(raw));
+    } catch { /* corrupt/old draft, ignore */ }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  function saveDraft() {
+    const draft = { step, sessionDate, parentObservation, remarks, summaryDraft, scores, savedAt: new Date().toISOString() };
+    localStorage.setItem(draftKey, JSON.stringify(draft));
+    setDraftSavedAt(draft.savedAt);
+    toast('Draft saved', 'fa-floppy-disk');
+  }
+
+  function resumeDraft() {
+    if (!pendingDraft) return;
+    setStep(pendingDraft.step || 1);
+    setSessionDate(pendingDraft.sessionDate || todayStr());
+    setParentObservation(pendingDraft.parentObservation || '');
+    setRemarks(pendingDraft.remarks || '');
+    setSummaryDraft(pendingDraft.summaryDraft || '');
+    setScores(pendingDraft.scores || {});
+    setDraftSavedAt(pendingDraft.savedAt || null);
+    setPendingDraft(null);
+  }
+
+  function discardDraft() {
+    localStorage.removeItem(draftKey);
+    setPendingDraft(null);
+  }
 
   const [clientRecord, setClientRecord] = useState(null);
   const [clientRecordLoading, setClientRecordLoading] = useState(true);
@@ -115,17 +164,46 @@ export default function ScorecardWizardModal({ client, therapistName, discipline
   function nextStep() { setStep(s => Math.min(3, s + 1)); }
   function prevStep() { setStep(s => Math.max(1, s - 1)); }
 
-  function generateSummary() {
-    const scoredGoals = items.filter(it => scores[it.id] !== undefined);
-    const lines = [];
-    if (parentObservation.trim()) lines.push(`Parent reported: ${parentObservation.trim()}`);
-    for (const it of scoredGoals) {
-      const lvl = scores[it.id];
-      lines.push(`Goal "${it.title}": scored ${lvl > 0 ? '+' + lvl : lvl} (${it[GAS_LEVEL_FIELD[String(lvl)]]}).`);
+  async function generateSummary() {
+    setSummaryLoading(true);
+    try {
+      const scoredGoals = items.filter(it => scores[it.id] !== undefined).map(it => ({
+        item_title: it.title,
+        weight: Number(it.weight) || 1,
+        level: scores[it.id],
+        level_label: it[GAS_LEVEL_FIELD[String(scores[it.id])]]
+      }));
+      const result = await api('/gas/ai-summary', {
+        method: 'POST',
+        body: {
+          clientName: client.full_name,
+          clientCode: client.client_code,
+          discipline, sessionDate, therapistName,
+          tScore: previewScore,
+          goals: scoredGoals,
+          parentObservation, remarks
+        }
+      });
+      const sections = [];
+      if (previewScore != null || result.overallSummary) {
+        const scoreLine = previewScore != null ? `Overall GAS T-Score: ${previewScore}` : '';
+        sections.push([scoreLine, result.overallSummary].filter(Boolean).join('\n'));
+      }
+      if (result.goalProgress?.length) {
+        sections.push(['Goal Progress:', ...result.goalProgress.map(g => `- ${g.goal}: ${g.result}`)].join('\n'));
+      }
+      if (result.parentObservationNote) {
+        sections.push(`Parent Observation:\n${result.parentObservationNote}`);
+      }
+      if (result.therapistRemarksNote) {
+        sections.push(`Plans, Analysis, and Instructions:\n${result.therapistRemarksNote}`);
+      }
+      setSummaryDraft(sections.join('\n\n'));
+    } catch (e) {
+      toast(e.message || 'Failed to generate AI summary', 'fa-triangle-exclamation');
+    } finally {
+      setSummaryLoading(false);
     }
-    if (previewScore != null) lines.push(`Overall GAS T-score for this session: ${previewScore}.`);
-    if (remarks.trim()) lines.push('Plans, Analysis, and Instructions: ' + remarks.trim());
-    setSummaryDraft(lines.join('\n'));
   }
 
   async function submitEntry() {
@@ -150,6 +228,7 @@ export default function ScorecardWizardModal({ client, therapistName, discipline
           scores: items.map(it => ({ item_id: it.id, level: scores[it.id] }))
         }
       });
+      localStorage.removeItem(draftKey);
       toast('GAS entry submitted, T-score ' + entry.gas_t_score, 'fa-clipboard-check');
       onSubmitted?.(entry);
       onClose();
@@ -165,7 +244,11 @@ export default function ScorecardWizardModal({ client, therapistName, discipline
   return (
       <Modal title={`Scorecard: ${client.full_name || client.name}`} onClose={onClose} width={900}>
         <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 16, paddingBottom: 14, borderBottom: '1px solid #F1F5F9' }}>
-          <div style={{ width: 38, height: 38, borderRadius: 10, background: 'linear-gradient(135deg,#0EA5E9,#0D9488)', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 13, fontWeight: 700, color: '#fff', flexShrink: 0 }}>{initials}</div>
+          {client.photo_url ? (
+            <img src={client.photo_url} alt={client.full_name || client.name} style={{ width: 38, height: 38, borderRadius: 10, objectFit: 'cover', flexShrink: 0 }} />
+          ) : (
+            <div style={{ width: 38, height: 38, borderRadius: 10, background: 'linear-gradient(135deg,#0EA5E9,#0D9488)', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 13, fontWeight: 700, color: '#fff', flexShrink: 0 }}>{initials}</div>
+          )}
           <div style={{ flex: 1, minWidth: 0 }}>
             <div style={{ fontSize: 14, fontWeight: 700, color: '#0F172A' }}>{client.full_name || client.name}</div>
             <div style={{ fontSize: 11.5, color: '#64748B' }}>{discipline}</div>
@@ -173,16 +256,37 @@ export default function ScorecardWizardModal({ client, therapistName, discipline
         </div>
 
         {/* Step stepper */}
-        <div className="gas-stepper">
-          {STEPS.map((s, i) => (
-            <span key={s.n} style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-              <span className={'gas-step-pill' + (step === s.n ? ' current' : step > s.n ? ' done' : '')} onClick={() => setStep(s.n)}>
-                <span className="num">{step > s.n ? <i className="fa-solid fa-check" /> : s.n}</span>
-                Step {s.n}: {s.label}
+        {pendingDraft && (
+          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 10, flexWrap: 'wrap', padding: '10px 14px', borderRadius: 10, border: '1px solid #BFDBFE', background: '#EFF6FF', marginBottom: 14 }}>
+            <div style={{ fontSize: 12.5, color: '#1E40AF' }}>
+              <i className="fa-solid fa-clock-rotate-left" style={{ marginRight: 7 }} />
+              You have a saved draft from {relativeSavedLabel(pendingDraft.savedAt)}.
+            </div>
+            <div style={{ display: 'flex', gap: 8 }}>
+              <button className="btn-secondary" style={{ padding: '5px 12px', fontSize: 11.5 }} onClick={discardDraft}>Discard</button>
+              <button className="btn-primary" style={{ padding: '5px 12px', fontSize: 11.5 }} onClick={resumeDraft}>Resume Draft</button>
+            </div>
+          </div>
+        )}
+
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 10, flexWrap: 'wrap', marginBottom: 4 }}>
+          <div className="gas-stepper">
+            {STEPS.map((s, i) => (
+              <span key={s.n} style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                <span className={'gas-step-pill' + (step === s.n ? ' current' : step > s.n ? ' done' : '')} onClick={() => setStep(s.n)}>
+                  <span className="num">{step > s.n ? <i className="fa-solid fa-check" /> : s.n}</span>
+                  Step {s.n}: {s.label}
+                </span>
+                {i < STEPS.length - 1 && <i className="fa-solid fa-angle-right gas-step-arrow" />}
               </span>
-              {i < STEPS.length - 1 && <i className="fa-solid fa-angle-right gas-step-arrow" />}
-            </span>
-          ))}
+            ))}
+          </div>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexShrink: 0 }}>
+            {draftSavedAt && <span style={{ fontSize: 10.5, color: '#94A3B8' }}>Draft saved {relativeSavedLabel(draftSavedAt)}</span>}
+            <button className="btn-secondary" style={{ padding: '6px 12px', fontSize: 11.5 }} onClick={saveDraft}>
+              <i className="fa-solid fa-floppy-disk" style={{ marginRight: 5 }} />Save Draft
+            </button>
+          </div>
         </div>
 
         {/* ── Step 1: Before Session ── */}
@@ -220,7 +324,7 @@ export default function ScorecardWizardModal({ client, therapistName, discipline
                           {field('Date of Birth', fmtDate(clientRecord?.dob))}
                           {field('Enrolled Since', fmtDate(clientRecord?.created_at))}
                           {field('Guardian', clientRecord?.guardian_name || '–')}
-                          {field('Contact', clientRecord?.guardian_contact || '–')}
+                          {field('Contact', clientRecord?.guardian_contact ? formatPhoneDisplay(clientRecord.guardian_contact) : '–')}
                         </>
                       )
                     },
@@ -228,7 +332,6 @@ export default function ScorecardWizardModal({ client, therapistName, discipline
                       key: 'medical', label: 'Medical Information', icon: 'fa-notes-medical',
                       body: (
                         <>
-                          {field('Primary Diagnosis', clientRecord?.diagnosis || '–')}
                           {field('Allergies', clientRecord?.allergies || 'None recorded')}
                           {field('Medications', clientRecord?.daily_medication || 'None recorded')}
                           {field('Emergency Contact', clientRecord?.guardian_name || '–')}
@@ -341,8 +444,9 @@ export default function ScorecardWizardModal({ client, therapistName, discipline
               <label className="form-label">Remarks: Plans, Analysis, and Instructions</label>
               <textarea className="form-input" rows="10" style={{ height: 'auto', padding: '10px 12px', resize: 'vertical', marginBottom: 12 }}
                 placeholder="Remarks: Plans, Analysis, and Instructions" value={remarks} onChange={e => setRemarks(e.target.value)} />
-              <button className="btn-secondary" style={{ width: '100%' }} onClick={generateSummary}>
-                <i className="fa-solid fa-file-lines" style={{ marginRight: 6 }} />Generate Summary
+              <button className="btn-secondary" style={{ width: '100%' }} disabled={summaryLoading} onClick={generateSummary}>
+                <i className={'fa-solid ' + (summaryLoading ? 'fa-spinner fa-spin' : 'fa-wand-magic-sparkles')} style={{ marginRight: 6 }} />
+                {summaryLoading ? 'Generating…' : 'Generate Summary'}
               </button>
             </div>
 

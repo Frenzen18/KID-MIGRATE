@@ -24,7 +24,7 @@
 .cp-row{display:flex;align-items:center;gap:11px;padding:10px;border-radius:10px;cursor:pointer;border:1px solid transparent;transition:all .15s;margin-bottom:2px}
 .cp-row:hover{background:#F8FAFC}
 .cp-row.active{background:#F0F9FF;border-color:#BAE6FD}
-.cp-tip{position:absolute;z-index:50;background:#0F172A;color:#fff;border-radius:12px;padding:13px 15px;font-size:12px;line-height:1.5;width:max-content;max-width:290px;box-shadow:0 12px 32px rgba(15,23,42,.45);pointer-events:none;opacity:0;transition:opacity .15s;transform:translate(-50%,-112%)}
+.cp-tip{position:absolute;z-index:50;background:#0F172A;color:#fff;border-radius:12px;padding:13px 15px;font-size:12px;line-height:1.5;width:max-content;max-width:290px;box-shadow:0 12px 32px rgba(15,23,42,.45);pointer-events:none;transform:translate(-50%,-112%)}
 .cp-tip .tt-dom{font-weight:700;display:flex;align-items:center;gap:6px;margin-bottom:6px;font-size:12px}
 .cp-tip .tt-note{color:#CBD5E1;font-size:11.5px}
 .cp-tip .tt-section{font-size:10px;font-weight:700;color:#94A3B8;text-transform:uppercase;letter-spacing:.06em;margin:7px 0 4px}
@@ -82,12 +82,12 @@ textarea.big-input{resize:vertical;line-height:1.6}
 .ix-title{font-family:'DM Sans',sans-serif;font-size:16px;font-weight:600;color:#22293A;line-height:1.4;margin-bottom:8px}
 .ix-p{font-size:12.5px;color:#5C6577;line-height:1.65;margin-bottom:13px}
 .ix-meta{font-size:11.5px;color:#9AA0AE;font-weight:600}
-.ix-band{background:#FAF3E3;border-bottom:1px solid #EFE3C8;padding:12px 16px;display:flex;gap:11px;align-items:center;font-family:'Karla',sans-serif;flex-wrap:wrap}
-.ix-band-label{font-size:10px;font-weight:700;letter-spacing:.09em;text-transform:uppercase;color:#9A6210;border:1px solid #E3D3AC;border-radius:5px;padding:3px 8px;background:#fff;flex-shrink:0}
-.ix-band-text{font-size:12.5px;color:#6B5320;font-weight:500;flex:1;min-width:120px}
-.ix-band-more{font-size:12px;color:#9A6210;font-weight:700}
+.ix-band{background:#EFF6FF;border-bottom:1px solid #BAE6FD;padding:12px 16px;display:flex;gap:11px;align-items:center;font-family:'Karla',sans-serif;flex-wrap:wrap}
+.ix-band-label{font-size:10px;font-weight:700;letter-spacing:.09em;text-transform:uppercase;color:#1F4E9E;border:1px solid #BAE6FD;border-radius:20px;padding:3px 9px;background:#fff;flex-shrink:0}
+.ix-band-text{font-size:12.5px;color:#22293A;font-weight:500;flex:1;min-width:120px}
+.ix-band-more{font-size:12px;color:#1F4E9E;font-weight:700}
 .ix-hero{background:#FDFCFA;padding:22px;display:grid;grid-template-columns:1.1fr 1fr;gap:16px;align-items:center;font-family:'Karla',sans-serif}
-.ix-kicker{font-size:9px;letter-spacing:.11em;text-transform:uppercase;color:#9A6210;font-weight:700;margin-bottom:8px}
+.ix-kicker{display:inline-block;font-size:9px;letter-spacing:.11em;text-transform:uppercase;color:#1F4E9E;font-weight:700;margin-bottom:8px;background:#EFF6FF;border-radius:20px;padding:3px 9px}
 .ix-h1{font-family:'DM Sans',sans-serif;font-size:19px;font-weight:600;line-height:1.2;color:#22293A;margin-bottom:8px}
 .ix-h1 em{font-style:italic;color:#1F4E9E}
 .ix-sub{font-size:11px;color:#5C6577;line-height:1.6;margin-bottom:12px}
@@ -223,6 +223,13 @@ input:checked + .toggle-slider::before{transform:translateX(18px)}
 @media(max-width:1200px){.sched-grid{grid-template-columns:1fr}}
 .fin-summary-grid{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:16px;margin-bottom:24px;align-items:start}
 @media(max-width:900px){.fin-summary-grid{grid-template-columns:1fr}}
+.users-grid{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:16px;align-items:stretch}
+/* A 7-column data table (checkbox/ID/name/role/joined/status/actions) needs real
+   room to breathe, side by side that only works on a genuinely wide desktop
+   monitor, below that two half-width copies fight each other for space and
+   start clipping columns, one full-width table at a time reads far better on
+   the laptop-class widths (1366/1440/1536px) most people actually use. */
+@media(max-width:1650px){.users-grid{grid-template-columns:1fr}}
 .dir-card{padding:22px 0 0;display:flex;flex-direction:column}
 .dir-head{display:flex;justify-content:space-between;align-items:center;gap:12px;padding:0 24px 16px;border-bottom:1px solid #F1F5F9;flex-wrap:wrap}
 .dir-tools{display:flex;gap:8px;align-items:center;flex-wrap:wrap}
@@ -232,7 +239,7 @@ input:checked + .toggle-slider::before{transform:translateX(18px)}
 /* Client directory, CSS-grid list so header and every row share one column
    template (guarantees perfect column alignment regardless of content length). */
 .cdir{display:flex;flex-direction:column;min-width:640px}
-.cdir-row{display:grid;grid-template-columns:minmax(150px,2.2fr) 48px minmax(120px,1.6fr) minmax(110px,1.4fr) minmax(80px,auto) minmax(70px,auto);align-items:center;gap:10px;padding:11px 24px;border-bottom:1px solid #F1F5F9}
+.cdir-row{display:grid;grid-template-columns:minmax(150px,2.2fr) 48px minmax(120px,1.6fr) minmax(110px,1.4fr) minmax(70px,auto);align-items:center;gap:10px;padding:11px 24px;border-bottom:1px solid #F1F5F9}
 .cdir-row:last-child{border-bottom:none}
 .cdir-head{font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:.06em;color:#94A3B8;padding-top:10px;padding-bottom:10px;border-bottom:1px solid #F1F5F9}
 /* NOTE: named .cdir-item (not .client-row), staff/therapist portal CSS

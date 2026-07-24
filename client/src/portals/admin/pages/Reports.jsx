@@ -1,12 +1,29 @@
 import { useEffect, useState } from 'react';
 import { api } from '../../../api.js';
+import { useAuth } from '../../../auth.jsx';
 import GasProgressChart from '../../../components/GasProgressChart.jsx';
 import { PieChart, TrendChart } from './Dashboard.jsx';
 
 /* == page: reports == */
 
+/** Mirrors Dashboard.jsx's gasScoreToneHex, the same green/blue/amber/red GAS-score
+ *  bands used on the T-score pill elsewhere in this app (Milestones.jsx's gasScoreTone). */
+function gasScoreToneHex(score) {
+  if (score == null) return '#94A3B8';
+  if (score >= 60) return '#16A34A';
+  if (score >= 45) return '#2563EB';
+  if (score >= 35) return '#B45309';
+  return '#DC2626';
+}
+
 function todayStr() { return new Date().toISOString().slice(0, 10); }
 function startOfMonthStr() { const d = new Date(); return new Date(d.getFullYear(), d.getMonth(), 1).toISOString().slice(0, 10); }
+function fmtLong(iso) {
+  return new Date(iso).toLocaleDateString('en-US', { month: 'long', day: 'numeric', year: 'numeric' });
+}
+function fmtGeneratedAt(d) {
+  return d.toLocaleString('en-US', { month: 'short', day: 'numeric', year: 'numeric', hour: 'numeric', minute: '2-digit' });
+}
 
 function fmtDateTime(iso) {
   if (!iso) return '-';
@@ -14,13 +31,68 @@ function fmtDateTime(iso) {
 }
 
 const REPORT_TYPES = [
-  { key: 'summary', label: 'Monthly Summary' },
   { key: 'dashboard', label: 'Dashboard Overview' },
-  { key: 'revenue', label: 'Revenue Report' },
+  { key: 'transactions', label: 'Transaction Reports' },
   { key: 'milestones', label: 'Client Milestone Progress' },
-  { key: 'therapists', label: 'Therapist Performance' },
   { key: 'reservations', label: 'Reservation Summary' },
   { key: 'audit', label: 'Security Audit' }
+];
+
+// Same status options as Adjust & Cancel Schedules' filter (Reservations.jsx), so the
+// Reservation Summary report's filter matches the live Booking and Appointment page.
+const RESERVATION_STATUS_OPTIONS = [
+  { value: 'all', label: 'All Status' },
+  { value: 'pending', label: 'Pending' },
+  { value: 'ongoing', label: 'Ongoing' },
+  { value: 'confirmed', label: 'Confirmed' },
+  { value: 'rescheduled', label: 'Rescheduled' },
+  { value: 'cancelled', label: 'Cancelled' },
+  { value: 'completed', label: 'Completed' },
+  { value: 'no_show', label: 'No-Show' }
+];
+
+// Same Record/Action options as the Security Audit Logs page (Audit.jsx).
+const AUDIT_TABLE_OPTIONS = [
+  { value: '', label: 'All Records' },
+  { value: 'profiles', label: 'User Accounts' },
+  { value: 'clients', label: 'Client Records' },
+  { value: 'reservations', label: 'Reservations' },
+  { value: 'payments', label: 'Payments' },
+  { value: 'cms_posts', label: 'CMS Posts' },
+  { value: 'announcements', label: 'Announcements' },
+  { value: 'shifts', label: 'Therapist Shifts' },
+  { value: 'notifications', label: 'Notification Pushes' }
+];
+const AUDIT_ACTION_OPTIONS = [
+  { value: '', label: 'All Actions' },
+  { value: 'create', label: 'Create' },
+  { value: 'update', label: 'Update' },
+  { value: 'approve', label: 'Approve' },
+  { value: 'archive', label: 'Archive' },
+  { value: 'delete', label: 'Delete' },
+  { value: 'login', label: 'Login' }
+];
+
+// Same Status/Method options as the live Payments page (Payments.jsx), "Method" here is
+// really the payment channel (Online/Offline/Unpaid), same grouping Payments.jsx uses.
+const TXN_STATUS_OPTIONS = [
+  { value: '', label: 'All Status' },
+  { value: 'paid', label: 'Paid' },
+  { value: 'pending', label: 'Pending' },
+  { value: 'overdue', label: 'Overdue' },
+  { value: 'refunded', label: 'Refunded' }
+];
+const TXN_CHANNEL_OPTIONS = [
+  { value: '', label: 'All Methods' },
+  { value: 'Online', label: 'Online' },
+  { value: 'Offline', label: 'Offline' },
+  { value: 'Unpaid', label: 'Unpaid' }
+];
+
+const DASHBOARD_SECTIONS = [
+  { key: 'milestones', label: 'Milestone Trends' },
+  { key: 'employees', label: 'Employee Statistics' },
+  { key: 'demographics', label: 'Demographics' }
 ];
 
 /** The audit trail has its own endpoint/shape, normalize it to match every other report. */
@@ -64,14 +136,14 @@ function DashboardReportView({ report }) {
             <div className="card" style={{ padding: 20 }}>
               <div className="section-title" style={{ marginBottom: 4 }}>GAS T-Score: Occupational Therapy</div>
               <div className="section-sub" style={{ marginBottom: 14 }}>{gasTrend.otCount} entries</div>
-              <TrendChart labels={gasTrend.months} series={[{ values: gasTrend.ot, color: '#0EA5E9' }]} height={150} />
+              <TrendChart labels={gasTrend.months} series={[{ values: gasTrend.ot, color: '#0EA5E9', toneColors: gasTrend.ot.map(gasScoreToneHex) }]} height={150} min={20} max={80} refLine={50} refLabel="Expected (50)" />
             </div>
           )}
           {gasTrend.speechCount > 0 && (
             <div className="card" style={{ padding: 20 }}>
               <div className="section-title" style={{ marginBottom: 4 }}>GAS T-Score: Speech-Language Therapy</div>
               <div className="section-sub" style={{ marginBottom: 14 }}>{gasTrend.speechCount} entries</div>
-              <TrendChart labels={gasTrend.months} series={[{ values: gasTrend.speech, color: '#F59E0B' }]} height={150} />
+              <TrendChart labels={gasTrend.months} series={[{ values: gasTrend.speech, color: '#F59E0B', toneColors: gasTrend.speech.map(gasScoreToneHex) }]} height={150} min={20} max={80} refLine={50} refLabel="Expected (50)" />
             </div>
           )}
           {gasTrend.otCount === 0 && gasTrend.speechCount === 0 && (
@@ -153,15 +225,28 @@ function DashboardReportView({ report }) {
 }
 
 export default function Reports({ toast, role = 'admin' }) {
+  const { user } = useAuth();
   // Client Milestone Progress and the Security Audit report are clinical /
   // security data, admin only. Staff gets the other four report types.
   const reportTypes = role === 'admin' ? REPORT_TYPES : REPORT_TYPES.filter(r => r.key !== 'audit' && r.key !== 'milestones');
 
-  const [type, setType] = useState('summary');
+  // Clinic letterhead (logo, name, address), same source as the printable
+  // invoice in Payments.jsx, so a printed report reads as the same document family.
+  const [brand, setBrand] = useState(null);
+  useEffect(() => { fetch('/api/settings/branding/public').then(r => r.json()).then(setBrand).catch(() => {}); }, []);
+
+  const [type, setType] = useState('dashboard');
   const [from, setFrom] = useState(startOfMonthStr());
   const [to, setTo] = useState(todayStr());
   const [loading, setLoading] = useState(false);
   const [report, setReport] = useState(null);
+  // Stamped once when a report is generated, not on every render, so a
+  // printed copy always shows exactly when it was produced.
+  const [generatedAt, setGeneratedAt] = useState(null);
+  // How many rows of a tabular report to show/print, 'all' (the default) keeps
+  // today's behavior; a smaller cap is for a quick on-screen look without
+  // needing to print/scroll through everything.
+  const [rowLimit, setRowLimit] = useState('all');
 
   // Client Milestone Progress is per-client (GAS trends aren't clinic-wide), only
   // fetch the client list when it's actually needed.
@@ -171,6 +256,22 @@ export default function Reports({ toast, role = 'admin' }) {
     if (type !== 'milestones' || clients.length) return;
     api('/clients').then(setClients).catch(() => setClients([]));
   }, [type, clients.length]);
+
+  // Report-specific filters, each only relevant (and shown) for its own report type.
+  const [auditTable, setAuditTable] = useState('');
+  const [auditAction, setAuditAction] = useState('');
+  const [reservationStatus, setReservationStatus] = useState('all');
+  const [dashboardSections, setDashboardSections] = useState(() => new Set(DASHBOARD_SECTIONS.map(s => s.key)));
+  const [txnStatus, setTxnStatus] = useState('');
+  const [txnChannel, setTxnChannel] = useState('');
+
+  function toggleDashboardSection(key) {
+    setDashboardSections(prev => {
+      const next = new Set(prev);
+      if (next.has(key)) next.delete(key); else next.add(key);
+      return next;
+    });
+  }
 
   async function generate(reportType, rangeFrom, rangeTo) {
     const t = reportType || type;
@@ -189,12 +290,35 @@ export default function Reports({ toast, role = 'admin' }) {
       toast('Select a client to generate this report', 'fa-triangle-exclamation');
       return;
     }
+    if (t === 'dashboard' && dashboardSections.size === 0) {
+      toast('Pick at least one section (Milestone Trends, Employee Statistics, or Demographics)', 'fa-triangle-exclamation');
+      return;
+    }
     setLoading(true);
     try {
-      const data = t === 'audit'
-        ? normalizeAudit(await api(`/audit?from=${f}&to=${tt}`), f, tt)
-        : await api(`/reports/${t}?from=${f}&to=${tt}` + (t === 'milestones' ? `&client_id=${clientId}` : ''));
+      let data;
+      if (t === 'audit') {
+        const qs = new URLSearchParams({ from: f, to: tt });
+        if (auditTable) qs.set('table', auditTable);
+        if (auditAction) qs.set('action', auditAction);
+        data = normalizeAudit(await api(`/audit?${qs}`), f, tt);
+      } else if (t === 'milestones') {
+        data = await api(`/reports/milestones?from=${f}&to=${tt}&client_id=${clientId}`);
+      } else if (t === 'reservations') {
+        data = await api(`/reports/reservations?from=${f}&to=${tt}&status=${reservationStatus}`);
+      } else if (t === 'dashboard') {
+        const sections = dashboardSections.size === DASHBOARD_SECTIONS.length ? 'all' : [...dashboardSections].join(',');
+        data = await api(`/reports/dashboard?from=${f}&to=${tt}&sections=${sections}`);
+      } else if (t === 'transactions') {
+        const qs = new URLSearchParams({ from: f, to: tt });
+        if (txnStatus) qs.set('status', txnStatus);
+        if (txnChannel) qs.set('channel', txnChannel);
+        data = await api(`/reports/transactions?${qs}`);
+      } else {
+        data = await api(`/reports/${t}?from=${f}&to=${tt}`);
+      }
       setReport(data);
+      setGeneratedAt(new Date());
     } catch (e) {
       toast(e.message || 'Failed to generate report', 'fa-triangle-exclamation');
     } finally {
@@ -223,18 +347,28 @@ export default function Reports({ toast, role = 'admin' }) {
     <div className="spa-page" id="spa-reports">
       <style>{`
         @media print {
-          body * { visibility: hidden; }
-          #report-print, #report-print * { visibility: visible; }
-          #report-print { position: fixed; top: 0; left: 0; width: 100%; padding: 24px; }
-          #report-print .no-print { display: none !important; }
+          @page { margin: 14mm 12mm; }
+          /* The old approach (visibility:hidden on everything + position:fixed on the
+             target) only ever printed one page, position:fixed clips to a single page
+             in every major print engine. Hiding the sidebar/nav/form with display:none
+             (which frees their layout space entirely) and letting the report card flow
+             normally in the document is what lets it paginate across as many physical
+             pages as the row count actually needs. */
+          #sidebar, #topnav, .no-print { display: none !important; }
+          #main { margin-left: 0 !important; }
+          #content { padding: 0 !important; }
+          #report-print-outer { overflow: visible !important; box-shadow: none !important; border: none !important; border-radius: 0 !important; margin: 0 !important; }
+          #report-print table { page-break-inside: auto; }
+          #report-print tr { page-break-inside: avoid; }
+          #report-print thead { display: table-header-group; }
         }
       `}</style>
 
-      <div style={{ marginBottom: 24 }}>
+      <div className="no-print" style={{ marginBottom: 24 }}>
         <h1 style={{ fontSize: 22, fontWeight: 700, color: '#0F172A', margin: '0 0 4px' }}>Report Generation &amp; Exporting</h1>
       </div>
 
-      <div style={{ display: 'grid', gridTemplateColumns: '1fr', maxWidth: 460, gap: 16, marginBottom: 24 }}>
+      <div className="no-print" style={{ display: 'grid', gridTemplateColumns: '1fr', maxWidth: 460, gap: 16, marginBottom: 24 }}>
         <div className="card" style={{ padding: '22px 20px' }}>
           <div className="section-title" style={{ marginBottom: 16 }}><i className="fa-solid fa-wand-magic-sparkles" style={{ color: '#0EA5E9', marginRight: 6 }} />Report Generator</div>
           <div style={{ marginBottom: 14 }}>
@@ -250,6 +384,60 @@ export default function Reports({ toast, role = 'admin' }) {
                 <option value="">- Select client -</option>
                 {clients.map(c => <option key={c.id} value={c.id}>{c.full_name}, {c.client_code}</option>)}
               </select>
+            </div>
+          )}
+          {type === 'audit' && (
+            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12, marginBottom: 14 }}>
+              <div>
+                <label className="form-label">Record</label>
+                <select className="form-select" value={auditTable} onChange={e => setAuditTable(e.target.value)}>
+                  {AUDIT_TABLE_OPTIONS.map(o => <option key={o.value} value={o.value}>{o.label}</option>)}
+                </select>
+              </div>
+              <div>
+                <label className="form-label">Action</label>
+                <select className="form-select" value={auditAction} onChange={e => setAuditAction(e.target.value)}>
+                  {AUDIT_ACTION_OPTIONS.map(o => <option key={o.value} value={o.value}>{o.label}</option>)}
+                </select>
+              </div>
+            </div>
+          )}
+          {type === 'reservations' && (
+            <div style={{ marginBottom: 14 }}>
+              <label className="form-label">Status</label>
+              <select className="form-select" value={reservationStatus} onChange={e => setReservationStatus(e.target.value)}>
+                {RESERVATION_STATUS_OPTIONS.map(o => <option key={o.value} value={o.value}>{o.label}</option>)}
+              </select>
+            </div>
+          )}
+          {type === 'dashboard' && (
+            <div style={{ marginBottom: 14 }}>
+              <label className="form-label">Sections</label>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+                {DASHBOARD_SECTIONS.map(s => (
+                  <label key={s.key} style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 13, color: '#334155', cursor: 'pointer' }}>
+                    <input type="checkbox" checked={dashboardSections.has(s.key)} onChange={() => toggleDashboardSection(s.key)} />
+                    {s.label}
+                  </label>
+                ))}
+              </div>
+              <div style={{ fontSize: 11.5, color: '#94A3B8', marginTop: 5 }}><i className="fa-solid fa-circle-info" style={{ marginRight: 5 }} />Check all three (or leave them all checked) to include the full overview.</div>
+            </div>
+          )}
+          {type === 'transactions' && (
+            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12, marginBottom: 14 }}>
+              <div>
+                <label className="form-label">Status</label>
+                <select className="form-select" value={txnStatus} onChange={e => setTxnStatus(e.target.value)}>
+                  {TXN_STATUS_OPTIONS.map(o => <option key={o.value} value={o.value}>{o.label}</option>)}
+                </select>
+              </div>
+              <div>
+                <label className="form-label">Method</label>
+                <select className="form-select" value={txnChannel} onChange={e => setTxnChannel(e.target.value)}>
+                  {TXN_CHANNEL_OPTIONS.map(o => <option key={o.value} value={o.value}>{o.label}</option>)}
+                </select>
+              </div>
             </div>
           )}
           <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12, marginBottom: 20 }}>
@@ -271,17 +459,52 @@ export default function Reports({ toast, role = 'admin' }) {
       )}
 
       {report && (
-        <div className="card" style={{ padding: '22px 0 0', marginBottom: 24 }}>
+        <div id="report-print-outer" className="card" style={{ padding: 0, marginBottom: 24, overflow: 'hidden' }}>
           <div id="report-print">
-            <div style={{ padding: '0 24px 16px', borderBottom: '1px solid #F1F5F9', display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: 10 }}>
-              <div>
-                <div className="section-title">{report.title}</div>
-                <div className="section-sub">{report.range.from} to {report.range.to}</div>
+            {/* Letterhead, matches the printable invoice in Payments.jsx: logo + clinic
+                identity top-left, a thick brand-colored bar underneath as the divider. */}
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', flexWrap: 'wrap', gap: 14, padding: '24px 24px 18px', borderBottom: '3px solid #1F4E9E' }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+                {brand?.logo_url
+                  ? <img src={brand.logo_url} alt={brand.clinic_name} style={{ width: 46, height: 46, borderRadius: 10, objectFit: 'cover', flexShrink: 0 }} />
+                  : <div style={{ width: 46, height: 46, borderRadius: 10, background: 'linear-gradient(135deg,#1F4E9E,#0D9488)', display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}>
+                      <i className="fa-solid fa-child-reaching" style={{ color: '#fff', fontSize: 19 }} />
+                    </div>}
+                <div>
+                  <div style={{ fontFamily: "'Poppins',sans-serif", fontSize: 18, fontWeight: 700, color: '#0F172A', lineHeight: 1.2 }}>{brand?.clinic_name || 'Bloomsdale Therapy Center'}</div>
+                  <div style={{ fontSize: 11.5, color: '#64748B', marginTop: 2 }}>Pediatric Speech &amp; Occupational Therapy</div>
+                  <div style={{ fontSize: 11, color: '#94A3B8', marginTop: 1 }}>{brand?.address || 'Imus, Cavite, Philippines'}</div>
+                </div>
               </div>
-              <div className="no-print" style={{ display: 'flex', gap: 8 }}>
-                {!report.gasEntries && !report.gasTrend && !report.employees && !report.demo && <button className="qa-btn" style={{ width: 'auto', padding: '8px 14px', fontSize: 12 }} onClick={exportCsv}><i className="fa-solid fa-file-csv" style={{ color: '#0D9488' }} /> Export CSV</button>}
-                <button className="qa-btn" style={{ width: 'auto', padding: '8px 14px', fontSize: 12 }} onClick={printReport}><i className="fa-solid fa-print" style={{ color: '#0284C7' }} /> Print / Save as PDF</button>
+              <div style={{ textAlign: 'right' }}>
+                <div style={{ fontFamily: "'Poppins',sans-serif", fontSize: 19, fontWeight: 700, color: '#1F4E9E', letterSpacing: '.03em' }}>{report.title}</div>
+                <div style={{ fontSize: 12, color: '#64748B', marginTop: 4 }}>{fmtLong(report.range.from)} – {fmtLong(report.range.to)}</div>
+                {generatedAt && <div style={{ fontSize: 10.5, color: '#94A3B8', marginTop: 2 }}>Generated {fmtGeneratedAt(generatedAt)}</div>}
               </div>
+            </div>
+
+            {/* Export actions, screen-only */}
+            <div className="no-print" style={{ padding: '12px 24px', borderBottom: '1px solid #F1F5F9', display: 'flex', justifyContent: 'flex-end', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+              {!report.gasEntries && !report.gasTrend && !report.employees && !report.demo && (
+                <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                  <span style={{ fontSize: 12, color: '#64748B' }}>Show</span>
+                  <input
+                    type="number" min="1" step="1"
+                    className="form-input"
+                    style={{ width: 66, height: 34, fontSize: 12, padding: '0 8px' }}
+                    placeholder="rows"
+                    disabled={rowLimit === 'all'}
+                    value={rowLimit === 'all' ? '' : rowLimit}
+                    onChange={e => setRowLimit(e.target.value)}
+                  />
+                  <label style={{ display: 'flex', alignItems: 'center', gap: 4, fontSize: 12, color: '#64748B', cursor: 'pointer', whiteSpace: 'nowrap' }}>
+                    <input type="checkbox" checked={rowLimit === 'all'} onChange={e => setRowLimit(e.target.checked ? 'all' : '25')} />
+                    All rows
+                  </label>
+                </div>
+              )}
+              {!report.gasEntries && !report.gasTrend && !report.employees && !report.demo && <button className="qa-btn" style={{ width: 'auto', padding: '8px 14px', fontSize: 12 }} onClick={exportCsv}><i className="fa-solid fa-file-csv" style={{ color: '#0D9488' }} /> Export CSV</button>}
+              <button className="qa-btn" style={{ width: 'auto', padding: '8px 14px', fontSize: 12 }} onClick={printReport}><i className="fa-solid fa-print" style={{ color: '#0284C7' }} /> Print / Save as PDF</button>
             </div>
 
             <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit,minmax(160px,1fr))', gap: 12, padding: '18px 24px' }}>
@@ -299,14 +522,22 @@ export default function Reports({ toast, role = 'admin' }) {
               </div>
             ) : (report.gasTrend || report.employees || report.demo) ? (
               <DashboardReportView report={report} />
-            ) : type === 'summary' ? null : (
+            ) : (() => {
+              // A custom row count can transiently be empty/invalid mid-typing (deleting
+              // the digits before entering a new value), gracefully show everything until
+              // the field holds a real positive number rather than showing zero rows.
+              const customN = parseInt(rowLimit, 10);
+              const shownRows = (rowLimit === 'all' || !Number.isFinite(customN) || customN <= 0)
+                ? report.rows
+                : report.rows.slice(0, customN);
+              return (
               <>
                 <div style={{ overflowX: 'auto' }}>
                   <table className="data-table">
                     <thead><tr>{report.columns.map((c, i) => <th key={c.key} style={i === 0 ? { paddingLeft: 24 } : undefined}>{c.label}</th>)}</tr></thead>
                     <tbody>
-                      {report.rows.length === 0 && <tr><td colSpan={report.columns.length} style={{ textAlign: 'center', padding: 24, fontSize: 12.5, color: '#94A3B8' }}>No data for this date range</td></tr>}
-                      {report.rows.map((row, i) => (
+                      {shownRows.length === 0 && <tr><td colSpan={report.columns.length} style={{ textAlign: 'center', padding: 24, fontSize: 12.5, color: '#94A3B8' }}>No data for this date range</td></tr>}
+                      {shownRows.map((row, i) => (
                         <tr key={i}>
                           {report.columns.map((c, ci) => <td key={c.key} style={ci === 0 ? { paddingLeft: 24, fontSize: 12.5 } : { fontSize: 12.5 }}>{row[c.key]}</td>)}
                         </tr>
@@ -314,9 +545,21 @@ export default function Reports({ toast, role = 'admin' }) {
                     </tbody>
                   </table>
                 </div>
-                <div style={{ padding: '14px 24px', fontSize: 12, color: '#64748B' }}>Showing {report.rows.length} row{report.rows.length === 1 ? '' : 's'}</div>
+                <div style={{ padding: '14px 24px', fontSize: 12, color: '#64748B' }}>
+                  {shownRows.length === report.rows.length
+                    ? <>Showing {report.rows.length} row{report.rows.length === 1 ? '' : 's'}</>
+                    : <>Showing {shownRows.length} of {report.rows.length} rows</>}
+                </div>
               </>
-            )}
+              );
+            })()}
+
+            {/* Printed footer, who/when generated it plus a confidentiality line, matches
+                the print-only footer note style used on the printable invoice. */}
+            <div style={{ marginTop: 8, padding: '14px 24px 20px', borderTop: '1px solid #E2E8F0', display: 'flex', justifyContent: 'space-between', flexWrap: 'wrap', gap: 8 }}>
+              <div style={{ fontSize: 10.5, color: '#94A3B8' }}>Generated by {user?.name || 'System'}{generatedAt ? ' · ' + fmtGeneratedAt(generatedAt) : ''}</div>
+              <div style={{ fontSize: 10.5, color: '#94A3B8' }}>{brand?.clinic_name || 'Bloomsdale Therapy Center'} · Confidential, for internal use only</div>
+            </div>
           </div>
         </div>
       )}

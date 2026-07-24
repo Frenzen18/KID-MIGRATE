@@ -18,7 +18,7 @@ export function ToastProvider({ children }) {
     <ToastCtx.Provider value={show}>
       {children}
       <div id="toast" className={toast ? 'show' : ''}>
-        <i className={'fa-solid ' + (toast?.icon || 'fa-circle-check')} style={{ color: '#0EA5E9' }} />
+        <i className={'fa-solid ' + (toast?.icon || 'fa-circle-check')} style={{ color: 'var(--color-primary)' }} />
         <span>{toast?.msg}</span>
       </div>
     </ToastCtx.Provider>
@@ -29,7 +29,7 @@ export const useToast = () => useContext(ToastCtx);
 /* ── Modal ── */
 export function Modal({ title, onClose, children, width }) {
   return (
-    <div className="modal-overlay" onClick={e => { if (e.target === e.currentTarget) onClose(); }}>
+    <div className="modal-overlay">
       <div className="modal-box" style={width ? { maxWidth: width } : undefined}>
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 18 }}>
           <h2 style={{ fontSize: 17, fontWeight: 700, color: '#0F172A', margin: 0, fontFamily: 'Poppins,sans-serif' }}>{title}</h2>
@@ -44,7 +44,7 @@ export function Modal({ title, onClose, children, width }) {
 }
 
 /* ── Stat card ── */
-export function StatCard({ label, value, change, up = true, icon, color = '#0EA5E9', bg = '#E0F2FE' }) {
+export function StatCard({ label, value, change, up = true, icon, color = 'var(--color-primary)', bg = '#E0F2FE' }) {
   return (
     <div className="card stat-card" style={{ borderTop: `3px solid ${color}` }}>
       <div style={{ display: 'flex', justifyContent: 'space-between' }}>

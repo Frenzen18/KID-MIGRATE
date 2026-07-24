@@ -88,7 +88,10 @@ export default function EditShiftModal({ data, closeModal, toast }) {
         )}
       </div>
       <div style={{ marginTop: 14, padding: '10px 13px', background: '#FFFBEB', border: '1px solid #FDE68A', borderRadius: 8, fontSize: 12, color: '#92400E', lineHeight: 1.5 }}>
-        <i className="fa-solid fa-circle-info" style={{ marginRight: 6 }} />Shifts control booking availability. Confirmed sessions that fall outside the new hours, or inside a new lunch break, are flagged for rescheduling and the parents are notified automatically.
+        <i className="fa-solid fa-circle-info" style={{ marginRight: 6 }} />
+        {data.isInformational
+          ? 'This is for schedule visibility only, it never affects booking availability or client capacity.'
+          : 'Shifts control booking availability. Confirmed sessions that fall outside the new hours, or inside a new lunch break, are flagged for rescheduling and the parents are notified automatically.'}
       </div>
       <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 10, marginTop: 18 }}><button className="btn-secondary" onClick={closeModal}>Cancel</button><button className="btn-primary" onClick={submitShift}><i className="fa-solid fa-floppy-disk" style={{ marginRight: 5 }} />Update Shift</button></div>
     </Modal>

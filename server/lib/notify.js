@@ -55,6 +55,17 @@ export async function notifyEvent(settingKey, { title, body, icon, target_user, 
   }
 }
 
+/** Resolves a therapist's own user id from their display name (as stored on a
+ *  reservation's therapist_name), so session events (new booking confirmed,
+ *  rescheduled, cancelled) can notify the assigned therapist directly, not
+ *  just the guardian. Returns null for an unassigned session (e.g. an
+ *  Initial Assessment nobody's been assigned to yet). */
+export async function therapistUserId(name) {
+  if (!name) return null;
+  const { data } = await db.from('profiles').select('id').eq('full_name', name).in('role', ['ot', 'speech']).maybeSingle();
+  return data?.id || null;
+}
+
 /** True unless the given delivery channel (e.g. 'channel_email') has been switched off in 12.4 Configuration. */
 export async function channelEnabled(channel) {
   try {

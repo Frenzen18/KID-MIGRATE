@@ -47,7 +47,7 @@ export default function SetPassword() {
     }
   }
 
-  const input = { width: '100%', padding: '12px 15px', border: '1px solid var(--color-border)', borderRadius: 8, fontFamily: 'Inter,sans-serif', fontSize: 14, outline: 'none', background: '#fff' };
+  const input = { width: '100%', padding: '12px 15px', border: '1px solid var(--color-border)', borderRadius: 10, fontFamily: 'Inter,sans-serif', fontSize: 14, outline: 'none', background: '#fff' };
   const label = { display: 'block', fontSize: 13, fontWeight: 600, color: 'var(--color-text-muted)', marginBottom: 8 };
 
   return (
@@ -61,7 +61,7 @@ export default function SetPassword() {
           </p>
 
           {err && (
-            <div style={{ background: '#FEF2F2', border: '1px solid #FECACA', borderRadius: 8, padding: '10px 14px', fontSize: 13, color: 'var(--color-danger)', marginBottom: 16, fontWeight: 600 }}>
+            <div style={{ background: '#FEF2F2', border: '1px solid #FECACA', borderRadius: 10, padding: '10px 14px', fontSize: 13, color: 'var(--color-danger)', marginBottom: 16, fontWeight: 600 }}>
               <i className="fa-solid fa-circle-exclamation" style={{ marginRight: 6 }} />{err}
             </div>
           )}
@@ -110,7 +110,7 @@ export default function SetPassword() {
                 Show passwords
               </label>
             </div>
-            <button disabled={busy} style={{ width: '100%', padding: 13, background: '#1F4E9E', color: '#fff', border: 'none', borderRadius: 8, fontFamily: 'Inter,sans-serif', fontSize: 15, fontWeight: 700, cursor: 'pointer', opacity: busy ? .7 : 1 }}>
+            <button disabled={busy} className="auth-submit-btn" style={{ width: '100%', padding: 13, background: 'var(--color-landing-primary)', color: '#fff', border: 'none', borderRadius: 10, fontFamily: 'Inter,sans-serif', fontSize: 15, fontWeight: 700, cursor: 'pointer', opacity: busy ? .7 : 1 }}>
               {busy ? 'Setting password…' : 'Set Password & Continue'}
             </button>
           </form>

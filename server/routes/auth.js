@@ -1,31 +1,17 @@
 import { Router } from 'express';
-import { rateLimit } from 'express-rate-limit';
 import { authClient, db } from '../supabase.js';
 import { requireAuth } from '../middleware/auth.js';
 import { normalizePhone } from '../phone.js';
 import { sendMail } from '../mailer.js';
 import { nextUserCode } from '../usercode.js';
-import { passwordPolicyError } from '../validate.js';
+import { passwordPolicyError, isValidName } from '../validate.js';
 import { logAudit } from '../lib/audit.js';
 import { setCode, getCode, deleteCode } from '../codes.js';
+import { makeLimiter, isProd, MIN } from '../lib/rateLimit.js';
 
 const router = Router();
 
 /* ── Rate limiting (per IP), slows brute force on passwords and reset codes ── */
-function makeLimiter(windowMs, max, message) {
-  return rateLimit({
-    windowMs,
-    max,
-    standardHeaders: true,
-    legacyHeaders: false,
-    handler: (req, res) => res.status(429).json({ error: message })
-  });
-}
-// Automatic by NODE_ENV, no manual step to remember before deploying.
-// Set NODE_ENV=production (or PORT/hosting platform usually does this for you)
-// to get the real windows; anything else gets short windows for local testing.
-const isProd = process.env.NODE_ENV === 'production';
-const MIN = 60 * 1000;
 const loginLimiter = makeLimiter(isProd ? 15 * MIN : 10 * 1000, 10, 'Too many login attempts. Please wait a while and try again.');
 const adminLoginLimiter = makeLimiter(isProd ? 15 * MIN : 10 * 1000, 5, 'Too many login attempts. Please wait a while and try again.');
 const signupLimiter = makeLimiter(isProd ? 60 * MIN : 10 * 1000, 5, 'Too many signup attempts. Please wait a while and try again.');
@@ -176,6 +162,9 @@ router.post('/signup', signupLimiter, async (req, res) => {
   }
   if (!first_name || !last_name || !email || !password) {
     return res.status(400).json({ error: 'First name, last name, email, and password are required' });
+  }
+  if (!isValidName(first_name) || !isValidName(last_name)) {
+    return res.status(400).json({ error: 'Names can only contain letters, spaces, hyphens, and apostrophes.' });
   }
   const full_name = `${first_name} ${last_name}`;
   const pwErr = passwordPolicyError(password);
@@ -456,7 +445,14 @@ router.post('/change-password', requireAuth, async (req, res) => {
   const { error: profileErr } = await db.from('profiles').update({ must_change_password: false }).eq('id', req.user.id);
   if (profileErr) return res.status(500).json({ error: 'Password updated, but failed to clear the change flag: ' + profileErr.message });
 
-  res.json({ ok: true, message: 'Password updated successfully.' });
+  // Changing the password via the admin API revokes the session tied to the
+  // access token the caller just authenticated with, every request right
+  // after this would otherwise 401 until they logged out and back in. Sign
+  // in again with the new password so the client can swap to a live token.
+  const { data: fresh, error: signInErr } = await authClient.auth.signInWithPassword({ email: req.user.email, password: newPassword });
+  if (signInErr || !fresh?.session) return res.status(500).json({ error: 'Password updated, but failed to start a new session. Please sign in again.' });
+
+  res.json({ ok: true, message: 'Password updated successfully.', token: fresh.session.access_token });
 });
 
 /** POST /api/auth/forgot-password  { email } */

@@ -49,6 +49,17 @@ export const ASSESSMENT_TYPES = ['Initial Assessment', 'Speech-Language Assessme
  *  booking requires picking that therapist before a day/time can be chosen. */
 export const REQUIRED_ROLE_FOR_TYPE = { 'Speech-Language Assessment': 'speech', 'Occupational Assessment': 'ot' };
 
+/** Which discipline a session type belongs to, null for discipline-agnostic
+ *  types (e.g. Initial Assessment). Mirrors server/routes/reservations.js's
+ *  own disciplineOfSessionType(), so a Combined client's regular "Occupational
+ *  Therapy"/"Speech Therapy" sessions are recognized as the same discipline as
+ *  an "Occupational Assessment"/"Speech-Language Assessment" booking. */
+export function disciplineOfSessionType(type) {
+  if (type === 'Occupational Therapy' || type === 'Occupational Assessment') return 'ot';
+  if (type === 'Speech Therapy' || type === 'Speech-Language Assessment') return 'speech';
+  return null;
+}
+
 /** "YYYY-MM-DD" → work_days index (Mon=0 … Sat=5, Sun=6). Mirrors server/routes/shifts.js. */
 export function workDayIndex(dateStr) {
   return (new Date(dateStr + 'T00:00:00Z').getUTCDay() + 6) % 7;
@@ -80,8 +91,9 @@ export function effectiveSlotAvailable(slot, serviceType) {
 }
 
 export const STATUS_PILL = {
-  awaiting_payment: { label: 'Awaiting Payment', cls: 'pill-amber' },
+  awaiting_payment: { label: 'Pending', cls: 'pill-amber' },
   pending: { label: 'Pending', cls: 'pill-amber' },
+  ongoing: { label: 'Ongoing', cls: 'pill-purple' },
   confirmed: { label: 'Confirmed', cls: 'pill-green' },
   rescheduled: { label: 'Rescheduled', cls: 'pill-blue' },
   cancelled: { label: 'Cancelled', cls: 'pill-gray' },
@@ -98,6 +110,55 @@ export function slotMinutes(t) {
   return h * 60 + parseInt(m[2], 10);
 }
 export function toMinutes(t) { return slotMinutes(t); }
+
+/** True if `r` is a confirmed/rescheduled session whose own hour is happening
+ *  right now (today, between its start time and start + its own duration_min,
+ *  falling back to SESSION_MIN only if that column is somehow missing), not
+ *  yet ended. Same "in progress" window the Book Client calendar's slotState()
+ *  already uses, exposed here so the Adjust & Cancel table and the slot-actions
+ *  modal can treat it as a real ("Ongoing") status too, not just a calendar
+ *  badge. Uses the reservation's real duration instead of always assuming 60
+ *  minutes, a longer (e.g. Combined OT+Speech) session must still show as
+ *  ongoing past the hour mark instead of quietly "ending" on the dashboard
+ *  while the actual session is still running. */
+export function isOngoingReservation(r) {
+  if (!r || !['confirmed', 'rescheduled'].includes(r.status)) return false;
+  if (r.date !== todayPH()) return false;
+  const mins = slotMinutes(r.time_slot);
+  if (mins == null) return false;
+  const now = nowPH();
+  const nowMin = now.getUTCHours() * 60 + now.getUTCMinutes();
+  const duration = r.duration_min || SESSION_MIN;
+  return nowMin >= mins && nowMin < mins + duration;
+}
+
+/** A confirmed/rescheduled booking whose scheduled time has fully ended with
+ *  nobody marking it Completed or No-Show. No-Show can only ever be marked
+ *  while a session is Ongoing (see SlotActionsModal's canMarkNoShow), so once
+ *  that window has closed without it, it's safe to treat the session as having
+ *  happened normally, display/filter-only, this never writes the real status. */
+export function isEffectivelyCompleted(r) {
+  if (!r || !['confirmed', 'rescheduled'].includes(r.status)) return false;
+  if (r.date < todayPH()) return true;
+  if (r.date > todayPH()) return false;
+  const mins = slotMinutes(r.time_slot);
+  if (mins == null) return false;
+  const now = nowPH();
+  const nowMin = now.getUTCHours() * 60 + now.getUTCMinutes();
+  const duration = r.duration_min || SESSION_MIN;
+  return nowMin >= mins + duration;
+}
+
+/** Single source of truth for "what status does this row actually show as" —
+ *  Ongoing and effectively-Completed both override the raw stored status for
+ *  display, used identically by the status filter and the row's own pill so
+ *  the two can never disagree (a row shown as Completed always also matches
+ *  the Completed filter, and never still matches Confirmed/Rescheduled). */
+export function effectiveStatusKey(r) {
+  if (isOngoingReservation(r)) return 'ongoing';
+  if (isEffectivelyCompleted(r)) return 'completed';
+  return r?.status;
+}
 
 /* Compute selection metadata for a YYYY-MM-DD string */
 export function computeSelection(dateStr) {

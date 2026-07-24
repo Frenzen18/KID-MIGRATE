@@ -1,12 +1,15 @@
 import { useMemo, useState } from 'react';
 
+// Same 8-slot categorical order used everywhere else (see --cat-1..8 in
+// shared.css), named domains get the first 4 slots, everything else falls
+// back to the full 8-slot cycle instead of its own separate 5-color set.
 const COLORS = {
-  'Fine Motor': '#0EA5E9',
-  'Speech & Language': '#F59E0B',
-  'Social & Behavioral': '#818CF8',
-  'Cognitive': '#10B981'
+  'Fine Motor': 'var(--cat-1)',
+  'Speech & Language': 'var(--cat-2)',
+  'Social & Behavioral': 'var(--cat-5)',
+  'Cognitive': 'var(--cat-3)'
 };
-const FALLBACK = ['#0EA5E9', '#F59E0B', '#818CF8', '#10B981', '#EC4899'];
+const FALLBACK = ['var(--cat-1)', 'var(--cat-2)', 'var(--cat-3)', 'var(--cat-4)', 'var(--cat-5)', 'var(--cat-6)', 'var(--cat-7)', 'var(--cat-8)'];
 
 /**
  * Multi-line development trend chart with hover tooltips showing the

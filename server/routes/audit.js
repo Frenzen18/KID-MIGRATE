@@ -3,11 +3,13 @@ import { db } from '../supabase.js';
 import { requireAuth, requireRole } from '../middleware/auth.js';
 
 const router = Router();
-router.use(requireAuth, requireRole('admin', 'staff'));
+router.use(requireAuth, requireRole('admin'));
+
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 /**
  * GET /api/audit?table=&action=&from=&to=&user=&limit=, the full
- * created_by/updated_by/approved_by trail, same for admin and staff.
+ * created_by/updated_by/approved_by trail, admin-only.
  * `user` filters to events performed BY that user (as creator, updater, or
  * approver), powers the "click a name" per-user activity view.
  */
@@ -20,7 +22,10 @@ router.get('/', async (req, res) => {
   if (req.query.action) q = q.eq('action', req.query.action);
   if (req.query.from) q = q.gte('created_at', req.query.from);
   if (req.query.to) q = q.lte('created_at', req.query.to);
-  if (req.query.user) q = q.or(`created_by.eq.${req.query.user},updated_by.eq.${req.query.user},approved_by.eq.${req.query.user}`);
+  if (req.query.user) {
+    if (!UUID_RE.test(req.query.user)) return res.status(400).json({ error: 'Invalid user id' });
+    q = q.or(`created_by.eq.${req.query.user},updated_by.eq.${req.query.user},approved_by.eq.${req.query.user}`);
+  }
 
   const { data, error } = await q;
   if (error) return res.status(500).json({ error: error.message });
@@ -34,6 +39,7 @@ router.get('/', async (req, res) => {
  * breakdown of record actions they've performed.
  */
 router.get('/user/:id/summary', async (req, res) => {
+  if (!UUID_RE.test(req.params.id)) return res.status(400).json({ error: 'Invalid user id' });
   const { data: profile, error: profileErr } = await db.from('profiles').select('id, full_name, role, email, active').eq('id', req.params.id).maybeSingle();
   if (profileErr) return res.status(500).json({ error: profileErr.message });
   if (!profile) return res.status(404).json({ error: 'User not found' });

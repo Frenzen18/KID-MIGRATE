@@ -3,9 +3,17 @@ import { db } from '../supabase.js';
 import { requireAuth, requireRole } from '../middleware/auth.js';
 import { logAudit } from '../lib/audit.js';
 import { notifyEvent } from '../lib/notify.js';
+import { sessionStartMs } from '../lib/reminders.js';
+import { generateGasSummary } from '../services/gemini.service.js';
+import { makeLimiter, isProd, MIN } from '../lib/rateLimit.js';
 
 const router = Router();
 router.use(requireAuth);
+
+// Each call is a real, billed Gemini request (and takes several seconds), cap
+// it per IP so the wizard's "Generate Summary" button can't be spammed into
+// a runaway Vertex AI bill.
+const aiSummaryLimiter = makeLimiter(isProd ? MIN : 10 * 1000, 10, 'Too many AI summary requests. Please wait a moment and try again.');
 
 const DISCIPLINES = ['Speech-Language Therapy', 'Occupational Therapy'];
 const ITEM_FIELDS = ['title', 'description', 'level_m2', 'level_m1', 'level_0', 'level_p1', 'level_p2', 'weight', 'sort_order'];
@@ -17,6 +25,27 @@ const ROLE_DISCIPLINE = { ot: 'Occupational Therapy', speech: 'Speech-Language T
 function todayPH() {
   const d = new Date(Date.now() + 8 * 60 * 60 * 1000);
   return d.toISOString().slice(0, 10);
+}
+
+/**
+ * Finds the exact booking a new GAS entry is for, so late-entry detection has
+ * something to compare against (see is_late in POST /entries below). Matched
+ * by client + session date + therapist, the same three fields already on the
+ * entry form, so no extra picker is needed, excluding any reservation some
+ * other entry already claimed and any that never actually happened.
+ */
+async function matchReservationForEntry(client_id, session_date, therapist_name, excludeEntryId) {
+  if (!therapist_name) return null;
+  const { data: candidates } = await db.from('reservations')
+    .select('id, date, time_slot')
+    .eq('client_id', client_id).eq('date', session_date).eq('therapist_name', therapist_name)
+    .not('status', 'in', '(cancelled,declined)');
+  if (!candidates?.length) return null;
+  let linkedQuery = db.from('gas_entries').select('reservation_id').in('reservation_id', candidates.map(c => c.id));
+  if (excludeEntryId) linkedQuery = linkedQuery.neq('id', excludeEntryId);
+  const { data: linkedRows } = await linkedQuery;
+  const linked = new Set((linkedRows || []).map(r => r.reservation_id));
+  return candidates.find(c => !linked.has(c.id)) || null;
 }
 
 /**
@@ -209,6 +238,38 @@ router.get('/entries', requireRole('admin', 'staff', 'ot', 'speech'), async (req
   res.json(entries.map(e => ({ ...e, scores: scoresByEntry[e.id] || [], client: clientById[e.client_id] || null })));
 });
 
+/** POST /api/gas/ai-summary, Gemini-generated plain-language draft for the Scorecard
+ *  Wizard's Step 3 "Generate Summary" button. Called BEFORE the entry is submitted
+ *  (there's no gas_entries row yet), so the wizard sends its own in-progress form
+ *  state as the request body instead of this looking anything up by id. Nothing is
+ *  persisted here, it only returns a draft for the therapist to review/edit. */
+router.post('/ai-summary', aiSummaryLimiter, requireRole('admin', 'staff', 'ot', 'speech'), async (req, res) => {
+  const b = req.body || {};
+  if (!b.clientName || !b.discipline || !b.sessionDate || !Array.isArray(b.goals)) {
+    return res.status(400).json({ error: 'clientName, discipline, sessionDate, and goals are required' });
+  }
+
+  const disciplineErr = assertDisciplineAccess(req.user, b.discipline);
+  if (disciplineErr) return res.status(403).json({ error: disciplineErr });
+
+  try {
+    const summary = await generateGasSummary({
+      clientName: b.clientName,
+      clientCode: b.clientCode || '',
+      discipline: b.discipline,
+      sessionDate: b.sessionDate,
+      therapistName: b.therapistName,
+      tScore: b.tScore,
+      goals: b.goals,
+      parentObservation: b.parentObservation,
+      remarks: b.remarks
+    });
+    res.json(summary);
+  } catch (e) {
+    res.status(502).json({ error: 'AI summary generation failed: ' + e.message });
+  }
+});
+
 /** POST /api/gas/entries, score a client's session against a questionnaire and compute the GAS T-score */
 router.post('/entries', requireRole('admin', 'staff', 'ot', 'speech'), async (req, res) => {
   const b = req.body || {};
@@ -249,11 +310,23 @@ router.post('/entries', requireRole('admin', 'staff', 'ot', 'speech'), async (re
 
   const gasScore = computeGasTScore(snapshotScores);
 
+  // Late = logged more than a day (24h from the session's actual start time)
+  // after the matched booking. No match (ad-hoc/manual historical entry, or
+  // no therapist_name given) means there's nothing to compare against, so
+  // is_late stays null rather than guessing.
+  const matchedReservation = await matchReservationForEntry(b.client_id, b.session_date, b.therapist_name);
+  let isLate = null;
+  if (matchedReservation) {
+    const startMs = sessionStartMs(matchedReservation.date, matchedReservation.time_slot);
+    if (startMs !== null) isLate = Date.now() > startMs + 24 * 60 * 60 * 1000;
+  }
+
   const { data: entry, error: entryErr } = await db.from('gas_entries').insert({
     client_id: b.client_id, questionnaire_id: set.id, discipline: set.discipline,
     questionnaire_name: set.name, session_date: b.session_date,
     therapist_name: b.therapist_name || null, remarks: b.remarks || null,
-    gas_t_score: gasScore, created_by: req.user.id
+    gas_t_score: gasScore, created_by: req.user.id,
+    reservation_id: matchedReservation?.id || null, is_late: isLate
   }).select().single();
   if (entryErr) return res.status(500).json({ error: entryErr.message });
 
@@ -261,13 +334,14 @@ router.post('/entries', requireRole('admin', 'staff', 'ot', 'speech'), async (re
     .insert(snapshotScores.map(s => ({ ...s, entry_id: entry.id }))).select();
   if (scoreErr) return res.status(500).json({ error: scoreErr.message });
 
+  const { data: client } = await db.from('clients').select('parent_id, full_name').eq('id', b.client_id).maybeSingle();
+
   await logAudit({
     table_name: 'gas_entries', record_id: entry.id, action: 'create',
-    description: `Submitted GAS assessment (${set.discipline}) for client ${b.client_id}, T-score ${gasScore}`,
+    description: `Submitted GAS assessment (${set.discipline}) for ${client?.full_name || 'client ' + b.client_id}, T-score ${gasScore}`,
     created_by: req.user.id
   });
 
-  const { data: client } = await db.from('clients').select('parent_id, full_name').eq('id', b.client_id).maybeSingle();
   if (client?.parent_id) {
     await notifyEvent('notify_scorecard_submitted', {
       title: 'New progress scorecard',
@@ -295,6 +369,21 @@ router.put('/entries/:id', requireRole('admin', 'staff', 'ot', 'speech'), async 
 
   const patch = {};
   for (const k of ['session_date', 'therapist_name', 'remarks']) if (k in b) patch[k] = b[k];
+
+  // Re-derive the booking link and late flag if the session date or therapist
+  // changed, against the same original submission time (created_at), not this
+  // edit's timestamp, editing an entry later must never itself make it "late".
+  if ('session_date' in patch || 'therapist_name' in patch) {
+    const sessionDate = patch.session_date ?? entry.session_date;
+    const therapistName = patch.therapist_name ?? entry.therapist_name;
+    const matchedReservation = await matchReservationForEntry(entry.client_id, sessionDate, therapistName, entry.id);
+    patch.reservation_id = matchedReservation?.id || null;
+    patch.is_late = null;
+    if (matchedReservation) {
+      const startMs = sessionStartMs(matchedReservation.date, matchedReservation.time_slot);
+      if (startMs !== null) patch.is_late = Date.parse(entry.created_at) > startMs + 24 * 60 * 60 * 1000;
+    }
+  }
 
   let snapshotScores = null;
   if (Array.isArray(b.scores) && b.scores.length) {
@@ -334,9 +423,10 @@ router.put('/entries/:id', requireRole('admin', 'staff', 'ot', 'speech'), async 
     scoreRows = existingScores || [];
   }
 
+  const { data: client } = await db.from('clients').select('full_name').eq('id', entry.client_id).maybeSingle();
   await logAudit({
     table_name: 'gas_entries', record_id: entry.id, action: 'update',
-    description: `Updated GAS assessment (${entry.discipline})` + (patch.gas_t_score != null ? `, T-score now ${patch.gas_t_score}` : ''),
+    description: `Updated GAS assessment (${entry.discipline}) for ${client?.full_name || 'client ' + entry.client_id}` + (patch.gas_t_score != null ? `, T-score now ${patch.gas_t_score}` : ''),
     updated_by: req.user.id
   });
 
@@ -354,9 +444,10 @@ router.delete('/entries/:id', requireRole('admin', 'staff', 'ot', 'speech'), asy
   const { error: archErr } = await db.from('gas_entries').update({ archived: true }).eq('id', entry.id);
   if (archErr) return res.status(500).json({ error: archErr.message });
 
+  const { data: client } = await db.from('clients').select('full_name').eq('id', entry.client_id).maybeSingle();
   await logAudit({
     table_name: 'gas_entries', record_id: entry.id, action: 'archive',
-    description: `Archived GAS assessment (${entry.discipline}) for client ${entry.client_id}`,
+    description: `Archived GAS assessment (${entry.discipline}) for ${client?.full_name || 'client ' + entry.client_id}`,
     updated_by: req.user.id
   });
 

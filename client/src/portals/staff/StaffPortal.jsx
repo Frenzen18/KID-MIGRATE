@@ -9,25 +9,23 @@ import AdminModals from '../admin/AdminModals.jsx';
 
 import Dashboard from '../admin/pages/Dashboard.jsx';
 import Clients from '../admin/pages/Clients.jsx';
-import Cms from '../admin/pages/Cms.jsx';
 import Reservations from '../admin/pages/Reservations.jsx';
 import Payments from '../admin/pages/Payments.jsx';
 import Notifications from '../admin/pages/Notifications.jsx';
 import Reports from '../admin/pages/Reports.jsx';
-import Audit from '../admin/pages/Audit.jsx';
 
 /**
  * Staff portal, same real, working features as Admin for Dashboard, Client
- * Records, Booking, Payment, Notifications, Security Audit Logs, and Report
- * Generation (reuses the exact admin page components, so there's only one
- * implementation to keep correct). Things staff can't do, enforced both here
- * (hidden UI) and server-side (the actual authorization boundary):
+ * Records, Booking, Payment, Notifications, and Report Generation (reuses the
+ * exact admin page components, so there's only one implementation to keep
+ * correct). Things staff can't do, enforced both here (hidden UI) and
+ * server-side (the actual authorization boundary):
  *   - Notifications: no "schedule for later", immediate send only.
  *   - Reports: no Client Milestone Progress reports.
- * User/account management, Milestone Scoreboard, and Settings stay admin-only
- * and are not part of this portal.
+ * User/account management, Milestone Scoreboard, Security Audit Logs, and
+ * Settings stay admin-only and are not part of this portal.
  */
-const STAFF_PAGE_KEYS = ['dashboard', 'clients', 'cms', 'reservations', 'payments', 'notifications', 'audit', 'reports'];
+const STAFF_PAGE_KEYS = ['dashboard', 'clients', 'reservations', 'payments', 'notifications', 'reports'];
 
 /** "5 min ago" / "3 hrs ago" / "Jun 27" style relative timestamp for notification rows. */
 function relativeTime(iso) {
@@ -152,15 +150,14 @@ export default function StaffPortal() {
           {nav_item('dashboard', 'fa-gauge-high', 'Dashboard')}
           <div className="nav-label">Management</div>
           {nav_item('clients', 'fa-child', 'Client Records')}
-          {nav_item('cms', 'fa-layer-group', 'CMS')}
           {nav_item('reservations', 'fa-calendar-check', 'Booking and Appointment')}
           {nav_item('payments', 'fa-credit-card', 'Payment')}
           <div className="nav-label">System</div>
           {nav_item('notifications', 'fa-bell', 'Notifications')}
-          {nav_item('audit', 'fa-file-shield', 'Security Audit Logs')}
           {nav_item('reports', 'fa-chart-bar', 'Reports')}
         </nav>
       </aside>
+      <div id="sidebar-backdrop" className={sidebarOpen ? 'open' : ''} onClick={() => setSidebarOpen(false)} />
 
       <div id="main">
         <header id="topnav">
@@ -168,7 +165,7 @@ export default function StaffPortal() {
           <div style={{ flex: 1 }} />
           <div style={{ display: 'flex', alignItems: 'center', gap: 10, position: 'relative' }}>
             <div style={{ position: 'relative' }}>
-              <button className="topnav-btn" data-tip="Notifications" id="notif-btn" onClick={toggleNotif}><i className="fa-regular fa-bell" />{notifDot && <span className="notif-dot" />}</button>
+              <button className="topnav-btn" id="notif-btn" onClick={toggleNotif}><i className="fa-regular fa-bell" />{notifDot && <span className="notif-dot" />}</button>
               <div id="notif-panel" className={notifOpen ? 'open' : ''}>
                 <div style={{ padding: '14px 16px', borderBottom: '1px solid #F1F5F9', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
                   <span style={{ fontFamily: "'Poppins',sans-serif", fontWeight: 600, fontSize: 14, color: '#0F172A' }}>
@@ -218,11 +215,9 @@ export default function StaffPortal() {
         <main id="content">
           {page === 'dashboard' && <Dashboard {...pageProps} />}
           {page === 'clients' && <Clients {...pageProps} />}
-          {page === 'cms' && <Cms {...pageProps} />}
           {page === 'reservations' && <Reservations {...pageProps} />}
           {page === 'payments' && <Payments {...pageProps} />}
           {page === 'notifications' && <Notifications {...pageProps} />}
-          {page === 'audit' && <Audit toast={toast} />}
           {page === 'reports' && <Reports toast={toast} role="staff" />}
         </main>
       </div>

@@ -7,12 +7,15 @@
  *   scores: { [itemId]: level } map, as edited by the session sliders
  */
 
-const GOAL_COLORS = ['#0EA5E9', '#F59E0B', '#818CF8', '#10B981', '#EC4899', '#EF4444', '#14B8A6', '#A855F7'];
+// Same 8-slot categorical order used everywhere else (see --cat-1..8 in shared.css).
+const GOAL_COLORS = ['var(--cat-1)', 'var(--cat-2)', 'var(--cat-3)', 'var(--cat-4)', 'var(--cat-5)', 'var(--cat-6)', 'var(--cat-7)', 'var(--cat-8)'];
 
+// Level sign is state (above/at/below expected outcome), not identity, so it
+// draws from the reserved status colors instead of the categorical set above.
 function levelTone(level) {
-  if (level > 0) return '#10B981';
-  if (level === 0) return '#0EA5E9';
-  return '#EF4444';
+  if (level > 0) return 'var(--color-success)';
+  if (level === 0) return 'var(--color-info)';
+  return 'var(--color-danger-strong)';
 }
 
 export default function GoalLevelBarChart({ items, scores }) {

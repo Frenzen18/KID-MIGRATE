@@ -13,7 +13,7 @@ export const passwordMeetsPolicy = pw => RULES.every(r => r.test(pw || ''));
 export default function PasswordChecklist({ password }) {
   const pw = password || '';
   return (
-    <div style={{ marginTop: 8, display: 'flex', flexDirection: 'column', gap: 5 }}>
+    <div style={{ marginTop: 6, display: 'grid', gridTemplateColumns: '1fr 1fr', rowGap: 4, columnGap: 10 }}>
       {RULES.map(({ label, test }) => {
         const ok = test(pw);
         return (

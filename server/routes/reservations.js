@@ -1,9 +1,9 @@
 import { Router } from 'express';
 import { db } from '../supabase.js';
 import { requireAuth, requireRole } from '../middleware/auth.js';
-import { getTherapistShifts, hourLabel, labelToHour, worksOn, isLunchHour } from './shifts.js';
+import { getTherapistShifts, hourLabel, labelToHour, worksOn, isLunchHour, workDayIndex } from './shifts.js';
 import { logAudit } from '../lib/audit.js';
-import { notifyEvent } from '../lib/notify.js';
+import { notifyEvent, therapistUserId } from '../lib/notify.js';
 import { rateFor, genInvoiceNo } from '../lib/billing.js';
 
 const router = Router();
@@ -14,10 +14,30 @@ const PAYMENT_METHODS = ['Unpaid', 'Cash', 'Check', 'QRPh'];
 // A guardian's self-booking holds the slot as 'awaiting_payment' for this
 // long while they complete QRPh checkout, server/lib/bookingHolds.js sweeps
 // and releases any that expire unpaid.
-export const BOOKING_HOLD_MINUTES = 15;
+export const BOOKING_HOLD_MINUTES = 10;
 
 /** Assessment session types that must go to a therapist of a specific discipline. */
 const SESSION_TYPE_ROLE = { 'Speech-Language Assessment': 'speech', 'Occupational Assessment': 'ot' };
+
+/** Which discipline a session type belongs to, null for discipline-agnostic types (e.g. Initial Assessment). */
+function disciplineOfSessionType(type) {
+  if (type === 'Occupational Therapy' || type === 'Occupational Assessment') return 'ot';
+  if (type === 'Speech Therapy' || type === 'Speech-Language Assessment') return 'speech';
+  return null;
+}
+
+/**
+ * A Combined client carries two independent assigned therapists (one OT, one
+ * Speech), never a single shared field, this picks the one matching the
+ * session type being booked. An OT-only/Speech-only client simply only ever
+ * has their own discipline's column populated.
+ */
+function assignedTherapistFor(client, sessionType) {
+  const d = disciplineOfSessionType(sessionType);
+  if (d === 'ot') return client.assigned_ot_therapist_name || null;
+  if (d === 'speech') return client.assigned_speech_therapist_name || null;
+  return null;
+}
 
 /**
  * A confirmed session should have an invoice waiting for it. Creates one
@@ -37,7 +57,7 @@ async function ensurePaymentForReservation(reservation, actorId, opts = {}) {
   // to complete before it's really paid; picking it here just records intent.
   const status = (method === 'Cash' || method === 'Check') ? 'paid' : 'pending';
 
-  const invoice_no = genInvoiceNo();
+  const invoice_no = await genInvoiceNo();
   const { data, error } = await db.from('payments').insert({
     client_id: reservation.client_id,
     reservation_id: reservation.id,
@@ -47,7 +67,17 @@ async function ensurePaymentForReservation(reservation, actorId, opts = {}) {
     invoice_no,
     paid_at: status === 'paid' ? new Date().toISOString() : null
   }).select().single();
-  if (error) { console.error('Auto-invoice creation failed:', error.message); return null; }
+  if (error) {
+    // A concurrent call (e.g. a double-clicked Confirm) can lose the race here to
+    // the DB's own unique index instead of the SELECT check above, return the
+    // row the other call just created rather than erroring or double-invoicing.
+    if (error.code === '23505') {
+      const { data: winner } = await db.from('payments').select('id').eq('reservation_id', reservation.id).maybeSingle();
+      if (winner) return winner;
+    }
+    console.error('Auto-invoice creation failed:', error.message);
+    return null;
+  }
 
   await logAudit({
     table_name: 'payments', record_id: data.id, action: 'create',
@@ -57,18 +87,108 @@ async function ensurePaymentForReservation(reservation, actorId, opts = {}) {
   return data;
 }
 
+/** True if `date` is marked as a clinic-wide closure (see clinic_holidays table,
+ *  managed on the Employee Scheduling tab). No booking of any kind, Initial
+ *  Assessment or therapist-shift-driven, is allowed on a holiday. */
+async function isClinicHoliday(date) {
+  const { data, error } = await db.from('clinic_holidays').select('label').eq('date', date).maybeSingle();
+  if (error) {
+    // Don't silently treat a broken query (e.g. the clinic_holidays table not
+    // existing yet, migration_clinic_holidays.sql not run) as "it's a holiday",
+    // that would wrongly close every single day clinic-wide. Log and proceed
+    // as if there's no holiday, the real fix is running the migration.
+    console.error('isClinicHoliday query failed:', error.message);
+    return null;
+  }
+  return data || null;
+}
+
 /**
- * Availability for one date, driven by therapist shifts:
- * an hourly slot exists wherever at least one therapist is on shift, and its
- * capacity is the number of therapists covering that hour. `reservation` is
- * kept (first active booking) for backward compatibility with older views.
+ * The clinic's own operating hours for a given date (weekday/Saturday start+end
+ * hour, from branding_settings, editable on the Employee Scheduling tab),
+ * Sunday is always closed clinic-wide. Returns null when closed or unconfigured.
+ */
+async function getClinicHours(date) {
+  const wd = workDayIndex(date); // Mon=0 … Sat=5, Sun=6
+  if (wd === 6) return null;
+  const { data, error } = await db.from('branding_settings')
+    .select('clinic_weekday_start_hour, clinic_weekday_end_hour, clinic_saturday_start_hour, clinic_saturday_end_hour')
+    .eq('id', 1).maybeSingle();
+  if (error) {
+    // Same reasoning as isClinicHoliday: a broken query (e.g. the
+    // clinic_weekday_start_hour etc. columns not existing yet,
+    // migration_clinic_operating_hours.sql not run) must not be silently
+    // read as "the clinic has no configured hours, so it's closed" for
+    // every single day. Surface it loudly instead.
+    throw new Error('Failed to read clinic operating hours: ' + error.message + '. Has migration_clinic_operating_hours.sql been run?');
+  }
+  if (!data) return null;
+  const [startH, endH] = wd === 5
+    ? [data.clinic_saturday_start_hour, data.clinic_saturday_end_hour]
+    : [data.clinic_weekday_start_hour, data.clinic_weekday_end_hour];
+  if (startH == null || endH == null || startH >= endH) return null;
+  return { start: startH, end: endH };
+}
+
+/**
+ * Availability for one date. Regular sessions/discipline-specific assessments
+ * stay driven by therapist shifts: an hourly slot exists wherever at least one
+ * therapist is on shift, and its capacity is the number of therapists covering
+ * that hour. `reservation` is kept (first active booking) for backward
+ * compatibility with older views.
  *
  * `restrictToTherapist` (a therapist's full_name) narrows this to just that
  * one therapist's own shift, used when the client being booked already has
  * an "Assigned Therapist" set, so slots/booking only ever reflect that
  * therapist's schedule instead of the whole clinic's combined capacity.
+ *
+ * `serviceType === 'Initial Assessment'` instead generates slots from the
+ * clinic's own operating hours (getClinicHours), not any specific therapist's
+ * shift, intake has no dedicated therapist yet, so it shouldn't be limited to
+ * whichever hours a therapist happens to already be scheduled. Capacity is a
+ * flat 1 per hour, clinic-wide (same "only one Initial Assessment per hour"
+ * rule as before).
  */
-async function slotInfoForDate(date, restrictToTherapist) {
+async function slotInfoForDate(date, restrictToTherapist, serviceType) {
+  if (await isClinicHoliday(date)) return [];
+
+  if (serviceType === 'Initial Assessment') {
+    const hours = await getClinicHours(date);
+    if (!hours) return [];
+    const { data: active, error } = await db.from('reservations')
+      .select('*, clients(full_name, client_code)')
+      .eq('date', date).eq('session_type', 'Initial Assessment')
+      .not('status', 'in', '(cancelled,declined)');
+    if (error) throw new Error(error.message);
+
+    // Clinic hours alone don't know about lunch, that's a per-therapist-shift
+    // setting, an hour only actually has nobody free for intake when every
+    // therapist on shift that hour is at lunch (an hour with no shift covering
+    // it at all is left bookable, same clinic-wide-not-shift-dependent
+    // reasoning as the rest of this branch).
+    const shiftsAll = (await getTherapistShifts()).filter(s => worksOn(s, date));
+
+    const slots = [];
+    for (let h = hours.start; h < hours.end; h++) {
+      const booked = (active || []).filter(r => labelToHour(r.time_slot) === h);
+      const onShift = shiftsAll.filter(s => s.start_hour <= h && h < s.end_hour);
+      const lunchBreak = onShift.length > 0 && onShift.every(s => isLunchHour(s, h));
+      slots.push({
+        time_slot: hourLabel(h),
+        hour: h,
+        capacity: 1,
+        booked: booked.length,
+        available: lunchBreak ? 0 : Math.max(0, 1 - booked.length),
+        therapists: [],
+        lunch_break: lunchBreak,
+        lunch_therapists: lunchBreak ? onShift.map(s => s.name) : [],
+        reservations: booked,
+        reservation: booked[0] || null
+      });
+    }
+    return slots;
+  }
+
   // Only therapists working on this weekday contribute capacity
   // (availability matrix: work_days Mon–Sat; Sundays the clinic is closed).
   let shifts = (await getTherapistShifts()).filter(s => worksOn(s, date));
@@ -158,14 +278,22 @@ function isSlotPastPH(dateStr, timeLabel) {
 
 /** GET /api/reservations?date=YYYY-MM-DD  or  ?from=&to=  or  ?status=pending */
 router.get('/', async (req, res) => {
-  let q = db.from('reservations').select('*, clients(full_name, client_code), payments(id, amount, status)').order('date').order('time_slot');
+  let q = db.from('reservations').select('*, clients(full_name, client_code, guardian_name, guardian_phone), payments(id, amount, status, method, invoice_no, paid_at)').order('date').order('time_slot');
   if (req.query.date) q = q.eq('date', req.query.date);
   if (req.query.from) q = q.gte('date', req.query.from);
   if (req.query.to) q = q.lte('date', req.query.to);
   if (req.query.status) q = q.eq('status', req.query.status);
   if (req.query.client_id) q = q.eq('client_id', req.query.client_id);
   if (req.query.therapist_name) q = q.eq('therapist_name', req.query.therapist_name);
-  if (req.user.role === 'parent') q = q.eq('created_by', req.user.id);
+  if (req.user.role === 'parent') {
+    // Scope to the parent's own children (by client_id), not just bookings they
+    // personally created, a session staff/admin booked directly for the child
+    // must still show up here, otherwise the parent portal's "already have an
+    // upcoming booking" conflict check never sees it and lets them double-book.
+    const { data: myClients } = await db.from('clients').select('id').eq('parent_id', req.user.id);
+    const clientIds = (myClients || []).map(c => c.id);
+    q = clientIds.length ? q.in('client_id', clientIds) : q.eq('id', '00000000-0000-0000-0000-000000000000');
+  }
   const { data, error } = await q;
   if (error) return res.status(500).json({ error: error.message });
   res.json(data);
@@ -184,10 +312,19 @@ router.get('/slots', async (req, res) => {
   try {
     let restrictToTherapist = req.query.therapist_name || null;
     if (!restrictToTherapist && req.query.client_id) {
-      const { data: client } = await db.from('clients').select('assigned_therapist_name').eq('id', req.query.client_id).maybeSingle();
-      restrictToTherapist = client?.assigned_therapist_name || null;
+      const { data: client } = await db.from('clients')
+        .select('assigned_ot_therapist_name, assigned_speech_therapist_name, therapy_type')
+        .eq('id', req.query.client_id).maybeSingle();
+      if (client) {
+        // session_type tells us which of the client's two assigned therapists to
+        // scope by; without it (e.g. an unassigned/single-discipline client) fall
+        // back to whichever single discipline the client actually has.
+        const fallbackType = req.query.session_type
+          || (client.therapy_type === 'OT' ? 'Occupational Therapy' : client.therapy_type === 'Speech' ? 'Speech Therapy' : null);
+        restrictToTherapist = assignedTherapistFor(client, fallbackType);
+      }
     }
-    res.json(await slotInfoForDate(date, restrictToTherapist));
+    res.json(await slotInfoForDate(date, restrictToTherapist, req.query.session_type));
   } catch (e) {
     res.status(500).json({ error: e.message });
   }
@@ -211,11 +348,16 @@ router.post('/', async (req, res) => {
     return res.status(400).json({ error: 'Bookings must be made at least a day in advance.' });
   }
 
+  const holiday = await isClinicHoliday(b.date);
+  if (holiday) {
+    return res.status(400).json({ error: `The clinic is closed on ${b.date}${holiday.label ? ` (${holiday.label})` : ''}.` });
+  }
+
   // Every booking needs the client's own record: to enforce that a parent may
   // only book for their own child, and, absent an explicit staff selection, to
   // keep the booking on the client's already-assigned therapist (if any)
   // rather than the clinic's combined capacity.
-  const { data: bookingClient } = await db.from('clients').select('id, parent_id, full_name, assigned_therapist_name, therapy_type').eq('id', b.client_id).maybeSingle();
+  const { data: bookingClient } = await db.from('clients').select('id, parent_id, full_name, assigned_ot_therapist_name, assigned_speech_therapist_name, therapy_type').eq('id', b.client_id).maybeSingle();
   if (!bookingClient) return res.status(404).json({ error: 'Client not found' });
   if (req.user.role === 'parent' && bookingClient.parent_id !== req.user.id) {
     return res.status(403).json({ error: 'Not your child record' });
@@ -224,7 +366,7 @@ router.post('/', async (req, res) => {
   // Initial Assessment is for intake, only clients with neither a therapy type
   // nor an assigned therapist yet are eligible, anyone with either already set
   // has already been through intake.
-  if (b.session_type === 'Initial Assessment' && (bookingClient.assigned_therapist_name || bookingClient.therapy_type)) {
+  if (b.session_type === 'Initial Assessment' && (bookingClient.assigned_ot_therapist_name || bookingClient.assigned_speech_therapist_name || bookingClient.therapy_type)) {
     return res.status(400).json({ error: `${bookingClient.full_name} already has a therapy type and/or therapist assigned, not eligible for an Initial Assessment.` });
   }
   // Once a therapy type is assigned, intake is done, only sessions matching
@@ -237,7 +379,7 @@ router.post('/', async (req, res) => {
     }
   }
 
-  const assignedTherapist = bookingClient.assigned_therapist_name || null;
+  const assignedTherapist = assignedTherapistFor(bookingClient, b.session_type);
   const isStaff = ['admin', 'staff'].includes(req.user.role);
   // An explicit staff selection (e.g. the therapist picked for a specific
   // assessment) always wins, it must never be silently swapped for the
@@ -245,13 +387,15 @@ router.post('/', async (req, res) => {
   // only applies as a fallback when staff didn't request anyone specific.
   const requestedTherapist = (isStaff && b.therapist_name) ? b.therapist_name : assignedTherapist;
 
-  const slots = await slotInfoForDate(b.date, requestedTherapist);
+  const slots = await slotInfoForDate(b.date, requestedTherapist, b.session_type);
   const slot = slots.find(s => s.time_slot === b.time_slot);
   if (!slot) {
     return res.status(400).json({
       error: requestedTherapist
         ? `${requestedTherapist} is not on shift at that time.`
-        : 'That time is outside the therapists\' shift hours.'
+        : b.session_type === 'Initial Assessment'
+          ? 'That time is outside the clinic\'s operating hours.'
+          : 'That time is outside the therapists\' shift hours.'
     });
   }
 
@@ -272,30 +416,71 @@ router.post('/', async (req, res) => {
 
   // A client can only have one active booking per day, regardless of who's
   // booking (parent or staff), two sessions the same day isn't a real schedule.
+  // Exception: a Combined client may hold one OT session AND one Speech session
+  // on the same day (different disciplines), just never two of the same discipline.
+  const newDiscipline = disciplineOfSessionType(b.session_type);
   const { data: sameDayForChild } = await db.from('reservations')
-    .select('id')
+    .select('id, session_type, time_slot')
     .eq('client_id', b.client_id)
     .eq('date', b.date)
-    .not('status', 'in', '(cancelled,declined)')
-    .limit(1);
-  if (sameDayForChild?.length) {
-    return res.status(409).json({ error: `${bookingClient.full_name} already has a booking on ${b.date}.` });
+    .not('status', 'in', '(cancelled,declined)');
+
+  // A client can never be in two sessions at the exact same time, regardless of
+  // discipline or therapist, this applies even to a Combined client's one-OT
+  // + one-Speech-per-day exception below.
+  if ((sameDayForChild || []).some(r => r.time_slot === b.time_slot)) {
+    return res.status(409).json({ error: `${bookingClient.full_name} already has a session booked at ${b.time_slot} on ${b.date}.` });
+  }
+
+  // Two siblings booked into the same discipline at the exact same date+time
+  // would need the same kind of specialist at once (OT vs OT, Speech vs
+  // Speech), that's the real conflict, not the date+time alone, different
+  // disciplines (e.g. one sibling's Initial Assessment and another's
+  // Occupational Therapy) are entirely separate processes and can coexist
+  // in the same slot just fine.
+  if (bookingClient.parent_id && newDiscipline) {
+    const { data: siblingClients } = await db.from('clients').select('id, full_name').eq('parent_id', bookingClient.parent_id).neq('id', b.client_id);
+    const siblingIds = (siblingClients || []).map(c => c.id);
+    if (siblingIds.length) {
+      const { data: siblingSameSlot } = await db.from('reservations')
+        .select('id, client_id, session_type')
+        .in('client_id', siblingIds)
+        .eq('date', b.date)
+        .eq('time_slot', b.time_slot)
+        .not('status', 'in', '(cancelled,declined)');
+      const siblingConflict = (siblingSameSlot || []).find(r => disciplineOfSessionType(r.session_type) === newDiscipline);
+      if (siblingConflict) {
+        const conflictChild = siblingClients.find(c => c.id === siblingConflict.client_id);
+        return res.status(409).json({ error: `${conflictChild?.full_name || 'Another one of your children'} already has a session booked at ${b.time_slot} on ${b.date}. Please pick a different time for ${bookingClient.full_name}.` });
+      }
+    }
+  }
+
+  const sameDayConflict = (bookingClient.therapy_type === 'Both' && newDiscipline)
+    ? (sameDayForChild || []).some(r => disciplineOfSessionType(r.session_type) === newDiscipline)
+    : (sameDayForChild || []).length > 0;
+  if (sameDayConflict) {
+    return res.status(409).json({ error: `${bookingClient.full_name} already has a${newDiscipline ? ' ' + (newDiscipline === 'speech' ? 'Speech-Language' : 'Occupational') : ''} booking on ${b.date}.` });
   }
 
   // Anti-spam: a parent may only have ONE active (pending/confirmed/rescheduled)
-  // upcoming request per child at a time. They must wait for staff to act on it
-  // (or cancel it themselves) before submitting another, prevents flooding the
-  // queue with repeat requests for the same therapist/slot.
+  // upcoming booking per child at a time (per discipline, for a Combined child),
+  // whether it's their own self-booked request or one staff/admin booked
+  // directly for the child, either way the child's already got a session that
+  // date/discipline. They must wait for it to pass (or cancel it) before
+  // submitting another, prevents flooding the queue with repeat requests for
+  // the same therapist/slot.
   if (req.user.role === 'parent') {
     const today = todayPH();
     const { data: activeForChild } = await db.from('reservations')
-      .select('id, date, time_slot, status')
+      .select('id, date, time_slot, status, session_type')
       .eq('client_id', b.client_id)
-      .eq('created_by', req.user.id)
       .in('status', ['awaiting_payment', 'pending', 'confirmed', 'rescheduled'])
-      .gte('date', today)
-      .limit(1);
-    if (activeForChild?.length) {
+      .gte('date', today);
+    const activeConflict = (bookingClient.therapy_type === 'Both' && newDiscipline)
+      ? (activeForChild || []).some(r => disciplineOfSessionType(r.session_type) === newDiscipline)
+      : (activeForChild || []).length > 0;
+    if (activeConflict) {
       return res.status(409).json({
         error: 'You already have an upcoming booking for this child. Only one booking per child is allowed at a time, cancel it, or wait until its date has passed, before booking another.'
       });
@@ -326,8 +511,14 @@ router.post('/', async (req, res) => {
   }
 
   // An explicit staff request (or the client's Assigned Therapist as fallback)
-  // always wins; otherwise auto-assign a free on-shift therapist.
-  const assigned = assignTherapist(slot, requestedTherapist);
+  // always wins; otherwise auto-assign a free on-shift therapist. Initial
+  // Assessment is intake/triage, though, the whole point is to decide which
+  // therapist/discipline fits the child, so unless staff explicitly picked
+  // someone, it's intentionally left unassigned rather than random-assigned,
+  // an admin/staff assigns a therapist afterward based on the assessment.
+  const assigned = (b.session_type === 'Initial Assessment' && !requestedTherapist)
+    ? { therapist_name: null }
+    : assignTherapist(slot, requestedTherapist);
   if (assigned.error) return res.status(409).json({ error: assigned.error });
 
   // Belt-and-suspenders double-booking guard: match date + time_slot + therapist
@@ -359,7 +550,23 @@ router.post('/', async (req, res) => {
     created_by: req.user.id,
     payment_expires_at: holdExpiresAt
   }).select().single();
-  if (error) return res.status(500).json({ error: error.message });
+  if (error) {
+    // A concurrent request can slip past the SELECT-based clash checks above
+    // and lose the race at the DB's unique index instead, this turns that
+    // into the same friendly message the earlier checks already use rather
+    // than a raw Postgres constraint-violation string. Initial Assessment has
+    // no therapist_name to blame (reservations_active_ia_slot_uidx instead of
+    // reservations_active_slot_therapist_uidx), so it gets its own message
+    // matching the read-based check above.
+    if (error.code === '23505') {
+      return res.status(409).json({
+        error: b.session_type === 'Initial Assessment'
+          ? 'Only one Initial Assessment can be booked per hour.'
+          : `${assigned.therapist_name || 'That therapist'} already has a session at ${b.time_slot}.`
+      });
+    }
+    return res.status(500).json({ error: error.message });
+  }
 
   await logAudit({
     table_name: 'reservations', record_id: data.id, action: 'create',
@@ -383,6 +590,17 @@ router.post('/', async (req, res) => {
       amount: Number.isFinite(amt) ? amt : undefined,
       method: b.payment_method || 'Cash'
     });
+    // Staff bookings confirm immediately, the therapist's schedule just
+    // changed right now, not on some future payment/approval step, tell them.
+    const therapistId = await therapistUserId(data.therapist_name);
+    if (therapistId) {
+      await notifyEvent('notify_session_change', {
+        title: 'New session booked',
+        body: `${bookingClient.full_name}'s ${data.session_type} session on ${data.date} at ${data.time_slot} was added to your schedule.`,
+        icon: 'fa-calendar-check',
+        target_user: therapistId
+      });
+    }
   } else {
     // Guardian's slot is held, but not theirs yet, invoice is generated now
     // so the client can immediately kick off QRPh checkout for it.
@@ -425,32 +643,74 @@ router.put('/:id', async (req, res) => {
     if (b.date <= todayPH()) {
       return res.status(400).json({ error: 'Bookings must be made at least a day in advance.' });
     }
-    // A client can only have one active booking per day, same rule as new bookings.
-    const { data: sameDayForChild } = await db.from('reservations')
-      .select('id')
-      .eq('client_id', existing.client_id)
-      .eq('date', b.date)
-      .neq('id', req.params.id)
-      .not('status', 'in', '(cancelled,declined)')
-      .limit(1);
-    if (sameDayForChild?.length) {
-      return res.status(409).json({ error: `This client already has a booking on ${b.date}.` });
+    const holiday = await isClinicHoliday(b.date);
+    if (holiday) {
+      return res.status(400).json({ error: `The clinic is closed on ${b.date}${holiday.label ? ` (${holiday.label})` : ''}.` });
     }
     // A reschedule keeps the reservation's own already-assigned therapist
     // whenever possible, it must never be silently swapped for the client's
     // Assigned Therapist field (that's an unrelated default for new bookings,
     // not a reason to reassign an existing session's therapist).
-    const { data: reschedClient } = await db.from('clients').select('assigned_therapist_name').eq('id', existing.client_id).maybeSingle();
-    const assignedTherapist = reschedClient?.assigned_therapist_name || null;
+    const { data: reschedClient } = await db.from('clients')
+      .select('parent_id, assigned_ot_therapist_name, assigned_speech_therapist_name, therapy_type')
+      .eq('id', existing.client_id).maybeSingle();
+    const assignedTherapist = assignedTherapistFor(reschedClient || {}, existing.session_type);
     const scopeTherapist = existing.therapist_name || assignedTherapist;
 
-    const slots = await slotInfoForDate(b.date, scopeTherapist);
+    // A client can only have one active booking per day, same rule as new bookings,
+    // with the same Combined-client exception (one OT + one Speech same day is fine).
+    const existingDiscipline = disciplineOfSessionType(existing.session_type);
+    const { data: sameDayForChild } = await db.from('reservations')
+      .select('id, session_type, time_slot')
+      .eq('client_id', existing.client_id)
+      .eq('date', b.date)
+      .neq('id', req.params.id)
+      .not('status', 'in', '(cancelled,declined)');
+
+    // A client can never be in two sessions at the exact same time, regardless of
+    // discipline or therapist, even under the Combined one-OT + one-Speech-per-day exception.
+    if ((sameDayForChild || []).some(r => r.time_slot === b.time_slot)) {
+      return res.status(409).json({ error: `This client already has a session booked at ${b.time_slot} on ${b.date}.` });
+    }
+
+    // Same same-discipline sibling check as new bookings: rescheduling this
+    // child into a slot where a sibling already has the SAME discipline is a
+    // real conflict (both need the same kind of specialist at once), a
+    // different discipline is a separate process and can share the slot.
+    if (reschedClient?.parent_id && existingDiscipline) {
+      const { data: siblingClients } = await db.from('clients').select('id, full_name').eq('parent_id', reschedClient.parent_id).neq('id', existing.client_id);
+      const siblingIds = (siblingClients || []).map(c => c.id);
+      if (siblingIds.length) {
+        const { data: siblingSameSlot } = await db.from('reservations')
+          .select('id, client_id, session_type')
+          .in('client_id', siblingIds)
+          .eq('date', b.date)
+          .eq('time_slot', b.time_slot)
+          .not('status', 'in', '(cancelled,declined)');
+        const siblingConflict = (siblingSameSlot || []).find(r => disciplineOfSessionType(r.session_type) === existingDiscipline);
+        if (siblingConflict) {
+          const conflictChild = siblingClients.find(c => c.id === siblingConflict.client_id);
+          return res.status(409).json({ error: `${conflictChild?.full_name || 'A sibling'} already has a session booked at ${b.time_slot} on ${b.date}. Please pick a different time.` });
+        }
+      }
+    }
+
+    const sameDayConflict = (reschedClient?.therapy_type === 'Both' && existingDiscipline)
+      ? (sameDayForChild || []).some(r => disciplineOfSessionType(r.session_type) === existingDiscipline)
+      : (sameDayForChild || []).length > 0;
+    if (sameDayConflict) {
+      return res.status(409).json({ error: `This client already has a booking on ${b.date}.` });
+    }
+
+    const slots = await slotInfoForDate(b.date, scopeTherapist, existing.session_type);
     const slot = slots.find(s => s.time_slot === b.time_slot);
     if (!slot) {
       return res.status(400).json({
         error: scopeTherapist
           ? `${scopeTherapist} is not on shift at that time.`
-          : 'That time is outside the therapists\' shift hours.'
+          : existing.session_type === 'Initial Assessment'
+            ? 'That time is outside the clinic\'s operating hours.'
+            : 'That time is outside the therapists\' shift hours.'
       });
     }
     // No rescheduling into a lunch break, checked explicitly for a clear reason.
@@ -463,7 +723,7 @@ router.put('/:id', async (req, res) => {
     }
     // Ignore this reservation itself when counting the target slot's load.
     slot.reservations = slot.reservations.filter(r => r.id !== req.params.id);
-    slot.available = Math.max(0, slot.therapists.length - slot.reservations.length);
+    slot.available = Math.max(0, slot.capacity - slot.reservations.length);
 
     if (existing.session_type === 'Initial Assessment' && slot.reservations.some(r => r.session_type === 'Initial Assessment')) {
       return res.status(409).json({ error: 'Only one Initial Assessment can be booked per hour.' });
@@ -471,12 +731,18 @@ router.put('/:id', async (req, res) => {
     if (slot.available <= 0) return res.status(409).json({ error: 'Target slot is fully booked' });
 
     // Keep the same therapist if they're free at the new time, else fall back
-    // to the client's Assigned Therapist, else auto-assign.
+    // to the client's Assigned Therapist, else auto-assign, except an Initial
+    // Assessment, which stays unassigned (same reasoning as new bookings above)
+    // rather than picking someone at random just because it's moving times.
     const keep = existing.therapist_name && slot.therapists.includes(existing.therapist_name)
       && !slot.reservations.some(r => r.therapist_name === existing.therapist_name);
     const assigned = keep
       ? { therapist_name: existing.therapist_name }
-      : (assignedTherapist ? { therapist_name: assignedTherapist } : assignTherapist(slot, null));
+      : assignedTherapist
+        ? { therapist_name: assignedTherapist }
+        : existing.session_type === 'Initial Assessment'
+          ? { therapist_name: null }
+          : assignTherapist(slot, null);
     if (assigned.error) return res.status(409).json({ error: assigned.error });
 
     // Belt-and-suspenders double-booking guard, same as new bookings: match
@@ -499,7 +765,20 @@ router.put('/:id', async (req, res) => {
   }
 
   const { data, error } = await db.from('reservations').update(patch).eq('id', req.params.id).select().single();
-  if (error) return res.status(500).json({ error: error.message });
+  if (error) {
+    // Same concurrent-request race as new bookings: a reschedule can slip past
+    // the SELECT-based clash checks above and lose the race at the DB's unique
+    // index instead, this turns that into the same friendly message rather
+    // than a raw Postgres constraint-violation string.
+    if (error.code === '23505') {
+      return res.status(409).json({
+        error: patch.time_slot && existing.session_type === 'Initial Assessment'
+          ? 'Only one Initial Assessment can be booked per hour.'
+          : `${patch.therapist_name || 'That therapist'} already has a session at ${b.time_slot}.`
+      });
+    }
+    return res.status(500).json({ error: error.message });
+  }
 
   if (patch.status === 'confirmed') {
     await logAudit({
@@ -518,6 +797,16 @@ router.put('/:id', async (req, res) => {
         body: `Your session on ${data.date} at ${data.time_slot} has been confirmed.`,
         icon: 'fa-calendar-check',
         target_user: existing.created_by
+      });
+    }
+    const confirmedTherapistId = await therapistUserId(data.therapist_name);
+    if (confirmedTherapistId) {
+      const { data: confClient } = await db.from('clients').select('full_name').eq('id', data.client_id).maybeSingle();
+      await notifyEvent('notify_session_change', {
+        title: 'New session confirmed',
+        body: `${confClient?.full_name || 'A client'}'s ${data.session_type} session on ${data.date} at ${data.time_slot} is now confirmed on your schedule.`,
+        icon: 'fa-calendar-check',
+        target_user: confirmedTherapistId
       });
     }
   } else {
@@ -558,14 +847,40 @@ router.put('/:id', async (req, res) => {
         await notifyEvent('notify_session_cancellation', { title: 'Booking cancelled by parent', body, icon: 'fa-calendar-xmark', target_role: 'admin' });
         await notifyEvent('notify_session_cancellation', { title: 'Booking cancelled by parent', body, icon: 'fa-calendar-xmark', target_role: 'staff' });
       }
-    } else if (patch.date && patch.time_slot && existing.created_by) {
-      // Staff rescheduled an existing booking to a new date/time.
-      await notifyEvent('notify_reschedule_request', {
-        title: 'Session rescheduled',
-        body: `Your session has been moved to ${data.date} at ${data.time_slot}.`,
-        icon: 'fa-arrows-rotate',
-        target_user: existing.created_by
-      });
+      // The assigned therapist had this on their own schedule too, whoever
+      // cancelled/declined it (parent or staff), they need it off their calendar.
+      if (existing.status === 'confirmed' || existing.status === 'rescheduled') {
+        const cancelledTherapistId = await therapistUserId(existing.therapist_name);
+        if (cancelledTherapistId) {
+          await notifyEvent('notify_session_cancellation', {
+            title: `Session ${verb}`,
+            body: `The session on ${existing.date} at ${existing.time_slot} was ${verb}${b.notes ? ': ' + b.notes : '.'}`,
+            icon: 'fa-calendar-xmark',
+            target_user: cancelledTherapistId
+          });
+        }
+      }
+    } else if (patch.date && patch.time_slot) {
+      if (existing.created_by) {
+        // Staff rescheduled an existing booking to a new date/time.
+        await notifyEvent('notify_reschedule_request', {
+          title: 'Session rescheduled',
+          body: `Your session has been moved to ${data.date} at ${data.time_slot}.`,
+          icon: 'fa-arrows-rotate',
+          target_user: existing.created_by
+        });
+      }
+      // Notify whoever's actually assigned after the move, same person as
+      // before if they kept their slot, someone new if reassignment happened.
+      const reschedTherapistId = await therapistUserId(patch.therapist_name);
+      if (reschedTherapistId) {
+        await notifyEvent('notify_reschedule_request', {
+          title: 'Session rescheduled',
+          body: `A session was moved to ${data.date} at ${data.time_slot} on your schedule.`,
+          icon: 'fa-arrows-rotate',
+          target_user: reschedTherapistId
+        });
+      }
     }
   }
 

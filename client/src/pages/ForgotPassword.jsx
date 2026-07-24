@@ -11,6 +11,8 @@ export default function ForgotPassword() {
   const [code, setCode] = useState('');
   const [newPassword, setNewPassword] = useState('');
   const [confirmPassword, setConfirmPassword] = useState('');
+  const [showPw, setShowPw] = useState(false);
+  const [showConfirm, setShowConfirm] = useState(false);
   const [err, setErr] = useState('');
   const [busy, setBusy] = useState(false);
 
@@ -60,8 +62,21 @@ export default function ForgotPassword() {
     }
   }
 
-  const input = { width: '100%', padding: '14px 16px', border: '1.5px solid var(--color-border)', borderRadius: 8, fontFamily: 'Inter,sans-serif', fontSize: 14, outline: 'none', background: '#fff', boxSizing: 'border-box', transition: 'border-color .2s' };
+  const input = { width: '100%', padding: '14px 16px', border: '1.5px solid var(--color-border)', borderRadius: 10, fontFamily: 'Inter,sans-serif', fontSize: 14, outline: 'none', background: '#fff', boxSizing: 'border-box', transition: 'border-color .2s' };
   const label = { display: 'block', fontSize: 13, fontWeight: 600, color: 'var(--color-text-muted)', marginBottom: 8 };
+
+  function eyeToggle(shown, setShown) {
+    return (
+      <button
+        type="button"
+        onClick={() => setShown(s => !s)}
+        aria-label={shown ? 'Hide password' : 'Show password'}
+        style={{ position: 'absolute', right: 12, top: '50%', transform: 'translateY(-50%)', background: 'none', border: 'none', padding: 4, cursor: 'pointer', color: '#9AA0AE', display: 'flex', alignItems: 'center' }}
+      >
+        <i className={'fa-solid ' + (shown ? 'fa-eye-slash' : 'fa-eye')} style={{ fontSize: 15 }} />
+      </button>
+    );
+  }
 
   return (
     <div className="login-body">
@@ -78,7 +93,7 @@ export default function ForgotPassword() {
               </p>
 
               {err && (
-                <div style={{ background: '#FEF2F2', border: '1px solid #FECACA', borderRadius: 8, padding: '10px 14px', fontSize: 13, color: 'var(--color-danger)', marginBottom: 16, fontWeight: 600 }}>
+                <div style={{ background: '#FEF2F2', border: '1px solid #FECACA', borderRadius: 10, padding: '10px 14px', fontSize: 13, color: 'var(--color-danger)', marginBottom: 16, fontWeight: 600 }}>
                   <i className="fa-solid fa-circle-exclamation" style={{ marginRight: 6 }} />{err}
                 </div>
               )}
@@ -88,7 +103,7 @@ export default function ForgotPassword() {
                   <label style={label}>Email Address</label>
                   <input style={input} type="email" value={email} onChange={e => setEmail(e.target.value)} placeholder="you@email.com" required />
                 </div>
-                <button disabled={busy} style={{ width: '100%', padding: 13, background: '#1F4E9E', color: '#fff', border: 'none', borderRadius: 8, fontFamily: 'Inter,sans-serif', fontSize: 15, fontWeight: 700, cursor: 'pointer', opacity: busy ? .7 : 1 }}>
+                <button className="auth-submit-btn" disabled={busy} style={{ width: '100%', padding: 13, background: 'var(--color-landing-primary)', color: '#fff', border: 'none', borderRadius: 10, fontFamily: 'Inter,sans-serif', fontSize: 15, fontWeight: 700, cursor: 'pointer', opacity: busy ? .7 : 1 }}>
                   {busy ? 'Sending…' : 'Send Reset Code'}
                 </button>
               </form>
@@ -104,7 +119,7 @@ export default function ForgotPassword() {
               </p>
 
               {err && (
-                <div style={{ background: '#FEF2F2', border: '1px solid #FECACA', borderRadius: 8, padding: '10px 14px', fontSize: 13, color: 'var(--color-danger)', marginBottom: 16, fontWeight: 600 }}>
+                <div style={{ background: '#FEF2F2', border: '1px solid #FECACA', borderRadius: 10, padding: '10px 14px', fontSize: 13, color: 'var(--color-danger)', marginBottom: 16, fontWeight: 600 }}>
                   <i className="fa-solid fa-circle-exclamation" style={{ marginRight: 6 }} />{err}
                 </div>
               )}
@@ -122,13 +137,13 @@ export default function ForgotPassword() {
                     required
                   />
                 </div>
-                <button disabled={busy || code.length !== 6} style={{ width: '100%', padding: 13, background: '#1F4E9E', color: '#fff', border: 'none', borderRadius: 8, fontFamily: 'Inter,sans-serif', fontSize: 15, fontWeight: 700, cursor: 'pointer', opacity: (busy || code.length !== 6) ? .7 : 1 }}>
+                <button className="auth-submit-btn" disabled={busy || code.length !== 6} style={{ width: '100%', padding: 13, background: 'var(--color-landing-primary)', color: '#fff', border: 'none', borderRadius: 10, fontFamily: 'Inter,sans-serif', fontSize: 15, fontWeight: 700, cursor: 'pointer', opacity: (busy || code.length !== 6) ? .7 : 1 }}>
                   {busy ? 'Verifying…' : 'Verify Code'}
                 </button>
               </form>
 
               <div style={{ textAlign: 'center', marginTop: 16 }}>
-                <button onClick={() => { setErr(''); sendCode({ preventDefault: () => {} }); }} style={{ background: 'none', border: 'none', color: '#1F4E9E', fontSize: 13, fontWeight: 600, cursor: 'pointer' }}>
+                <button onClick={() => { setErr(''); sendCode({ preventDefault: () => {} }); }} style={{ background: 'none', border: 'none', color: 'var(--color-landing-primary)', fontSize: 13, fontWeight: 600, cursor: 'pointer' }}>
                   Didn't receive it? Resend code
                 </button>
               </div>
@@ -144,7 +159,7 @@ export default function ForgotPassword() {
               </p>
 
               {err && (
-                <div style={{ background: '#FEF2F2', border: '1px solid #FECACA', borderRadius: 8, padding: '10px 14px', fontSize: 13, color: 'var(--color-danger)', marginBottom: 16, fontWeight: 600 }}>
+                <div style={{ background: '#FEF2F2', border: '1px solid #FECACA', borderRadius: 10, padding: '10px 14px', fontSize: 13, color: 'var(--color-danger)', marginBottom: 16, fontWeight: 600 }}>
                   <i className="fa-solid fa-circle-exclamation" style={{ marginRight: 6 }} />{err}
                 </div>
               )}
@@ -152,14 +167,20 @@ export default function ForgotPassword() {
               <form onSubmit={resetPassword}>
                 <div style={{ marginBottom: 18 }}>
                   <label style={label}>New Password</label>
-                  <input style={input} type="password" value={newPassword} onChange={e => setNewPassword(e.target.value)} placeholder="Create a password" required />
+                  <div style={{ position: 'relative' }}>
+                    <input style={{ ...input, paddingRight: 40 }} type={showPw ? 'text' : 'password'} value={newPassword} onChange={e => setNewPassword(e.target.value)} placeholder="Create a password" required />
+                    {eyeToggle(showPw, setShowPw)}
+                  </div>
                   <PasswordChecklist password={newPassword} />
                 </div>
                 <div style={{ marginBottom: 22 }}>
                   <label style={label}>Confirm New Password</label>
-                  <input style={input} type="password" value={confirmPassword} onChange={e => setConfirmPassword(e.target.value)} placeholder="Re-enter password" required />
+                  <div style={{ position: 'relative' }}>
+                    <input style={{ ...input, paddingRight: 40 }} type={showConfirm ? 'text' : 'password'} value={confirmPassword} onChange={e => setConfirmPassword(e.target.value)} placeholder="Re-enter password" required />
+                    {eyeToggle(showConfirm, setShowConfirm)}
+                  </div>
                 </div>
-                <button disabled={busy} style={{ width: '100%', padding: 13, background: '#1F4E9E', color: '#fff', border: 'none', borderRadius: 8, fontFamily: 'Inter,sans-serif', fontSize: 15, fontWeight: 700, cursor: 'pointer', opacity: busy ? .7 : 1 }}>
+                <button className="auth-submit-btn" disabled={busy} style={{ width: '100%', padding: 13, background: 'var(--color-landing-primary)', color: '#fff', border: 'none', borderRadius: 10, fontFamily: 'Inter,sans-serif', fontSize: 15, fontWeight: 700, cursor: 'pointer', opacity: busy ? .7 : 1 }}>
                   {busy ? 'Resetting…' : 'Reset Password'}
                 </button>
               </form>
@@ -176,7 +197,7 @@ export default function ForgotPassword() {
               <p style={{ fontSize: 14, color: 'var(--color-text-muted)', lineHeight: 1.6, marginBottom: 24 }}>
                 Your password has been successfully changed. You can now sign in with your new password.
               </p>
-              <button onClick={() => nav('/login')} style={{ width: '100%', padding: 13, background: '#1F4E9E', color: '#fff', border: 'none', borderRadius: 8, fontFamily: 'Inter,sans-serif', fontSize: 15, fontWeight: 700, cursor: 'pointer' }}>
+              <button className="auth-submit-btn" onClick={() => nav('/login')} style={{ width: '100%', padding: 13, background: 'var(--color-landing-primary)', color: '#fff', border: 'none', borderRadius: 10, fontFamily: 'Inter,sans-serif', fontSize: 15, fontWeight: 700, cursor: 'pointer' }}>
                 Go to Sign In
               </button>
             </div>
@@ -184,7 +205,7 @@ export default function ForgotPassword() {
 
           {step !== 4 && (
             <div style={{ textAlign: 'center', marginTop: 24 }}>
-              <Link to="/login" style={{ color: '#1F4E9E', fontSize: 13, fontWeight: 600, textDecoration: 'none' }}>
+              <Link to="/login" style={{ color: 'var(--color-landing-primary)', fontSize: 13, fontWeight: 600, textDecoration: 'none' }}>
                 <i className="fa-solid fa-arrow-left" style={{ marginRight: 5 }} />Back to Sign In
               </Link>
             </div>

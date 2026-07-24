@@ -2,19 +2,23 @@ import { useState, useEffect, useCallback } from 'react';
 import { api } from '../../../api.js';
 import { Modal } from '../../../components/ui.jsx';
 import GasProgressChart from '../../../components/GasProgressChart.jsx';
+import { formatPhoneDisplay } from '../../../phoneInput.js';
 
 /* == page: clients == */
 
-/* Color palette for avatars (cycle based on index) */
+/* Color palette for avatars (cycle based on index), the same 8-slot
+   categorical order used for role badges and chart series elsewhere
+   (see --cat-1..8 in shared.css), one system instead of a separate
+   invented palette per page. */
 const AVATAR_COLORS = [
-  { bg: '#DBEAFE', color: '#2563EB' },
-  { bg: '#CCFBF1', color: '#0F766E' },
-  { bg: '#FEF3C7', color: '#D97706' },
-  { bg: '#EDE9FE', color: '#818CF8' },
-  { bg: '#F3E8FF', color: '#9333EA' },
-  { bg: '#E0F2FE', color: '#0284C7' },
-  { bg: '#DCFCE7', color: '#16A34A' },
-  { bg: '#FFE4E6', color: '#E11D48' },
+  { bg: '#E0F2FE', color: 'var(--cat-1)' },
+  { bg: '#FEF3C7', color: 'var(--cat-2)' },
+  { bg: '#CCFBF1', color: 'var(--cat-3)' },
+  { bg: '#FCE7F3', color: 'var(--cat-4)' },
+  { bg: '#EDE9FE', color: 'var(--cat-5)' },
+  { bg: '#CFFAFE', color: 'var(--cat-6)' },
+  { bg: '#FCE7F3', color: 'var(--cat-7)' },
+  { bg: '#E0E7FF', color: 'var(--cat-8)' },
 ];
 
 const STATUS_PILLS = {
@@ -38,6 +42,17 @@ function formatDate(iso) {
   return new Date(iso).toLocaleDateString('en-PH', { month: 'short', day: 'numeric', year: 'numeric' });
 }
 
+// Parent observation is folded into the stored remarks text as its own leading
+// paragraph on submit (see Milestones.jsx's submitEntry), split it back out to
+// show it as its own field, mirrors Milestones.jsx's own splitGasRemarks().
+function splitGasRemarks(remarks) {
+  const paragraphs = (remarks || '').split('\n\n');
+  const parentIdx = paragraphs.findIndex(p => p.startsWith('Parent observation: '));
+  const parentObservation = parentIdx !== -1 ? paragraphs[parentIdx].slice('Parent observation: '.length) : '';
+  const rest = paragraphs.filter((_, i) => i !== parentIdx).join('\n\n');
+  return { parentObservation, remarks: rest };
+}
+
 function mapClient(c, idx) {
   const initials = (c.full_name || '').split(' ').map(w => w[0]).join('').toUpperCase().slice(0, 2);
   const av = AVATAR_COLORS[idx % AVATAR_COLORS.length];
@@ -46,6 +61,12 @@ function mapClient(c, idx) {
   const st = STATUS_PILLS[statusKey] || STATUS_PILLS.active;
   const therapyType = c.therapy_type || null;
   const thxPill = therapyType === 'Speech' ? 'pill pill-teal' : therapyType ? 'pill pill-blue' : '';
+  // Combined clients carry two independent assignments, the discipline suffix
+  // is only shown when both are relevant (i.e. actually Combined), a single-discipline
+  // client's own therapy-type pill already conveys that.
+  const thxParts = [];
+  if (c.assigned_ot_therapist_name) thxParts.push(therapyType === 'Both' ? c.assigned_ot_therapist_name + ' (OT)' : c.assigned_ot_therapist_name);
+  if (c.assigned_speech_therapist_name) thxParts.push(therapyType === 'Both' ? c.assigned_speech_therapist_name + ' (Speech)' : c.assigned_speech_therapist_name);
 
   return {
     ...c,
@@ -58,15 +79,16 @@ function mapClient(c, idx) {
     meta: 'Age ' + ageLabel.replace(' yrs', '') + ' · ' + (c.gender || '–'),
     dob_formatted: formatDate(c.dob),
     guardian: c.guardian_name || '–',
-    contact: c.guardian_contact || '–',
+    contact: c.guardian_contact ? formatPhoneDisplay(c.guardian_contact) : '–',
     enrolled: formatDate(c.created_at),
     therapy: therapyType,
     thxPill,
     thxType: therapyType,
-    thxName: c.assigned_therapist_name || '–',
+    thxName: thxParts.join(' · ') || '–',
+    thxOt: c.assigned_ot_therapist_name || '',
+    thxSpeech: c.assigned_speech_therapist_name || '',
     status: st.label,
     statusPill: st.pill,
-    dx: c.diagnosis || '–',
   };
 }
 
@@ -130,12 +152,18 @@ export default function Clients({ go, toast, openModal, role = 'admin', scopeToT
   const [loading, setLoading] = useState(true);
   const [clientQuery, setClientQuery] = useState('');
   const [therapyFilter, setTherapyFilter] = useState('');
+  const [showArchived, setShowArchived] = useState(false);
   const [selectedId, setSelectedId] = useState(null);
   const [profileVisible, setProfileVisible] = useState(false);
   const [profile, setProfile] = useState(null);
   const [historyName, setHistoryName] = useState('');
   const [gasEntries, setGasEntries] = useState([]);
   const [gasLoading, setGasLoading] = useState(false);
+  // Session History Remarks, which session entry's remarks the dropdown below GAS Progress is showing.
+  const [remarksEntryId, setRemarksEntryId] = useState(null);
+  // Defaults to the most recent entry whenever a client's entries (re)load, gasEntries is
+  // already sorted session_date descending by the /gas/entries API.
+  useEffect(() => { setRemarksEntryId(gasEntries[0]?.id ?? null); }, [gasEntries]);
   // Development & Functional Information, the admin-configurable field list
   // used to render/edit this section of the Client Clinical Record.
   const [devFields, setDevFields] = useState([]);
@@ -144,7 +172,7 @@ export default function Clients({ go, toast, openModal, role = 'admin', scopeToT
   const fetchClients = useCallback(async () => {
     try {
       setLoading(true);
-      const data = await api('/clients');
+      const data = await api('/clients' + (showArchived ? '?archived=true' : ''));
       let rows = data;
       // A therapist sees children they've actually had a real (non-cancelled) session
       // with, derived from reservation history, plus any child an admin/staff has
@@ -153,7 +181,8 @@ export default function Clients({ go, toast, openModal, role = 'admin', scopeToT
         const res = await api('/reservations?therapist_name=' + encodeURIComponent(therapistName));
         const activeAppts = (res || []).filter(r => !['cancelled', 'declined'].includes(r.status));
         const myIds = new Set(activeAppts.map(r => r.client_id));
-        for (const c of data) if (c.assigned_therapist_name === therapistName) myIds.add(c.id);
+        const assignedField = role === 'speech' ? 'assigned_speech_therapist_name' : 'assigned_ot_therapist_name';
+        for (const c of data) if (c[assignedField] === therapistName) myIds.add(c.id);
         rows = data.filter(c => myIds.has(c.id));
       }
       setClients(rows.map((c, i) => mapClient(c, i)));
@@ -162,9 +191,23 @@ export default function Clients({ go, toast, openModal, role = 'admin', scopeToT
     } finally {
       setLoading(false);
     }
-  }, [toast, scopeToTherapist, therapistName]);
+  }, [toast, scopeToTherapist, therapistName, role, showArchived]);
 
   useEffect(() => { fetchClients(); }, [fetchClients]);
+
+  // One-shot deep link: the Dashboard's "My Patients" card stashes a client id
+  // here before navigating over, so clicking a patient opens straight into
+  // their profile instead of just landing on the general list (same one-shot
+  // sessionStorage-flag pattern Branding.jsx uses for its "Edit in CMS" links).
+  useEffect(() => {
+    if (loading || !clients.length) return;
+    const wantId = sessionStorage.getItem('kid_open_client_id');
+    if (!wantId) return;
+    sessionStorage.removeItem('kid_open_client_id');
+    const match = clients.find(c => c.id === wantId);
+    if (match) selectClient(match);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [loading, clients]);
 
   /* Therapist list for the "Edit Client" assign-therapist dropdown only, the
      full shift-schedule/availability-matrix UI moved to Booking and
@@ -220,15 +263,17 @@ export default function Clients({ go, toast, openModal, role = 'admin', scopeToT
     setProfileVisible(true);
     setProfile({
       id: c.id,
-      initials: c.initials, bg: c.bg, color: c.color, name: c.name,
+      initials: c.initials, bg: c.bg, color: c.color, name: c.name, photoUrl: c.photo_url,
       meta: (c.client_code || c.id) + ' · ' + c.meta,
       clientCode: c.client_code,
-      dob: c.dob_formatted, guardian: c.guardian, contact: c.contact, enrolled: c.enrolled, dx: c.dx,
+      dob: c.dob_formatted, guardian: c.guardian, contact: c.contact, enrolled: c.enrolled,
       allergies: c.allergies || 'None recorded', medications: c.daily_medication || 'None recorded',
       thxName: c.thxName, thxInitials: (c.thxName || '–').split(' ').map(w => w[0]).join('').slice(0, 2), thxType: c.thxType,
+      thxOt: c.thxOt, thxSpeech: c.thxSpeech,
       status: c.status, statusPill: c.statusPill, therapy: c.therapy,
       // Development & Functional Information, keyed by dev_functional_fields.id
       dev_functional_data: c.dev_functional_data || {},
+      archived: !!c.archived,
     });
     setHistoryName(c.name);
 
@@ -243,6 +288,26 @@ export default function Clients({ go, toast, openModal, role = 'admin', scopeToT
 
   function closeClientModal() {
     setProfileVisible(false);
+  }
+
+  async function restoreClient(id, name) {
+    try {
+      await api('/clients/' + id + '/restore', { method: 'PUT' });
+      toast('Client profile restored: ' + name, 'fa-box-open');
+      closeClientModal();
+      fetchClients();
+    } catch (err) {
+      toast('Error: ' + err.message, 'fa-triangle-exclamation');
+    }
+  }
+
+  async function downloadArchiveSnapshot(id) {
+    try {
+      const data = await api('/clients/' + id + '/archive-file');
+      window.open(data.url, '_blank', 'noopener,noreferrer');
+    } catch (err) {
+      toast('Error: ' + err.message, 'fa-triangle-exclamation');
+    }
   }
 
   async function cyclePayment(id) {
@@ -320,6 +385,7 @@ export default function Clients({ go, toast, openModal, role = 'admin', scopeToT
           #client-record-print, #client-record-print * { visibility: visible; }
           #client-record-print { position: fixed; top: 0; left: 0; width: 100%; max-height: none !important; overflow: visible !important; margin: 0; padding: 20px; box-shadow: none; border: none; }
           #client-record-print .no-print { display: none !important; }
+          .client-photo-2x2 { width: 2in !important; height: 2in !important; border-radius: 4px !important; }
         }
       `}</style>
       {/* Page Header */}
@@ -338,15 +404,32 @@ export default function Clients({ go, toast, openModal, role = 'admin', scopeToT
       <div id="section-clients" style={{ display: section === 'clients' ? '' : 'none' }}>
         <div className="card dir-card">
           <div className="dir-head">
-            <div><div className="section-title">Client Profile</div></div>
+            <div><div className="section-title">{showArchived ? 'Archived Clients' : 'Client Profile'}</div></div>
             <div className="dir-tools">
               <div className="dir-search"><i className="fa-solid fa-magnifying-glass" /><input id="client-dir-search" type="text" className="filter-input" placeholder="Search name or ID…" style={{ paddingLeft: 30, height: 34, fontSize: 12.5, width: 170 }} value={clientQuery} onChange={e => setClientQuery(e.target.value)} /></div>
-              <select id="therapy-filter" className="form-select" style={{ width: 'auto', height: 34, fontSize: 12.5 }} value={therapyFilter} onChange={e => setTherapyFilter(e.target.value)}>
-                <option value="">All Therapy Types</option>
-                <option value="OT">Occupational Therapy</option>
-                <option value="Speech">Speech Therapy</option>
-                <option value="Both">Combined</option>
-              </select>
+              {/* A locked OT/Speech account's caseload is already scoped to its own
+                 discipline (see fetchClients above), a "Therapy Type" filter with an
+                 "All Therapy Types" option would just be filtering a list that's
+                 already all one type, only Admin/Staff manage the whole clinic
+                 across both disciplines and actually need this. */}
+              {!scopeToTherapist && (
+                <select id="therapy-filter" className="form-select" style={{ width: 'auto', height: 34, fontSize: 12.5 }} value={therapyFilter} onChange={e => setTherapyFilter(e.target.value)}>
+                  <option value="">All Therapy Types</option>
+                  <option value="OT">Occupational Therapy</option>
+                  <option value="Speech">Speech Therapy</option>
+                  <option value="Both">Combined</option>
+                </select>
+              )}
+              {!scopeToTherapist && role === 'admin' && (
+                <button
+                  className={showArchived ? 'btn-primary' : 'btn-secondary'}
+                  style={{ height: 34, fontSize: 12.5, padding: '0 12px' }}
+                  onClick={() => { setSelectedId(null); setProfileVisible(false); setShowArchived(v => !v); }}
+                >
+                  <i className={'fa-solid ' + (showArchived ? 'fa-address-book' : 'fa-box-archive')} style={{ marginRight: 6 }} />
+                  {showArchived ? 'Back to Active' : 'View Archived'}
+                </button>
+              )}
             </div>
           </div>
             <div style={{ overflowX: 'auto' }}>
@@ -361,13 +444,14 @@ export default function Clients({ go, toast, openModal, role = 'admin', scopeToT
                   <div>Age</div>
                   <div>Guardian</div>
                   <div>Therapist</div>
-                  <div>Status</div>
                   <div style={{ textAlign: 'center' }}>Actions</div>
                 </div>
                 {visibleClients.map(c => (
                   <div key={c.id} className="cdir-row cdir-item" data-therapy={c.therapy} onClick={() => selectClient(c)} style={{ cursor: 'pointer', background: selectedId === c.id ? '#F0F9FF' : '' }}>
                     <div className="cd-client">
-                      <div className="act-avatar" style={{ width: 32, height: 32, background: c.bg, color: c.color, fontSize: 11, flexShrink: 0 }}>{c.initials}</div>
+                      {c.photo_url
+                        ? <img src={c.photo_url} alt={c.name} style={{ width: 32, height: 32, borderRadius: '50%', objectFit: 'cover', flexShrink: 0 }} />
+                        : <div className="act-avatar" style={{ width: 32, height: 32, background: c.bg, color: c.color, fontSize: 11, flexShrink: 0 }}>{c.initials}</div>}
                       <div style={{ minWidth: 0 }}><div className="cd-name">{c.name}</div><div className="cd-id">{c.client_code}</div></div>
                     </div>
                     <div className="cd-cell">{c.ageLabel}</div>
@@ -380,38 +464,47 @@ export default function Clients({ go, toast, openModal, role = 'admin', scopeToT
                         </>
                       )}
                     </div>
-                    <div className="cd-cell"><span className={c.statusPill}>{c.status}</span></div>
                     <div className="cd-actions" onClick={e => e.stopPropagation()}>
-                      {!scopeToTherapist && (
-                        <button className="btn-edit" onClick={() => { openModal('edit-client', { name: c.name, guardian: c.guardian, status: c.status, thxName: c.assigned_therapist_name, therapy_type: c.therapy_type, therapists: therapistList, onSave: async (patch) => {
-                          try {
-                            const body = {};
-                            if (patch.name) body.full_name = patch.name;
-                            if (patch.guardian) body.guardian_name = patch.guardian;
-                            if (patch.status) body.status = patch.status.toLowerCase();
-                            if ('therapy_type' in patch) body.therapy_type = patch.therapy_type || null;
-                            if ('thxName' in patch) body.assigned_therapist_name = patch.thxName || null;
-                            await api('/clients/' + c.id, { method: 'PUT', body });
-                            toast('Client profile updated: ' + (patch.name || c.name), 'fa-check');
-                            fetchClients();
-                          } catch (err) { toast('Error: ' + err.message, 'fa-triangle-exclamation'); }
-                        } }); }} title="Edit"><i className="fa-solid fa-pen" /></button>
-                      )}
-                      {role === 'admin' && (
-                        <button className="btn-archive" onClick={() => { openModal('delete-client', { name: c.name, onConfirm: async () => {
-                          try {
-                            await api('/clients/' + c.id, { method: 'DELETE' });
-                            toast('Client profile archived', 'fa-box-archive');
-                            fetchClients();
-                          } catch (err) { toast('Error: ' + err.message, 'fa-triangle-exclamation'); }
-                        } }); }} title="Archive"><i className="fa-solid fa-box-archive" /></button>
+                      {showArchived ? (
+                        <>
+                          <button className="btn-edit" onClick={() => downloadArchiveSnapshot(c.id)} title="Download backup"><i className="fa-solid fa-download" /></button>
+                          <button className="btn-edit" onClick={() => restoreClient(c.id, c.name)} title="Restore"><i className="fa-solid fa-box-open" /></button>
+                        </>
+                      ) : (
+                        <>
+                          {!scopeToTherapist && (
+                            <button className="btn-edit" onClick={() => { openModal('edit-client', { name: c.name, guardian: c.guardian, status: c.status, assignedOt: c.thxOt, assignedSpeech: c.thxSpeech, therapy_type: c.therapy_type, therapists: therapistList, onSave: async (patch) => {
+                              try {
+                                const body = {};
+                                if (patch.name) body.full_name = patch.name;
+                                if (patch.guardian) body.guardian_name = patch.guardian;
+                                if (patch.status) body.status = patch.status.toLowerCase();
+                                if ('therapy_type' in patch) body.therapy_type = patch.therapy_type || null;
+                                if ('thxOt' in patch) body.assigned_ot_therapist_name = patch.thxOt || null;
+                                if ('thxSpeech' in patch) body.assigned_speech_therapist_name = patch.thxSpeech || null;
+                                await api('/clients/' + c.id, { method: 'PUT', body });
+                                toast('Client profile updated: ' + (patch.name || c.name), 'fa-check');
+                                fetchClients();
+                              } catch (err) { toast('Error: ' + err.message, 'fa-triangle-exclamation'); }
+                            } }); }} title="Edit"><i className="fa-solid fa-pen" /></button>
+                          )}
+                          {role === 'admin' && (
+                            <button className="btn-archive" onClick={() => { openModal('delete-client', { name: c.name, onConfirm: async () => {
+                              try {
+                                await api('/clients/' + c.id, { method: 'DELETE' });
+                                toast('Client profile archived', 'fa-box-archive');
+                                fetchClients();
+                              } catch (err) { toast('Error: ' + err.message, 'fa-triangle-exclamation'); }
+                            } }); }} title="Archive"><i className="fa-solid fa-box-archive" /></button>
+                          )}
+                        </>
                       )}
                     </div>
                   </div>
                 ))}
                 {visibleClients.length === 0 && (
                   <div style={{ textAlign: 'center', padding: '32px 24px', color: '#94A3B8', fontSize: 12.5 }}>
-                    {scopeToTherapist && !clientQuery && !therapyFilter ? 'No clients with session history assigned to you yet.' : 'No clients match your search or filter.'}
+                    {showArchived ? 'No archived clients.' : scopeToTherapist && !clientQuery && !therapyFilter ? 'No clients with session history assigned to you yet.' : 'No clients match your search or filter.'}
                   </div>
                 )}
               </div>
@@ -430,15 +523,26 @@ export default function Clients({ go, toast, openModal, role = 'admin', scopeToT
           <div id="client-record-print" style={{ maxHeight: '78vh', overflowY: 'auto', paddingRight: 4 }}>
             {/* Header */}
             <div style={{ display: 'flex', alignItems: 'center', gap: 16, marginBottom: 22, paddingBottom: 18, borderBottom: '1px solid #F1F5F9' }}>
-              <div style={{ width: 60, height: 60, borderRadius: 14, background: `linear-gradient(135deg,${profile.bg},${profile.color})`, display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 20, fontWeight: 700, color: '#fff', fontFamily: "'Poppins',sans-serif", flexShrink: 0 }}>{profile.initials}</div>
+              {profile.photoUrl
+                ? <img className="client-photo-2x2" src={profile.photoUrl} alt={profile.name} style={{ width: 96, height: 96, borderRadius: 4, objectFit: 'cover', border: '1px solid #E2E8F0', flexShrink: 0 }} />
+                : <div className="client-photo-2x2" style={{ width: 96, height: 96, borderRadius: 4, border: '1px solid #E2E8F0', background: `linear-gradient(135deg,${profile.bg},${profile.color})`, display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 28, fontWeight: 700, color: '#fff', fontFamily: "'Poppins',sans-serif", flexShrink: 0 }}>{profile.initials}</div>}
               <div style={{ flex: 1, minWidth: 0 }}>
                 <div style={{ fontSize: 18, fontWeight: 700, color: '#0F172A', fontFamily: "'Poppins',sans-serif" }}>{profile.name}</div>
                 <div style={{ fontSize: 12.5, color: '#64748B', marginTop: 2 }}>{profile.clientCode} · {profile.meta?.split(' · ')[1]}</div>
                 <div style={{ display: 'flex', gap: 8, marginTop: 6 }}><span className={profile.statusPill}>{profile.status}</span><span className={profile.therapy === 'Speech' ? 'pill pill-teal' : 'pill pill-blue'}>{{ OT: 'Occupational Therapy', Speech: 'Speech Therapy', Both: 'Combined' }[profile.therapy] || 'Occupational Therapy'}</span></div>
               </div>
               <div className="no-print" style={{ display: 'flex', gap: 8, flexShrink: 0 }}>
-                {!scopeToTherapist && <button className="btn-edit" onClick={() => { const c = clients.find(cl => cl.id === selectedId); openModal('edit-client', c ? { name: c.name, guardian: c.guardian, status: c.status, thxName: c.assigned_therapist_name, therapy_type: c.therapy_type, therapists: therapistList, onSave: async (patch) => { try { const body = {}; if (patch.name) body.full_name = patch.name; if (patch.guardian) body.guardian_name = patch.guardian; if (patch.status) body.status = patch.status.toLowerCase(); if ('therapy_type' in patch) body.therapy_type = patch.therapy_type || null; if ('thxName' in patch) body.assigned_therapist_name = patch.thxName || null; await api('/clients/' + c.id, { method: 'PUT', body }); toast('Client profile updated', 'fa-check'); fetchClients(); closeClientModal(); } catch (err) { toast('Error: ' + err.message, 'fa-triangle-exclamation'); } } } : { name: profile.name }); }}><i className="fa-solid fa-pen" style={{ marginRight: 4 }} />Edit</button>}
-                {role === 'admin' && <button className="btn-archive" onClick={() => openModal('delete-client', { name: profile.name, onConfirm: async () => { if (!selectedId) return; try { await api('/clients/' + selectedId, { method: 'DELETE' }); toast('Client profile archived', 'fa-box-archive'); closeClientModal(); fetchClients(); } catch (err) { toast('Error: ' + err.message, 'fa-triangle-exclamation'); } } })}><i className="fa-solid fa-box-archive" style={{ marginRight: 4 }} />Archive</button>}
+                {profile.archived ? (
+                  <>
+                    <button className="btn-edit" onClick={() => downloadArchiveSnapshot(profile.id)}><i className="fa-solid fa-download" style={{ marginRight: 4 }} />Download Backup</button>
+                    {role === 'admin' && <button className="btn-primary" onClick={() => restoreClient(profile.id, profile.name)}><i className="fa-solid fa-box-open" style={{ marginRight: 4 }} />Restore</button>}
+                  </>
+                ) : (
+                  <>
+                    {!scopeToTherapist && <button className="btn-edit" onClick={() => { const c = clients.find(cl => cl.id === selectedId); openModal('edit-client', c ? { name: c.name, guardian: c.guardian, status: c.status, assignedOt: c.thxOt, assignedSpeech: c.thxSpeech, therapy_type: c.therapy_type, therapists: therapistList, onSave: async (patch) => { try { const body = {}; if (patch.name) body.full_name = patch.name; if (patch.guardian) body.guardian_name = patch.guardian; if (patch.status) body.status = patch.status.toLowerCase(); if ('therapy_type' in patch) body.therapy_type = patch.therapy_type || null; if ('thxOt' in patch) body.assigned_ot_therapist_name = patch.thxOt || null; if ('thxSpeech' in patch) body.assigned_speech_therapist_name = patch.thxSpeech || null; await api('/clients/' + c.id, { method: 'PUT', body }); toast('Client profile updated', 'fa-check'); fetchClients(); closeClientModal(); } catch (err) { toast('Error: ' + err.message, 'fa-triangle-exclamation'); } } } : { name: profile.name }); }}><i className="fa-solid fa-pen" style={{ marginRight: 4 }} />Edit</button>}
+                    {role === 'admin' && <button className="btn-archive" onClick={() => openModal('delete-client', { name: profile.name, onConfirm: async () => { if (!selectedId) return; try { await api('/clients/' + selectedId, { method: 'DELETE' }); toast('Client profile archived', 'fa-box-archive'); closeClientModal(); fetchClients(); } catch (err) { toast('Error: ' + err.message, 'fa-triangle-exclamation'); } } })}><i className="fa-solid fa-box-archive" style={{ marginRight: 4 }} />Archive</button>}
+                  </>
+                )}
               </div>
             </div>
             {/* Two-column info */}
@@ -464,24 +568,28 @@ export default function Clients({ go, toast, openModal, role = 'admin', scopeToT
             {/* Assigned Therapist, unassigned shows a muted "not yet assigned" state instead of a
                 bare "–" standing in for both the avatar initials and the name, which read like
                 missing data rather than an intentional empty state. */}
-            <div style={{ padding: '14px 18px', borderRadius: 12, border: '1px solid #E2E8F0', background: '#FAFBFC', marginBottom: 20, display: 'flex', alignItems: 'center', gap: 12 }}>
-              {profile.thxName !== '–' ? (
-                <>
-                  <div style={{ width: 40, height: 40, borderRadius: 10, background: '#DBEAFE', color: '#2563EB', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 13, fontWeight: 700, flexShrink: 0 }}>{profile.thxInitials}</div>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 10, marginBottom: 20 }}>
+              {[
+                ...(profile.thxOt ? [{ name: profile.thxOt, role: 'Occupational Therapist' }] : []),
+                ...(profile.thxSpeech ? [{ name: profile.thxSpeech, role: 'Speech-Language Pathologist' }] : []),
+              ].map(t => (
+                <div key={t.role} style={{ padding: '14px 18px', borderRadius: 12, border: '1px solid #E2E8F0', background: '#FAFBFC', display: 'flex', alignItems: 'center', gap: 12 }}>
+                  <div style={{ width: 40, height: 40, borderRadius: 10, background: '#DBEAFE', color: '#2563EB', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 13, fontWeight: 700, flexShrink: 0 }}>{t.name.split(' ').map(w => w[0]).join('').slice(0, 2)}</div>
                   <div style={{ flex: 1 }}>
                     <div style={{ fontSize: 10.5, color: '#94A3B8', fontWeight: 600, textTransform: 'uppercase', letterSpacing: '.3px' }}>Assigned Therapist</div>
-                    <div style={{ fontSize: 13.5, fontWeight: 600, color: '#0F172A' }}>{profile.thxName}</div>
-                    <div style={{ fontSize: 12, color: '#64748B' }}>{profile.thxType === 'Speech' ? 'Speech-Language Pathologist' : 'Occupational Therapist'}</div>
+                    <div style={{ fontSize: 13.5, fontWeight: 600, color: '#0F172A' }}>{t.name}</div>
+                    <div style={{ fontSize: 12, color: '#64748B' }}>{t.role}</div>
                   </div>
-                </>
-              ) : (
-                <>
+                </div>
+              ))}
+              {!profile.thxOt && !profile.thxSpeech && (
+                <div style={{ padding: '14px 18px', borderRadius: 12, border: '1px solid #E2E8F0', background: '#FAFBFC', display: 'flex', alignItems: 'center', gap: 12 }}>
                   <div style={{ width: 40, height: 40, borderRadius: 10, background: '#F1F5F9', color: '#94A3B8', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 15, flexShrink: 0 }}><i className="fa-solid fa-user-slash" /></div>
                   <div style={{ flex: 1 }}>
                     <div style={{ fontSize: 10.5, color: '#94A3B8', fontWeight: 600, textTransform: 'uppercase', letterSpacing: '.3px' }}>Assigned Therapist</div>
                     <div style={{ fontSize: 13.5, fontWeight: 600, color: '#94A3B8' }}>Not yet assigned</div>
                   </div>
-                </>
+                </div>
               )}
             </div>
             {/* Development & Functional Information */}
@@ -509,6 +617,41 @@ export default function Clients({ go, toast, openModal, role = 'admin', scopeToT
                 <div style={{ padding: 24, textAlign: 'center', color: '#94A3B8', fontSize: 13 }}><i className="fa-solid fa-spinner fa-spin" style={{ marginRight: 8 }} />Loading…</div>
               ) : (
                 <GasProgressChart entries={gasEntries} />
+              )}
+            </div>
+            {/* Session History Remarks */}
+            <div style={{ padding: '16px 18px', borderRadius: 12, border: '1px solid #E2E8F0', background: '#FAFBFC', marginTop: 20 }}>
+              <div style={{ fontSize: 12.5, fontWeight: 700, color: '#0F172A', marginBottom: 12, display: 'flex', alignItems: 'center', gap: 6 }}><i className="fa-solid fa-comment-medical" style={{ color: '#4F46E5' }} />Session History Remarks</div>
+              {gasLoading ? (
+                <div style={{ padding: 24, textAlign: 'center', color: '#94A3B8', fontSize: 13 }}><i className="fa-solid fa-spinner fa-spin" style={{ marginRight: 8 }} />Loading…</div>
+              ) : gasEntries.length === 0 ? (
+                <div style={{ fontSize: 12.5, color: '#94A3B8' }}>No session entries recorded yet.</div>
+              ) : (
+                <>
+                  <select className="form-select" style={{ maxWidth: 340, marginBottom: 14 }} value={remarksEntryId ?? ''} onChange={e => setRemarksEntryId(e.target.value)}>
+                    {gasEntries.map(e => (
+                      <option key={e.id} value={e.id}>{formatDate(e.session_date)} · {e.discipline}{e.therapist_name ? ' · ' + e.therapist_name : ''}</option>
+                    ))}
+                  </select>
+                  {(() => {
+                    const entry = gasEntries.find(e => String(e.id) === String(remarksEntryId)) || gasEntries[0];
+                    const { parentObservation, remarks } = splitGasRemarks(entry.remarks);
+                    return (
+                      <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+                        {parentObservation && (
+                          <div>
+                            <div style={{ fontSize: 10.5, color: '#94A3B8', fontWeight: 600, textTransform: 'uppercase', letterSpacing: '.3px', marginBottom: 4 }}>Parent Observation</div>
+                            <div style={{ fontSize: 13, color: '#0F172A', lineHeight: 1.6, whiteSpace: 'pre-wrap' }}>{parentObservation}</div>
+                          </div>
+                        )}
+                        <div>
+                          <div style={{ fontSize: 10.5, color: '#94A3B8', fontWeight: 600, textTransform: 'uppercase', letterSpacing: '.3px', marginBottom: 4 }}>Therapist Remarks</div>
+                          <div style={{ fontSize: 13, color: '#0F172A', lineHeight: 1.6, whiteSpace: 'pre-wrap' }}>{remarks || 'No remarks recorded for this session.'}</div>
+                        </div>
+                      </div>
+                    );
+                  })()}
+                </>
               )}
             </div>
           </div>

@@ -5,7 +5,11 @@
    the internal Admin/Staff/Therapist/Parent portals. */
 .ld{font-family:'Inter',sans-serif;color:var(--color-ink);background:var(--color-landing-background);overflow-x:hidden}
 .ld img{max-width:100%;display:block}
-.ld :root{--primary-soft:#EDF2FA;--amber:#9A6210;--amber-soft:#FAF3E3;--ink:var(--color-ink);--muted:var(--color-text-muted);--line:var(--color-border-subtle)}
+.ld :root{--primary-soft:#EFF6FF;--ink:var(--color-ink);--muted:var(--color-text-muted);--line:var(--color-border-subtle)}
+/* Small rounded badge, reused for the hero kicker, section tags, and the
+   announcement label so every accent on this page reads as the same "chip"
+   instead of three differently-styled uppercase labels. */
+.ld-badge{display:inline-flex;align-items:center;font-size:12px;letter-spacing:.06em;text-transform:uppercase;color:var(--color-landing-primary);font-weight:700;background:var(--primary-soft);border-radius:20px;padding:5px 14px}
 
 /* NAV */
 .ld-nav{position:fixed;top:0;left:0;right:0;z-index:100;height:64px;padding:0 48px;display:flex;align-items:center;justify-content:space-between;background:color-mix(in srgb, var(--color-landing-navbar-bg) 95%, transparent);backdrop-filter:blur(10px);border-bottom:1px solid var(--color-border-subtle)}
@@ -17,37 +21,49 @@
 .ld-nav-links a{font-size:14px;color:var(--color-text-muted);text-decoration:none;font-weight:600;transition:color .15s}
 .ld-nav-links a:hover{color:var(--color-landing-primary)}
 .ld-nav-actions{display:flex;gap:10px;align-items:center}
-.ld-nav-ghost{padding:8px 18px;border:1px solid var(--color-border);border-radius:7px;font-family:'Inter',sans-serif;font-size:13.5px;font-weight:600;color:var(--color-text-muted);background:transparent;cursor:pointer;text-decoration:none;display:inline-flex;align-items:center;transition:all .15s}
-.ld-nav-ghost:hover{border-color:var(--color-landing-primary);color:var(--color-landing-primary)}
+.ld-nav-ghost{padding:9px 20px;border:1px solid var(--color-landing-primary);border-radius:20px;font-family:'Inter',sans-serif;font-size:13.5px;font-weight:600;color:#fff;background:var(--color-landing-primary);cursor:pointer;text-decoration:none;display:inline-flex;align-items:center;transition:all .15s;box-shadow:0 1px 2px rgba(31,78,158,.16)}
+.ld-nav-ghost:hover{filter:brightness(1.08);transform:translateY(-1px)}
 
 /* Anchor-jump targets (nav links, footer links) land under the fixed 64px nav
    without this, the top of the section gets hidden behind it until the user
    scrolls up manually. scroll-margin-top offsets the native anchor scroll. */
-#announcements,#promise,#news,#about{scroll-margin-top:80px}
+#promise,#news,#about{scroll-margin-top:80px}
 
-/* ANNOUNCEMENT BAND */
-.ld-ann-band{margin-top:64px;background:#FAF3E3;border-bottom:1px solid #EFE3C8;padding:12px 48px}
-.ld-ann-inner{max-width:1080px;margin:0 auto;display:flex;align-items:center;gap:14px;flex-wrap:wrap}
-.ld-ann-label{font-size:11px;font-weight:700;letter-spacing:.09em;text-transform:uppercase;color:#9A6210;flex-shrink:0;border:1px solid #E3D3AC;border-radius:5px;padding:3px 9px;background:#fff}
-.ld-ann-text{font-size:14px;color:#6B5320;font-weight:500;flex:1}
-.ld-ann-more{font-size:13.5px;color:#9A6210;font-weight:700;text-decoration:none;flex-shrink:0}
-.ld-ann-more:hover{text-decoration:underline}
+/* ANNOUNCEMENT OVERLAY, a floating card that pops in right under the fixed
+   nav (same spot the old banner lived in) and sits on top of the hero via
+   position:fixed instead of occupying flow, so it never pushes page content
+   down. The wrapper is pointer-events:none so only the card itself is
+   clickable, everything else on the page stays reachable underneath it,
+   there's no dark backdrop, this is deliberately not a blocking modal. */
+.ld-ann-overlay{position:fixed;top:76px;left:0;right:0;z-index:150;display:flex;justify-content:center;padding:0 20px;pointer-events:none}
+.ld-ann-card{pointer-events:auto;display:flex;align-items:flex-start;gap:14px;background:#fff;border:1px solid var(--color-border-subtle);border-radius:14px;padding:16px 18px;max-width:820px;width:100%;box-shadow:0 20px 48px -14px rgba(31,78,158,.35);animation:annPopIn .45s cubic-bezier(.34,1.56,.64,1) both}
+.ld-ann-card-icon{flex-shrink:0;width:38px;height:38px;border-radius:10px;background:var(--primary-soft);color:var(--color-landing-primary);display:flex;align-items:center;justify-content:center;font-size:16px}
+.ld-ann-card-label{font-size:11px;font-weight:700;letter-spacing:.09em;text-transform:uppercase;color:var(--color-landing-primary);margin-bottom:3px}
+.ld-ann-card-text{font-size:13.5px;color:var(--color-ink);font-weight:500;line-height:1.5}
+.ld-ann-card-close{flex-shrink:0;background:rgba(15,23,42,.06);border:none;border-radius:50%;width:28px;height:28px;font-size:16px;color:#475569;cursor:pointer;display:flex;align-items:center;justify-content:center;transition:background .15s}
+.ld-ann-card-close:hover{background:rgba(15,23,42,.12)}
+@keyframes annPopIn{from{opacity:0;transform:translateY(-18px) scale(.95)}to{opacity:1;transform:translateY(0) scale(1)}}
+@media(max-width:600px){.ld-ann-card{flex-direction:column}}
 
 /* HERO */
-.ld-hero-sec{padding:84px 48px 88px;background:var(--color-landing-background)}
-.ld-hero-inner{max-width:1080px;margin:0 auto;display:grid;grid-template-columns:1.05fr 1fr;gap:64px;align-items:center}
-.ld-hero-kicker{font-size:12px;letter-spacing:.11em;text-transform:uppercase;color:#9A6210;font-weight:700;margin-bottom:18px}
+/* Soft radial gradient blobs behind the hero, the "colored canvas the cards
+   float on" quality the reference dashboards all share, instead of a flat
+   single-color section background. Faded out well before the 70% mark (was
+   still visibly opaque right at the section's own overflow:hidden edge,
+   reading as a hard-edged "cut" circle instead of a soft ambient glow) and
+   blurred on top of that as a second safety net against any residual edge.
+   Color now tracks the landing page's own theme color instead of a fixed
+   navy left over from the original launch palette. */
+.ld-hero-sec{position:relative;margin-top:64px;padding:84px 48px 88px;background:var(--color-landing-background);overflow:hidden}
+.ld-hero-sec::before{content:'';position:absolute;top:-140px;right:-160px;width:520px;height:520px;border-radius:50%;background:radial-gradient(circle at 35% 35%, color-mix(in srgb, var(--color-landing-primary) 16%, transparent), transparent 42%);filter:blur(50px);pointer-events:none}
+.ld-hero-sec::after{content:'';position:absolute;bottom:-200px;left:-180px;width:460px;height:460px;border-radius:50%;background:radial-gradient(circle at 60% 40%, color-mix(in srgb, var(--color-landing-primary) 9%, transparent), transparent 42%);filter:blur(50px);pointer-events:none}
+.ld-hero-inner{position:relative;max-width:1080px;margin:0 auto;display:grid;grid-template-columns:1.05fr 1fr;gap:64px;align-items:center}
+.ld-hero-kicker{margin-bottom:18px}
 .ld-hero-title{font-family:'Poppins',sans-serif;font-size:46px;font-weight:600;line-height:1.16;color:var(--color-ink);margin-bottom:20px}
-.ld-hero-title em{font-style:italic;color:var(--color-landing-primary)}
+.ld-hero-title em{font-style:normal;font-weight:700;color:var(--color-landing-primary)}
 .ld-hero-sub{font-size:16.5px;color:var(--color-text-muted);line-height:1.75;max-width:470px;margin-bottom:34px}
-.ld-hero-cta{display:flex;gap:12px;flex-wrap:wrap;align-items:center;margin-bottom:44px}
-.ld-cta-a{padding:13px 26px;background:var(--color-landing-primary);border:none;border-radius:8px;font-family:'Inter',sans-serif;font-size:15px;font-weight:700;color:#fff;cursor:pointer;text-decoration:none;display:inline-flex;align-items:center;gap:9px;transition:background .15s,transform .15s,box-shadow .15s}
-.ld-cta-a:hover{filter:brightness(.85);transform:translateY(-1px);box-shadow:0 8px 20px rgba(31,78,158,.25)}
-.ld-cta-a:active{transform:translateY(0)}
-.ld-cta-b{padding:13px 22px;background:transparent;border:none;font-family:'Inter',sans-serif;font-size:15px;font-weight:700;color:var(--color-landing-primary);cursor:pointer;text-decoration:none;display:inline-flex;align-items:center;gap:7px;transition:gap .15s}
-.ld-cta-b:hover{text-decoration:underline;gap:10px}
 .ld-hero-photo{position:relative}
-.ld-hero-photo img{width:100%;height:430px;object-fit:cover;border-radius:12px}
+.ld-hero-photo img{width:100%;height:430px;object-fit:cover;border-radius:22px;box-shadow:0 32px 64px -20px rgba(31,78,158,.35)}
 
 /* Hero entrance, text and photo fade/slide in on load, photo slightly delayed */
 .ld-hero-in{animation:ldFadeUp .7s cubic-bezier(.22,1,.36,1) both}
@@ -57,31 +73,45 @@
 /* Scroll-reveal, sections fade/slide up the first time they enter the viewport */
 .ld-reveal{opacity:0;transform:translateY(28px);transition:opacity .7s cubic-bezier(.22,1,.36,1),transform .7s cubic-bezier(.22,1,.36,1)}
 .ld-reveal-in{opacity:1;transform:translateY(0)}
-.ld-photo-caption{position:absolute;left:16px;bottom:16px;background:rgba(253,252,250,0.94);border-radius:8px;padding:10px 16px;font-size:12.5px;color:var(--color-text-muted);font-weight:600;max-width:75%}
+/* Photographer/source attribution, deliberately understated (small, low-contrast). */
+.ld-photo-credit{position:absolute;right:10px;bottom:8px;background:rgba(15,23,42,.45);border-radius:5px;padding:3px 8px;font-size:10px;color:#fff;font-weight:500;letter-spacing:.01em}
 
 /* SECTIONS */
 .ld-section{padding:84px 48px;max-width:1080px;margin:0 auto}
-.ld-s-tag{font-size:12px;letter-spacing:.11em;text-transform:uppercase;color:#9A6210;font-weight:700;margin-bottom:14px}
+.ld-s-tag{margin-bottom:14px}
 .ld-s-title{font-family:'Poppins',sans-serif;font-size:34px;font-weight:600;color:var(--color-ink);margin-bottom:12px;line-height:1.22}
-.ld-s-title em{font-style:italic;color:var(--color-landing-primary)}
+.ld-s-title em{font-style:normal;font-weight:700;color:var(--color-landing-primary)}
 .ld-s-sub{font-size:15px;color:var(--color-text-muted);line-height:1.7;max-width:540px;margin-bottom:48px}
 
 /* PROMISE SECTION */
-.ld-promise{background:#EDF2FA;border-top:1px solid var(--color-border);border-bottom:1px solid var(--color-border)}
-.ld-promise-inner{max-width:1080px;margin:0 auto;padding:84px 48px;display:grid;grid-template-columns:1fr 1.05fr;gap:64px;align-items:center}
-.ld-promise-img img{width:100%;height:380px;object-fit:cover;border-radius:12px}
+.ld-promise{position:relative;background:var(--primary-soft);overflow:hidden}
+.ld-promise::before{content:'';position:absolute;top:-180px;right:-160px;width:440px;height:440px;border-radius:50%;background:radial-gradient(circle at 40% 40%, color-mix(in srgb, var(--color-landing-primary) 10%, transparent), transparent 42%);filter:blur(50px);pointer-events:none}
+.ld-promise-inner{position:relative;max-width:1080px;margin:0 auto;padding:84px 48px;display:grid;grid-template-columns:1fr 1.05fr;gap:64px;align-items:center}
+.ld-promise-img{position:relative}
+.ld-promise-img img{width:100%;height:380px;object-fit:cover;border-radius:22px;box-shadow:0 32px 64px -20px rgba(31,78,158,.30)}
 .ld-promise-lead{font-size:15.5px;color:var(--color-text-muted);line-height:1.8;margin-bottom:26px;max-width:470px}
-.ld-promise-points{display:grid;gap:0}
-.ld-ppoint{display:flex;gap:14px;align-items:flex-start;padding:14px 0;border-top:1px solid var(--color-border)}
-.ld-ppoint:last-child{border-bottom:1px solid var(--color-border)}
-.ld-ppoint-num{font-family:'Poppins',sans-serif;font-size:15px;font-weight:600;color:var(--color-landing-primary);flex-shrink:0;margin-top:1px}
-.ld-ppoint-tx{font-size:14.5px;color:var(--color-text-muted);font-weight:500;line-height:1.55}
+/* Step-by-step timeline: numbered circles connected by a vertical rail line,
+   instead of plain "01/02/03" cards, so the three points read as an ordered
+   process rather than an unordered list. */
+.ld-promise-points{display:flex;flex-direction:column}
+.ld-ppoint{display:flex;gap:16px;align-items:stretch}
+.ld-ppoint-rail{display:flex;flex-direction:column;align-items:center;flex-shrink:0}
+.ld-ppoint-num{width:34px;height:34px;border-radius:50%;background:var(--color-landing-primary);color:#fff;display:flex;align-items:center;justify-content:center;font-family:'Poppins',sans-serif;font-size:14px;font-weight:700;flex-shrink:0;box-shadow:0 6px 16px -4px rgba(31,78,158,.45)}
+.ld-ppoint-line{width:2px;flex:1;min-height:26px;margin:4px 0;background:linear-gradient(var(--color-landing-primary), var(--color-info-border))}
+.ld-ppoint-tx{font-size:14.5px;color:var(--color-text-muted);font-weight:500;line-height:1.55;padding:5px 0 26px}
+.ld-ppoint:last-child .ld-ppoint-tx{padding-bottom:5px}
 
 /* NEWS */
+/* Same soft-canvas treatment as the hero/promise sections above, so the page
+   doesn't go from a tinted "Our Approach" section straight to flat plain
+   white with nothing in between, opposite corner from the hero's blob for a
+   bit of rhythm down the page instead of every section repeating the same spot. */
+.ld-news-sec{position:relative;background:var(--color-landing-background);overflow:hidden}
+.ld-news-sec::before{content:'';position:absolute;top:-160px;left:-140px;width:420px;height:420px;border-radius:50%;background:radial-gradient(circle at 45% 45%, color-mix(in srgb, var(--color-landing-primary) 10%, transparent), transparent 42%);filter:blur(50px);pointer-events:none}
 .ld-news-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:24px}
-.ld-news-card{background:#fff;border:1px solid var(--color-border-subtle);border-radius:12px;overflow:hidden;transition:box-shadow .2s,transform .2s;cursor:pointer}
-.ld-news-card:hover{box-shadow:0 12px 28px rgba(60,60,50,.10);transform:translateY(-3px)}
-.ld-news-thumb{height:180px;overflow:hidden;background:#EDF2FA}
+.ld-news-card{background:#fff;border:1px solid var(--color-border-subtle);border-radius:18px;overflow:hidden;transition:box-shadow .2s,transform .2s;cursor:pointer;box-shadow:0 16px 32px -20px rgba(31,78,158,.22)}
+.ld-news-card:hover{box-shadow:0 20px 40px -14px rgba(31,78,158,.30);transform:translateY(-3px)}
+.ld-news-thumb{position:relative;height:180px;overflow:hidden;background:var(--primary-soft)}
 .ld-news-thumb img{width:100%;height:100%;object-fit:cover}
 .ld-news-thumb.placeholder{display:flex;align-items:center;justify-content:center}
 .ld-news-thumb.placeholder svg{width:44px;height:44px;stroke:#A9BBD9;stroke-width:1.5;fill:none}
@@ -96,19 +126,16 @@
 .ld-post-modal{position:relative;background:#fff;border-radius:16px;max-width:560px;width:100%;max-height:85vh;overflow-y:auto;box-shadow:0 24px 64px rgba(15,23,42,.3)}
 .ld-post-modal-close{position:absolute;top:12px;right:14px;background:rgba(15,23,42,.06);border:none;border-radius:50%;width:32px;height:32px;font-size:20px;line-height:1;color:#475569;cursor:pointer;display:flex;align-items:center;justify-content:center;z-index:1}
 .ld-post-modal-close:hover{background:rgba(15,23,42,.12)}
-.ld-post-modal-thumb{height:220px;overflow:hidden;background:#EDF2FA}
+.ld-post-modal-thumb{height:220px;overflow:hidden;background:var(--primary-soft)}
 .ld-post-modal-thumb img{width:100%;height:100%;object-fit:cover}
 .ld-post-modal-body{padding:28px 26px 32px}
 .ld-post-modal-text{font-size:14.5px;color:var(--color-text-muted);line-height:1.75;white-space:pre-wrap}
 
 /* FOOTER */
 .ld-footer{background:var(--color-footer-bg,#182238);padding:52px 48px 30px}
-.ld-foot-grid{max-width:1080px;margin:0 auto;display:grid;grid-template-columns:1.4fr 1fr 1fr;gap:36px;padding-bottom:36px;border-bottom:1px solid rgba(255,255,255,.1)}
+.ld-foot-grid{max-width:1080px;margin:0 auto;padding-bottom:36px;border-bottom:1px solid rgba(255,255,255,.1)}
 .ld-foot-brand .fn{font-family:'Poppins',sans-serif;font-size:20px;font-weight:600;color:var(--color-footer-text,#fff);margin-bottom:10px}
 .ld-foot-brand .fs{font-size:12.5px;color:rgba(255,255,255,.5);line-height:1.75}
-.ld-foot-col h4{font-size:11.5px;font-weight:700;letter-spacing:.09em;text-transform:uppercase;color:rgba(255,255,255,.45);margin-bottom:15px}
-.ld-foot-col a{display:block;font-size:13.5px;color:rgba(255,255,255,.65);text-decoration:none;margin-bottom:10px;font-weight:500;transition:color .15s}
-.ld-foot-col a:hover{color:#fff}
 .ld-foot-bottom{max-width:1080px;margin:0 auto;padding-top:24px;display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:10px}
 .ld-foot-copy{font-size:12px;color:rgba(255,255,255,.35);font-weight:500}
 
@@ -123,13 +150,11 @@
   .ld-promise-img img{height:300px}
   .ld-section{padding:60px 24px}
   .ld-news-grid{grid-template-columns:1fr 1fr}
-  .ld-foot-grid{grid-template-columns:1fr 1fr;gap:28px}
   .ld-footer{padding:40px 24px 22px}
   .ld-foot-bottom{flex-direction:column;text-align:center}
 }
 @media(max-width:600px){
   .ld-hero-title{font-size:30px}
   .ld-news-grid{grid-template-columns:1fr}
-  .ld-foot-grid{grid-template-columns:1fr}
   .ld-s-title{font-size:27px}
 }

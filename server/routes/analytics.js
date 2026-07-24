@@ -134,14 +134,16 @@ router.get('/milestone-trend', async (req, res) => {
 
 /** GET /api/analytics/employees, per-therapist load/specialty + team headcount trend (7.2) */
 router.get('/employees', async (req, res) => {
-  const [{ data: therapists, error: tErr }, { data: reservations, error: rErr }, { data: notes, error: nErr }] = await Promise.all([
+  const [{ data: therapists, error: tErr }, { data: reservations, error: rErr }, { data: notes, error: nErr }, { data: clients, error: cErr }] = await Promise.all([
     db.from('profiles').select('id, full_name, role, created_at').in('role', ['ot', 'speech']).eq('active', true),
     db.from('reservations').select('client_id, therapist_name, session_type, status, date'),
-    db.from('session_notes').select('therapist_name, score')
+    db.from('session_notes').select('therapist_name, score'),
+    db.from('clients').select('id, assigned_ot_therapist_name, assigned_speech_therapist_name').eq('archived', false)
   ]);
   if (tErr) return res.status(500).json({ error: tErr.message });
   if (rErr) return res.status(500).json({ error: rErr.message });
   if (nErr) return res.status(500).json({ error: nErr.message });
+  if (cErr) return res.status(500).json({ error: cErr.message });
 
   const activeRes = (reservations || []).filter(r => !['cancelled', 'declined'].includes(r.status));
   const now = new Date();
@@ -157,13 +159,22 @@ router.get('/employees', async (req, res) => {
     // role 'ot' or 'speech', so this should never actually read "Unassigned"
     // (that was leftover from before the single 'therapist' role was split).
     const specialty = ot && sp ? 'Both' : sp ? 'Speech' : ot ? 'OT' : (t.role === 'speech' ? 'Speech' : 'OT');
+    // Real caseload, same rule Dashboard's "My Patients" already uses: children
+    // with actual (non-cancelled) session history, plus any child explicitly
+    // assigned to this therapist via Edit Client Profile even before a first
+    // session, reservation history alone under-counts a caseload that was just
+    // assigned and hasn't had its first booking yet.
+    const caseloadIds = new Set(own.map(r => r.client_id));
+    for (const c of (clients || [])) {
+      if (c.assigned_ot_therapist_name === t.full_name || c.assigned_speech_therapist_name === t.full_name) caseloadIds.add(c.id);
+    }
     return {
       id: t.id,
       name: t.full_name,
       specialty,
       sessionsThisMonth: own.filter(r => (r.date || '').slice(0, 7) === curMonthKey).length,
       totalSessions: own.length,
-      clients: new Set(own.map(r => r.client_id)).size,
+      clients: caseloadIds.size,
       milestonePct: ownNotes.length ? Math.round(ownNotes.reduce((s, n) => s + n.score, 0) / ownNotes.length) : null
     };
   }).sort((a, b) => b.totalSessions - a.totalSessions);
@@ -187,6 +198,18 @@ router.get('/employees', async (req, res) => {
     headcount,
     rows
   });
+});
+
+/** GET /api/analytics/bookings, raw date+status pairs for the Dashboard's Booking
+ *  Trends chart (Employee Statistics tab). Admin/staff clinic-wide concern, same
+ *  scope as /employees and /demographics, deliberately not exposed to ot/speech
+ *  (they only ever see their own caseload elsewhere). Bucketing by week/month/
+ *  year and filtering by status happens client-side, same pattern the Milestone
+ *  Trends chart already uses for its own raw GAS entries. */
+router.get('/bookings', requireRole('admin', 'staff'), async (req, res) => {
+  const { data, error } = await db.from('reservations').select('date, status');
+  if (error) return res.status(500).json({ error: error.message });
+  res.json(data || []);
 });
 
 /** GET /api/analytics/demographics, client gender + age breakdown */

@@ -13,12 +13,16 @@ function mapProfile(p) {
     .toUpperCase()
     .slice(0, 2);
 
+  // One shared categorical slot per role (see --cat-1..8 in shared.css), the
+  // pill and the avatar draw from the exact same color instead of each
+  // inventing its own hex, admin/staff/OT/speech/parent were previously 4
+  // different ad-hoc hex pairs that didn't visually relate to each other.
   const roleMeta = {
-    admin: { label: 'Administrator', pillClass: 'pill pill-blue', bg: 'linear-gradient(135deg,#0EA5E9,#0D9488)', color: '#fff' },
-    ot: { label: 'Occupational Therapist', pillClass: 'pill pill-teal', bg: '#CCFBF1', color: '#0F766E' },
-    speech: { label: 'Speech-Language Therapist', pillClass: 'pill pill-teal', bg: '#CCFBF1', color: '#0F766E' },
-    staff: { label: 'Staff', pillClass: 'pill pill-amber', bg: '#FEF3C7', color: '#D97706' },
-    parent: { label: 'Guardian/Caretaker', pillClass: 'pill pill-purple', bg: '#F3E8FF', color: '#9333EA' },
+    admin: { label: 'Administrator', pillClass: 'pill pill-cat-1', bg: 'var(--cat-1)', color: '#fff' },
+    ot: { label: 'Occupational Therapist', pillClass: 'pill pill-cat-3', bg: 'var(--cat-3)', color: '#fff' },
+    speech: { label: 'Speech-Language Therapist', pillClass: 'pill pill-cat-6', bg: 'var(--cat-6)', color: '#fff' },
+    staff: { label: 'Staff', pillClass: 'pill pill-cat-2', bg: 'var(--cat-2)', color: '#fff' },
+    parent: { label: 'Guardian/Caretaker', pillClass: 'pill pill-cat-5', bg: 'var(--cat-5)', color: '#fff' },
   };
   const rm = roleMeta[p.role] || roleMeta.staff;
   const roleLabel = rm.label;
@@ -69,7 +73,7 @@ const headCell = { padding: '9px 10px', color: '#64748B', fontSize: 11, textTran
 // than a card's width, table-layout:fixed with width:100% then grows every column proportionally
 // to fill the rest, so the leftover space is spread evenly across columns instead of dumped
 // entirely into one (which used to leave a big empty gap before Role).
-const COL_W = { checkbox: 28, id: 100, name: 150, role: 68, joined: 54, status: 62, actions: 54 };
+const COL_W = { checkbox: 30, id: 100, name: 170, role: 76, joined: 58, status: 66, actions: 58 };
 
 // Both tables show a fixed number of row-slots so the two cards match in height no matter how
 // many users land in each group, one table having fewer rows (e.g. guardians) used to leave its
@@ -78,7 +82,7 @@ const COL_W = { checkbox: 28, id: 100, name: 150, role: 68, joined: 54, status: 
 const VISIBLE_ROWS = 5;
 const ROW_H = 41; // approx rendered height of a data-table row (padding + font-size below)
 
-const filterSelect = { width: 'auto', height: 34, fontSize: 12.5, padding: '0 28px 0 10px', flexShrink: 0 };
+const filterSelect = { width: 'auto', maxWidth: '100%', minWidth: 0, height: 34, fontSize: 12.5, padding: '0 28px 0 10px', flexShrink: 1 };
 
 /** One users table, reused for the staff/therapist/admin group and the guardian/caretaker group.
  *  Both instances render the exact same columns, and now each carries its own search/filter row
@@ -86,7 +90,7 @@ const filterSelect = { width: 'auto', height: 34, fontSize: 12.5, padding: '0 28
  *  (and the role filter, staff-only) differ. */
 function UsersTable({ title, subtitle, rows, totalCount, selected, allSelected, onToggleAll, onToggleRow, onEdit, onDelete, formatDate, formatDateFull,
   searchValue, onSearchChange, roleOptions, roleFilter, onRoleFilterChange, statusFilter, onStatusFilterChange,
-  onBulkActivate, onBulkSuspend, onBulkDelete, onClearSelection, onAddUser }) {
+  onBulkActivate, onBulkSuspend, onBulkDelete, onClearSelection, onAddUser, onBulkAddUsers }) {
   const colCount = 7;
   const selectedRows = rows.filter(u => selected.has(u.id));
   return (
@@ -97,7 +101,10 @@ function UsersTable({ title, subtitle, rows, totalCount, selected, allSelected, 
             <div className="section-title">{title}</div>
             {subtitle && <div className="section-sub">{subtitle}</div>}
           </div>
-          <button className="qa-btn" style={{ width: 'auto', padding: '8px 14px', fontSize: 12.5, flexShrink: 0 }} onClick={onAddUser}><i className="fa-solid fa-user-plus" style={{ color: '#0EA5E9' }} /> Add User</button>
+          <div style={{ display: 'flex', gap: 8, flexShrink: 0, flexWrap: 'wrap' }}>
+            <button className="qa-btn" style={{ width: 'auto', padding: '8px 14px', fontSize: 12.5 }} onClick={onAddUser}><i className="fa-solid fa-user-plus" style={{ color: '#0EA5E9' }} /> Add User</button>
+            <button className="qa-btn" style={{ width: 'auto', padding: '8px 14px', fontSize: 12.5 }} onClick={onBulkAddUsers}><i className="fa-solid fa-users" style={{ color: '#0EA5E9' }} /> Bulk Add</button>
+          </div>
         </div>
         <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap', marginTop: 14 }}>
           <div style={{ position: 'relative', flex: '1 1 140px', minWidth: 120 }}>
@@ -126,11 +133,11 @@ function UsersTable({ title, subtitle, rows, totalCount, selected, allSelected, 
           </div>
         )}
       </div>
-      <div style={{ overflowX: 'hidden', overflowY: 'auto', flex: 1, minHeight: VISIBLE_ROWS * ROW_H }}>
-        <table className="data-table" style={{ tableLayout: 'fixed', width: '100%' }}>
+      <div style={{ overflowX: 'auto', overflowY: 'auto', flex: 1, minHeight: VISIBLE_ROWS * ROW_H }}>
+        <table className="data-table" style={{ tableLayout: 'fixed', width: '100%', minWidth: 558 }}>
           <thead>
             <tr>
-              <th style={{ ...headCell, paddingLeft: 20, width: COL_W.checkbox }}><input type="checkbox" style={{ accentColor: '#0EA5E9', width: 14, height: 14, cursor: 'pointer' }} checked={allSelected} onChange={onToggleAll} title="Select all" /></th>
+              <th style={{ ...headCell, paddingLeft: 16, width: COL_W.checkbox }}><input type="checkbox" style={{ accentColor: '#0EA5E9', width: 14, height: 14, cursor: 'pointer' }} checked={allSelected} onChange={onToggleAll} title="Select all" /></th>
               <th style={{ ...headCell, textAlign: 'center', width: COL_W.id }}>ID</th>
               <th style={{ ...headCell, width: COL_W.name }}>Name</th><th style={{ ...headCell, width: COL_W.role }}>Role</th><th style={{ ...headCell, width: COL_W.joined }}>Joined</th><th style={{ ...headCell, width: COL_W.status }}>Status</th>
               <th style={{ ...headCell, textAlign: 'center', width: COL_W.actions }}>Actions</th>
@@ -141,9 +148,9 @@ function UsersTable({ title, subtitle, rows, totalCount, selected, allSelected, 
               <TableEmptyRow colSpan={colCount} label="No users found." padding="30px 24px" />
             ) : rows.map(u => (
               <tr key={u.id}>
-                <td style={{ ...cell, paddingLeft: 20 }}><input type="checkbox" style={{ accentColor: '#0EA5E9', width: 14, height: 14, cursor: 'pointer' }} checked={selected.has(u.id)} onChange={() => onToggleRow(u.id)} /></td>
-                <td style={{ ...cell, fontSize: 11, color: '#94A3B8', fontWeight: 600, fontFamily: "'Inter',monospace", whiteSpace: 'nowrap', textAlign: 'center' }}>{u.userCode}</td>
-                <td style={cell}><div style={{ display: 'flex', alignItems: 'center', gap: 8, overflow: 'hidden' }}><div className="act-avatar" style={{ width: 26, height: 26, background: u.avatarBg, color: u.avatarColor, fontSize: 10, flexShrink: 0 }}>{u.initials}</div><div style={{ overflow: 'hidden' }}><div style={{ fontSize: 12.5, fontWeight: 600, color: '#0F172A', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }} title={u.full_name}>{u.full_name}</div><div style={{ fontSize: 11, color: '#94A3B8', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }} title={u.email}>{u.email}</div></div></div></td>
+                <td style={{ ...cell, paddingLeft: 16 }}><input type="checkbox" style={{ accentColor: '#0EA5E9', width: 14, height: 14, cursor: 'pointer' }} checked={selected.has(u.id)} onChange={() => onToggleRow(u.id)} /></td>
+                <td style={{ ...cell, fontSize: 11, color: '#94A3B8', fontWeight: 600, fontFamily: "'Inter',monospace", wordBreak: 'break-word', textAlign: 'center' }}>{u.userCode}</td>
+                <td style={{ ...cell, overflow: 'hidden' }}><div style={{ display: 'flex', alignItems: 'center', gap: 8, overflow: 'hidden', minWidth: 0 }}><div className="act-avatar" style={{ width: 26, height: 26, background: u.avatarBg, color: u.avatarColor, fontSize: 10, flexShrink: 0 }}>{u.initials}</div><div style={{ overflow: 'hidden', minWidth: 0 }}><div style={{ fontSize: 12.5, fontWeight: 600, color: '#0F172A', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }} title={u.full_name}>{u.full_name}</div><div style={{ fontSize: 11, color: '#94A3B8', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }} title={u.email}>{u.email}</div></div></div></td>
                 <td style={cell}><span className={u.rolePillClass} style={{ fontSize: 10, padding: '3px 7px' }}>{SHORT_ROLE[u.roleLabel] || u.roleLabel}</span></td>
                 <td style={{ ...cell, fontSize: 11.5, color: '#475569', whiteSpace: 'nowrap' }} title={formatDateFull(u.created_at)}>{formatDate(u.created_at)}</td>
                 <td style={cell}><span className={u.statusPillClass} style={{ fontSize: 10, padding: '3px 7px' }}>{u.statusLabel}</span></td>
@@ -303,6 +310,24 @@ export default function Users({ go, toast, openModal }) {
     });
   }
 
+  // Same POST /users the single Add User flow hits, just one call per row so
+  // a duplicate email in one row doesn't block the rows next to it, see
+  // BulkAddUserModal's use of Promise.allSettled.
+  function handleBulkAddUsers(roleOptions) {
+    openModal('bulk-add-users', {
+      roleOptions,
+      onSaveOne: async (payload) => {
+        try {
+          await api('/users', { method: 'POST', body: payload });
+          return { ok: true };
+        } catch (err) {
+          return { ok: false, error: err.message };
+        }
+      },
+      onDone: fetchUsers,
+    });
+  }
+
   // The Edit User modal closes itself as soon as Save is clicked, before the request even goes
   // out. Re-deriving the row via a fresh fetchUsers() round trip after the PUT would flash the
   // whole page to "Loading users…" (fetchUsers flips that on for every call) and still leave the
@@ -380,7 +405,7 @@ export default function Users({ go, toast, openModal }) {
       {loading ? (
         <div className="card"><LoadingState label="Loading users…" padding="40px 24px" fontSize={14} color="#64748B" /></div>
       ) : (
-        <div style={{ display: 'grid', gridTemplateColumns: 'minmax(0, 1fr) minmax(0, 1fr)', gap: 16, alignItems: 'stretch' }}>
+        <div className="users-grid">
           <UsersTable
             title="Staff, Therapist & Admin Accounts"
             rows={visibleStaffUsers}
@@ -405,6 +430,7 @@ export default function Users({ go, toast, openModal }) {
             onBulkDelete={bulkDelete}
             onClearSelection={clearSelectionIn}
             onAddUser={() => handleAddUser(['Administrator', 'Staff', 'Occupational Therapist', 'Speech-Language Therapist'])}
+            onBulkAddUsers={() => handleBulkAddUsers(['Administrator', 'Staff', 'Occupational Therapist', 'Speech-Language Therapist'])}
           />
           <UsersTable
             title="Guardian / Caretaker Accounts"
@@ -427,11 +453,12 @@ export default function Users({ go, toast, openModal }) {
             onBulkDelete={bulkDelete}
             onClearSelection={clearSelectionIn}
             onAddUser={() => handleAddUser(['Guardian/Caretaker'])}
+            onBulkAddUsers={() => handleBulkAddUsers(['Guardian/Caretaker'])}
           />
         </div>
       )}
 
-      <div className="page-footer"><span style={{ fontSize: 12, color: '#94A3B8' }}>© 2026 KID Clinic Information Management System</span><span style={{ fontSize: 12, color: '#94A3B8', cursor: 'pointer' }}>Support</span></div>
+      <div className="page-footer"><span style={{ fontSize: 12, color: '#94A3B8' }}>© 2026 KID Clinic Information Management System</span></div>
     </div>
   );
 }

@@ -47,7 +47,7 @@ export default function AuthCard({
     }
   }
 
-  const input = { width: '100%', padding: '12px 15px', border: '1px solid var(--color-border)', borderRadius: 8, fontFamily: 'Inter,sans-serif', fontSize: 14, outline: 'none', background: '#fff' };
+  const input = { width: '100%', padding: '12px 15px', border: '1px solid var(--color-border)', borderRadius: 10, fontFamily: 'Inter,sans-serif', fontSize: 14, outline: 'none', background: '#fff' };
   const label = { display: 'block', fontSize: 13, fontWeight: 600, color: 'var(--color-text-muted)', marginBottom: 8 };
 
   return (
@@ -59,11 +59,11 @@ export default function AuthCard({
           <p style={{ fontSize: 14, color: 'var(--color-text-muted)', marginBottom: 28, lineHeight: 1.6 }}>{subtitle}</p>
 
           {err && (
-            <div className="auth-alert-in" style={{ background: 'var(--color-danger-bg-soft)', border: '1px solid var(--color-danger-bg)', borderRadius: 8, padding: '10px 14px', fontSize: 13, color: 'var(--color-danger)', marginBottom: 16, fontWeight: 600 }}>
+            <div className="auth-alert-in" style={{ background: 'var(--color-danger-bg-soft)', border: '1px solid var(--color-danger-bg)', borderRadius: 10, padding: '10px 14px', fontSize: 13, color: 'var(--color-danger)', marginBottom: 16, fontWeight: 600 }}>
               <i className="fa-solid fa-circle-exclamation" style={{ marginRight: 6 }} />{err}
               {needsVerification && (
                 <div style={{ marginTop: 8 }}>
-                  <Link to={`/verify-email?email=${encodeURIComponent(email.trim())}`} style={{ color: '#1F4E9E', fontSize: 13, fontWeight: 700, textDecoration: 'underline' }}>
+                  <Link to={`/verify-email?email=${encodeURIComponent(email.trim())}`} style={{ color: 'var(--color-landing-primary)', fontSize: 13, fontWeight: 700, textDecoration: 'underline' }}>
                     Verify your email now
                   </Link>
                 </div>
@@ -98,10 +98,10 @@ export default function AuthCard({
                 </button>
               </div>
               <div style={{ textAlign: 'right', marginTop: 8 }}>
-                <Link to="/forgot-password" style={{ fontSize: 12.5, color: '#1F4E9E', fontWeight: 600, textDecoration: 'none' }}>Forgot Password?</Link>
+                <Link to="/forgot-password" style={{ fontSize: 12.5, color: 'var(--color-landing-primary)', fontWeight: 600, textDecoration: 'none' }}>Forgot Password?</Link>
               </div>
             </div>
-            <button disabled={busy} className="auth-submit-btn" style={{ width: '100%', padding: 13, background: '#1F4E9E', color: '#fff', border: 'none', borderRadius: 8, fontFamily: 'Inter,sans-serif', fontSize: 15, fontWeight: 700, cursor: busy ? 'default' : 'pointer', opacity: busy ? .8 : 1 }}>
+            <button disabled={busy} className="auth-submit-btn" style={{ width: '100%', padding: 13, background: 'var(--color-landing-primary)', color: '#fff', border: 'none', borderRadius: 10, fontFamily: 'Inter,sans-serif', fontSize: 15, fontWeight: 700, cursor: busy ? 'default' : 'pointer', opacity: busy ? .8 : 1 }}>
               {busy && <span className="auth-spinner" />}{busy ? 'Signing in…' : 'Sign In'}
             </button>
           </form>
@@ -109,20 +109,20 @@ export default function AuthCard({
           {showSignupLink && (
             <div style={{ textAlign: 'center', marginTop: 20, fontSize: 13, color: 'var(--color-text-muted)' }}>
               Parent or guardian and new here?{' '}
-              <Link to="/signup" style={{ color: '#1F4E9E', fontWeight: 700, textDecoration: 'none' }}>Create an account</Link>
+              <Link to="/signup" style={{ color: 'var(--color-landing-primary)', fontWeight: 700, textDecoration: 'none' }}>Create an account</Link>
             </div>
           )}
 
           {footerLink && (
             <div style={{ textAlign: 'center', marginTop: 20, display: 'flex', flexDirection: 'column', gap: 8 }}>
               {(Array.isArray(footerLink) ? footerLink : [footerLink]).map((fl, i) => (
-                <Link key={i} to={fl.to} style={{ color: '#1F4E9E', fontSize: 13, fontWeight: 600, textDecoration: 'none' }}>{fl.label}</Link>
+                <Link key={i} to={fl.to} style={{ color: 'var(--color-landing-primary)', fontSize: 13, fontWeight: 600, textDecoration: 'none' }}>{fl.label}</Link>
               ))}
             </div>
           )}
 
           <div style={{ textAlign: 'center', marginTop: 14 }}>
-            <Link to="/" style={{ color: '#1F4E9E', fontSize: 13, fontWeight: 600, textDecoration: 'none' }}>
+            <Link to="/" style={{ color: 'var(--color-landing-primary)', fontSize: 13, fontWeight: 600, textDecoration: 'none' }}>
               <i className="fa-solid fa-arrow-left" style={{ marginRight: 5 }} />Back to website
             </Link>
           </div>

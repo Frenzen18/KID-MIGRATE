@@ -52,24 +52,24 @@ export function isLunchHour(shift, h) {
 }
 
 /**
- * All active therapists with their shift. Therapists without a shift row yet
- * get the clinic default (8 AM – 5 PM) created on the spot, so the schedule
- * is always complete and booking capacity is never undefined.
+ * All active profiles of the given roles with their shift. Profiles without a
+ * shift row yet get the clinic default (8 AM – 5 PM) created on the spot, so
+ * the schedule is always complete and never undefined.
  */
-export async function getTherapistShifts() {
-  const { data: therapists, error } = await db.from('profiles')
+export async function getShiftsForRoles(roles) {
+  const { data: profiles, error } = await db.from('profiles')
     .select('id, full_name, email, role')
-    .in('role', ['ot', 'speech']).eq('active', true)
+    .in('role', roles).eq('active', true)
     .order('full_name');
   if (error) throw new Error(error.message);
-  if (!therapists?.length) return [];
+  if (!profiles?.length) return [];
 
   const { data: shifts } = await db.from('shifts').select('*');
-  const byTherapist = Object.fromEntries((shifts || []).map(s => [s.therapist_id, s]));
+  const byProfile = Object.fromEntries((shifts || []).map(s => [s.therapist_id, s]));
 
   const out = [];
-  for (const t of therapists) {
-    let s = byTherapist[t.id];
+  for (const t of profiles) {
+    let s = byProfile[t.id];
     if (!s) {
       const { data: created } = await db.from('shifts')
         .insert({ therapist_id: t.id, start_hour: 8, end_hour: 17 })
@@ -91,10 +91,22 @@ export async function getTherapistShifts() {
   return out;
 }
 
-/** GET /api/shifts, therapist shift schedule (staff-side) */
+/** All active therapists (OT/Speech) with their shift, this is the set that
+ *  actually drives booking capacity (see server/routes/reservations.js). */
+export async function getTherapistShifts() {
+  return getShiftsForRoles(['ot', 'speech']);
+}
+
+/**
+ * GET /api/shifts, therapist shift schedule (staff-side), drives real booking
+ * capacity. ?scope=admin instead returns Admin/Staff accounts' own shift +
+ * availability rows, tracked the same way but purely for schedule visibility,
+ * never fed into booking slot generation.
+ */
 router.get('/', requireRole('admin', 'staff', 'ot', 'speech'), async (req, res) => {
   try {
-    res.json(await getTherapistShifts());
+    const roles = req.query.scope === 'admin' ? ['admin', 'staff'] : ['ot', 'speech'];
+    res.json(await getShiftsForRoles(roles));
   } catch (e) {
     res.status(500).json({ error: e.message });
   }
@@ -102,16 +114,18 @@ router.get('/', requireRole('admin', 'staff', 'ot', 'speech'), async (req, res) 
 
 /**
  * PUT /api/shifts/:therapistId  { start_hour, end_hour, work_days? }
- * Saves the shift, then handles the "sudden change" case: any future active
+ * Saves the shift for a therapist OR an admin/staff account (same table,
+ * same shape), then handles the "sudden change" case: any future active
  * booking assigned to this therapist that now falls OUTSIDE the shift is
  * flagged back to pending for rescheduling, and the parent is notified
- * in-app and by email.
+ * in-app and by email. Admin/staff are never assigned as a booking's
+ * therapist, so this reassignment sweep is naturally a no-op for them.
  */
 router.put('/:therapistId', requireRole('admin', 'staff'), async (req, res) => {
   try {
   const { data: therapist } = await db.from('profiles')
-    .select('id, full_name').eq('id', req.params.therapistId).in('role', ['ot', 'speech']).maybeSingle();
-  if (!therapist) return res.status(404).json({ error: 'Therapist not found' });
+    .select('id, full_name').eq('id', req.params.therapistId).in('role', ['ot', 'speech', 'admin', 'staff']).maybeSingle();
+  if (!therapist) return res.status(404).json({ error: 'Staff member not found' });
 
   // Partial update: fields not sent keep their current value.
   const { data: current } = await db.from('shifts').select('*').eq('therapist_id', therapist.id).maybeSingle();

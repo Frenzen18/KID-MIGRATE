@@ -3,6 +3,16 @@ import { Modal } from '../../../../components/ui.jsx';
 import { api } from '../../../../api.js';
 import { rateForSessionType, effectiveSlotAvailable, REQUIRED_ROLE_FOR_TYPE, therapistWorksOn } from './reservationsHelpers.js';
 
+// A Combined client carries two independent assigned therapists (one OT, one
+// Speech), never a single shared field, this picks the one matching the
+// session type being booked, mirrors server/routes/reservations.js's own helper.
+function assignedTherapistForType(client, sessionType) {
+  if (!client) return null;
+  if (sessionType === 'Occupational Therapy' || sessionType === 'Occupational Assessment') return client.assigned_ot_therapist_name || null;
+  if (sessionType === 'Speech Therapy' || sessionType === 'Speech-Language Assessment') return client.assigned_speech_therapist_name || null;
+  return null;
+}
+
 export default function BookingModal({ selected, daySlots, slotState, defaultTime, time, clients, clientLabel, serviceType, busy, onClose, onConfirm }) {
   const requiredRole = REQUIRED_ROLE_FOR_TYPE[serviceType] || null;
 
@@ -16,7 +26,7 @@ export default function BookingModal({ selected, daySlots, slotState, defaultTim
   const DISCIPLINE_FOR_TYPE = { 'Speech-Language Assessment': 'Speech', 'Occupational Assessment': 'OT' };
   const requiredDiscipline = DISCIPLINE_FOR_TYPE[serviceType];
   const bookableClients = isInitialAssessment
-    ? clients.filter(c => !c.assigned_therapist_name && !c.therapy_type)
+    ? clients.filter(c => !c.assigned_ot_therapist_name && !c.assigned_speech_therapist_name && !c.therapy_type)
     : requiredDiscipline
       ? clients.filter(c => c.therapy_type === requiredDiscipline || c.therapy_type === 'Both')
       : clients;
@@ -53,8 +63,9 @@ export default function BookingModal({ selected, daySlots, slotState, defaultTim
   // assigned to, not just anyone of that discipline on shift, picking a
   // different therapist would silently reassign the client's care.
   const selectedClient = bookableClients.find(cl => cl.id === selectedClientId);
-  const eligibleTherapists = selectedClient?.assigned_therapist_name
-    ? therapists.filter(t => t.name === selectedClient.assigned_therapist_name
+  const selectedClientAssignedTherapist = assignedTherapistForType(selectedClient, serviceType);
+  const eligibleTherapists = selectedClientAssignedTherapist
+    ? therapists.filter(t => t.name === selectedClientAssignedTherapist
         && t.role === requiredRole && therapistWorksOn(t, selected.date))
     : [];
 
@@ -75,7 +86,8 @@ export default function BookingModal({ selected, daySlots, slotState, defaultTim
     const clientParam = !requiredRole ? selectedClientId : '';
     if (!therapistParam && !clientParam) { setScopedSlots(daySlots); return; }
     let cancelled = false;
-    const qs = therapistParam ? '&therapist_name=' + encodeURIComponent(therapistParam) : '&client_id=' + clientParam;
+    const qs = (therapistParam ? '&therapist_name=' + encodeURIComponent(therapistParam) : '&client_id=' + clientParam)
+      + '&session_type=' + encodeURIComponent(serviceType);
     api('/reservations/slots?date=' + selected.date + qs)
       .then(data => { if (!cancelled) setScopedSlots(data); })
       .catch(() => { if (!cancelled) setScopedSlots(daySlots); });
@@ -93,13 +105,13 @@ export default function BookingModal({ selected, daySlots, slotState, defaultTim
   return (
     <Modal title={'Book Slot: ' + selected.label + ', ' + selected.year} onClose={onClose} width={540}>
       <div style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '10px 14px', borderRadius: 9, background: '#F0F9FF', border: '1px solid #BAE6FD', marginBottom: 16 }}>
-        <i className="fa-solid fa-clipboard-check" style={{ color: '#0EA5E9', fontSize: 16 }} />
+        <i className="fa-solid fa-clipboard-check" style={{ color: 'var(--color-primary)', fontSize: 16 }} />
         <div>
           <div style={{ fontSize: 13, fontWeight: 700, color: '#0F172A' }}>{serviceType}</div>
           <div style={{ fontSize: 11.5, color: '#64748B' }}>{selected.label}, {selected.year}{time ? ' · Time slot: ' + time : ''}</div>
         </div>
       </div>
-      <div id="bk-err" style={{ display: 'none', background: '#FEF2F2', border: '1px solid #FECACA', color: '#DC2626', borderRadius: 8, padding: '9px 13px', fontSize: 12.5, fontWeight: 600, marginBottom: 14 }}>
+      <div id="bk-err" style={{ display: 'none', background: 'var(--color-danger-bg-soft)', border: '1px solid #FECACA', color: 'var(--color-danger)', borderRadius: 8, padding: '9px 13px', fontSize: 12.5, fontWeight: 600, marginBottom: 14 }}>
         <i className="fa-solid fa-circle-exclamation" style={{ marginRight: 6 }} /><span id="bk-err-msg" />
       </div>
       <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
@@ -138,15 +150,16 @@ export default function BookingModal({ selected, daySlots, slotState, defaultTim
             </div>
           )}
           {isInitialAssessment && !bookableClients.length && (
-            <div style={{ fontSize: 11.5, color: '#DC2626', marginTop: 5 }}><i className="fa-solid fa-circle-exclamation" style={{ marginRight: 5 }} />Every client already has a therapy type and therapist assigned, none are eligible for an Initial Assessment.</div>
+            <div style={{ fontSize: 11.5, color: 'var(--color-danger)', marginTop: 5 }}><i className="fa-solid fa-circle-exclamation" style={{ marginRight: 5 }} />Every client already has a therapy type and therapist assigned, none are eligible for an Initial Assessment.</div>
           )}
           {requiredDiscipline && !bookableClients.length && (
-            <div style={{ fontSize: 11.5, color: '#DC2626', marginTop: 5 }}><i className="fa-solid fa-circle-exclamation" style={{ marginRight: 5 }} />No clients are designated for {requiredDiscipline === 'Speech' ? 'Speech-Language' : 'Occupational'} Therapy yet.</div>
+            <div style={{ fontSize: 11.5, color: 'var(--color-danger)', marginTop: 5 }}><i className="fa-solid fa-circle-exclamation" style={{ marginRight: 5 }} />No clients are designated for {requiredDiscipline === 'Speech' ? 'Speech-Language' : 'Occupational'} Therapy yet.</div>
           )}
           {(() => {
             const c = bookableClients.find(cl => cl.id === selectedClientId);
-            return (!requiredRole && c?.assigned_therapist_name)
-              ? <div style={{ fontSize: 11.5, color: '#0EA5E9', marginTop: 5 }}><i className="fa-solid fa-circle-info" style={{ marginRight: 5 }} />Showing available times for {c.assigned_therapist_name}'s schedule only.</div>
+            const name = !requiredRole ? assignedTherapistForType(c, serviceType) : null;
+            return name
+              ? <div style={{ fontSize: 11.5, color: 'var(--color-primary)', marginTop: 5 }}><i className="fa-solid fa-circle-info" style={{ marginRight: 5 }} />Showing available times for {name}'s schedule only.</div>
               : null;
           })()}
         </div>
@@ -160,11 +173,11 @@ export default function BookingModal({ selected, daySlots, slotState, defaultTim
             {!selectedClientId && (
               <div style={{ fontSize: 11.5, color: '#64748B', marginTop: 5 }}><i className="fa-solid fa-circle-info" style={{ marginRight: 5 }} />Select a client first.</div>
             )}
-            {selectedClientId && !selectedClient?.assigned_therapist_name && (
-              <div style={{ fontSize: 11.5, color: '#DC2626', marginTop: 5 }}><i className="fa-solid fa-circle-exclamation" style={{ marginRight: 5 }} />{selectedClient?.full_name || 'This client'} doesn't have an assigned therapist yet.</div>
+            {selectedClientId && !selectedClientAssignedTherapist && (
+              <div style={{ fontSize: 11.5, color: 'var(--color-danger)', marginTop: 5 }}><i className="fa-solid fa-circle-exclamation" style={{ marginRight: 5 }} />{selectedClient?.full_name || 'This client'} doesn't have an assigned therapist yet.</div>
             )}
-            {selectedClientId && selectedClient?.assigned_therapist_name && !eligibleTherapists.length && (
-              <div style={{ fontSize: 11.5, color: '#DC2626', marginTop: 5 }}><i className="fa-solid fa-circle-exclamation" style={{ marginRight: 5 }} />{selectedClient.assigned_therapist_name} is not on shift on {selected.label}.</div>
+            {selectedClientId && selectedClientAssignedTherapist && !eligibleTherapists.length && (
+              <div style={{ fontSize: 11.5, color: 'var(--color-danger)', marginTop: 5 }}><i className="fa-solid fa-circle-exclamation" style={{ marginRight: 5 }} />{selectedClientAssignedTherapist} is not on shift on {selected.label}.</div>
             )}
           </div>
         )}
@@ -175,7 +188,8 @@ export default function BookingModal({ selected, daySlots, slotState, defaultTim
         </div>
         <div>
           <label className="form-label">Start Time *</label>
-          <select className="form-select" id="modal-time-select" defaultValue={defaultTime}>
+          <select className="form-select" id="modal-time-select" defaultValue={defaultTime || ''}>
+            <option value="" disabled>- Select time -</option>
             {scopedSlots.map(s => {
               const t = s.time_slot;
               const avail = effectiveSlotAvailable(s, serviceType);

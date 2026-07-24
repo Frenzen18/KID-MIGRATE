@@ -4,7 +4,9 @@ import Branding from './Branding.jsx';
 
 /* == page: cms == */
 
-const PILLS = { Programs: 'pill-teal', Events: 'pill-amber', Awards: 'pill-blue', Insights: 'pill-blue' };
+// Content category tags, one categorical slot each (see --cat-1..8 in
+// shared.css), Awards and Insights used to share the exact same blue.
+const PILLS = { Programs: 'pill-cat-3', Events: 'pill-cat-2', Awards: 'pill-cat-1', Insights: 'pill-cat-8' };
 
 const POST_TITLE_LIMIT = 80;
 const POST_BODY_LIMIT = 500;
@@ -14,19 +16,24 @@ const ANN_BODY_LIMIT = 200;
 function CharCount({ length, limit }) {
   const atLimit = length >= limit;
   return (
-    <div style={{ fontSize: 11, textAlign: 'right', marginTop: 4, color: atLimit ? '#EF4444' : '#94A3B8', fontWeight: atLimit ? 700 : 400 }}>
+    <div style={{ fontSize: 11, textAlign: 'right', marginTop: 4, color: atLimit ? 'var(--color-danger-strong)' : '#94A3B8', fontWeight: atLimit ? 700 : 400 }}>
       {atLimit ? 'Character limit reached, ' : ''}{length}/{limit}
     </div>
   );
 }
 
-export default function Cms({ go, toast, openModal }) {
-  /* ── Tab switching, honors a one-shot initial tab set by Settings' "Open Branding & Theme" link ── */
+const CMS_TAB_KEYS = ['articles', 'announcements', 'homepage', 'approach', 'branding'];
+
+export default function Cms({ go, toast, openModal, onUnsavedChange }) {
+  /* ── Tab switching, honors a one-shot initial tab set by Settings' "Open Branding & Theme" link,
+     otherwise restores whatever tab was last open so a refresh doesn't bounce back to News Post ── */
   const [tab, setTab] = useState(() => {
     const requested = sessionStorage.getItem('cms_initial_tab');
     if (requested) { sessionStorage.removeItem('cms_initial_tab'); return requested; }
-    return 'articles';
+    const saved = localStorage.getItem('kid_admin_cms_tab');
+    return CMS_TAB_KEYS.includes(saved) ? saved : 'articles';
   });
+  useEffect(() => { localStorage.setItem('kid_admin_cms_tab', tab); }, [tab]);
 
   /* ── Branding, used only for the hero kicker in the live preview below, to match the real landing page ── */
   const [brand, setBrand] = useState(null);
@@ -37,16 +44,21 @@ export default function Cms({ go, toast, openModal }) {
   const [postText, setPostText] = useState('');
   const [postCat, setPostCat] = useState('Programs');
   const [currentPhoto, setCurrentPhoto] = useState('KID INDEX HTML PICTURES 3.jfif');
+  const [postPhotoCredit, setPostPhotoCredit] = useState('');
   const [addedPosts, setAddedPosts] = useState([]);
   const [dbPosts, setDbPosts] = useState([]);
   const [dbAnnouncements, setDbAnnouncements] = useState([]);
   const [editingPost, setEditingPost] = useState(null); // null = creating new, object = editing existing
+  const [editingAnnouncement, setEditingAnnouncement] = useState(null); // null = creating new, object = editing existing
   const [confirmDelete, setConfirmDelete] = useState(null); // { type: 'post'|'announcement', id, title }
   const nextId = useRef(1);
   const titleRef = useRef(null);
   const fileInputRef = useRef(null);
   const [uploading, setUploading] = useState(false);
   const [uploadedPhotos, setUploadedPhotos] = useState([]);
+  // Which photo picker's "Upload new photo" tile was clicked ('post' | 'hero' | 'approach'),
+  // the single hidden file input + handleFileUpload are shared by all three pickers below.
+  const [uploadTarget, setUploadTarget] = useState('post');
 
   /* ── Announcement state ── */
   const [annTitle, setAnnTitle] = useState('');
@@ -59,8 +71,19 @@ export default function Cms({ go, toast, openModal }) {
   const [heroSub, setHeroSub] = useState('We provide pediatric speech and occupational therapy in a warm, child-centered environment.');
   const [heroCta, setHeroCta] = useState('Get Started');
   const [heroPhoto, setHeroPhoto] = useState('KID INDEX HTML PICTURES 1.webp');
-  const [clinicAbout, setClinicAbout] = useState('Bloomsdale Therapy Center provides expert pediatric speech and occupational therapy in Imus, Cavite. We serve children aged 1–12 with personalized, evidence-based care.');
+  const [heroPhotoCredit, setHeroPhotoCredit] = useState('');
+  const [clinicAbout, setClinicAbout] = useState('Bloomsdale Therapy Center provides expert pediatric speech and occupational therapy in Imus, Cavite. We serve children aged 3–21 with personalized, evidence-based care.');
   const [clinicServices, setClinicServices] = useState("We offer Occupational Therapy and Speech Therapy tailored to each child's developmental needs and goals.");
+
+  /* ── Homepage "Our Approach" section state ── */
+  const [approachTitle, setApproachTitle] = useState('Small steps, celebrated together.');
+  const [approachPhoto, setApproachPhoto] = useState('KID INDEX HTML PICTURES 2.jpg');
+  const [approachPhotoCredit, setApproachPhotoCredit] = useState('');
+  const [approachPoints, setApproachPoints] = useState([
+    'Personalized speech and occupational therapy plans built around each child',
+    'Milestone tracking that parents can follow between sessions',
+    'A calm, sensory-friendly space where children feel safe to learn'
+  ]);
 
   /* ── Fetch real data from DB ── */
   useEffect(() => {
@@ -78,8 +101,13 @@ export default function Cms({ go, toast, openModal }) {
           if (settings.sub) setHeroSub(settings.sub);
           if (settings.cta) setHeroCta(settings.cta);
           if (settings.photo) setHeroPhoto(settings.photo);
+          if (settings.photoCredit) setHeroPhotoCredit(settings.photoCredit);
           if (settings.clinicAbout) setClinicAbout(settings.clinicAbout);
           if (settings.clinicServices) setClinicServices(settings.clinicServices);
+          if (settings.approachTitle) setApproachTitle(settings.approachTitle);
+          if (settings.approachPhoto) setApproachPhoto(settings.approachPhoto);
+          if (settings.approachPhotoCredit) setApproachPhotoCredit(settings.approachPhotoCredit);
+          if (Array.isArray(settings.approachPoints) && settings.approachPoints.length === 3) setApproachPoints(settings.approachPoints);
         } catch (e) {}
       }
     }).catch(() => {});
@@ -99,8 +127,28 @@ export default function Cms({ go, toast, openModal }) {
   const pvClinicAbout = clinicAbout.trim() || 'AI-Assisted Information Management System for Pediatric Speech and Occupational Therapy Clinics.';
   const pvClinicServices = clinicServices.trim() || 'At Bloomsdale, therapy is a partnership with your family. Our therapists turn sessions into play, challenges into progress, and milestones into moments worth sharing.';
 
+  /* ── "Our Approach" section: live preview, same last-two-words emphasis as the hero headline ── */
+  const pvApproachTitleText = approachTitle.trim() || 'Small steps, celebrated together.';
+  const approachWords = pvApproachTitleText.split(' ');
+  let pvApproachTitle;
+  if (approachWords.length > 2) {
+    const tail = approachWords.slice(-2).join(' ');
+    const head = approachWords.slice(0, -2).join(' ');
+    pvApproachTitle = <>{head} <em>{tail}</em></>;
+  } else {
+    pvApproachTitle = pvApproachTitleText;
+  }
+
+  function setApproachPoint(i, text) {
+    setApproachPoints(prev => prev.map((p, idx) => idx === i ? text : p));
+  }
+
   function pickPhoto(src) {
     setCurrentPhoto(src);
+  }
+
+  function pickApproachPhoto(src) {
+    setApproachPhoto(src);
   }
 
   async function handleFileUpload(e) {
@@ -126,7 +174,9 @@ export default function Cms({ go, toast, openModal }) {
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || 'Upload failed');
-      setCurrentPhoto(data.url);
+      if (uploadTarget === 'hero') setHeroPhoto(data.url);
+      else if (uploadTarget === 'approach') setApproachPhoto(data.url);
+      else setCurrentPhoto(data.url);
       setUploadedPhotos(prev => prev.includes(data.url) ? prev : [...prev, data.url]);
       toast('Photo uploaded!', 'fa-check');
     } catch (err) {
@@ -155,7 +205,7 @@ export default function Cms({ go, toast, openModal }) {
         // Update existing post
         const updated = await api('/cms/posts/' + editingPost.id, {
           method: 'PUT',
-          body: { title, body: text, category: cat, image_url: imageUrl, status: 'published' }
+          body: { title, body: text, category: cat, image_url: imageUrl, photo_credit: imageUrl ? postPhotoCredit.trim() : null, status: 'published' }
         });
         setDbPosts(prev => prev.map(p => p.id === editingPost.id ? updated : p));
         toast('Post updated and published!', 'fa-globe');
@@ -163,7 +213,7 @@ export default function Cms({ go, toast, openModal }) {
         // Create new post
         const post = await api('/cms/posts', {
           method: 'POST',
-          body: { title, body: text, category: cat, image_url: imageUrl, status: 'published' }
+          body: { title, body: text, category: cat, image_url: imageUrl, photo_credit: imageUrl ? postPhotoCredit.trim() : null, status: 'published' }
         });
         setDbPosts(prev => [post, ...prev]);
         toast('Your post is now live on the website!', 'fa-globe');
@@ -188,14 +238,14 @@ export default function Cms({ go, toast, openModal }) {
       if (editingPost) {
         const updated = await api('/cms/posts/' + editingPost.id, {
           method: 'PUT',
-          body: { title, body: postText.trim(), category: postCat, image_url: imageUrl, status: 'draft' }
+          body: { title, body: postText.trim(), category: postCat, image_url: imageUrl, photo_credit: imageUrl ? postPhotoCredit.trim() : null, status: 'draft' }
         });
         setDbPosts(prev => prev.map(p => p.id === editingPost.id ? updated : p));
         toast('Draft updated', 'fa-floppy-disk');
       } else {
         const post = await api('/cms/posts', {
           method: 'POST',
-          body: { title, body: postText.trim(), category: postCat, image_url: imageUrl, status: 'draft' }
+          body: { title, body: postText.trim(), category: postCat, image_url: imageUrl, photo_credit: imageUrl ? postPhotoCredit.trim() : null, status: 'draft' }
         });
         setDbPosts(prev => [post, ...prev]);
         toast('Saved as draft', 'fa-floppy-disk');
@@ -211,6 +261,7 @@ export default function Cms({ go, toast, openModal }) {
     setPostText('');
     setPostCat('Programs');
     setCurrentPhoto('KID INDEX HTML PICTURES 3.jfif');
+    setPostPhotoCredit('');
     setEditingPost(null);
   }
 
@@ -219,6 +270,7 @@ export default function Cms({ go, toast, openModal }) {
     setPostText(post.body || '');
     setPostCat(post.category || 'Programs');
     setCurrentPhoto(post.image_url ? (post.image_url.startsWith('/') ? post.image_url.slice(1) : post.image_url) : null);
+    setPostPhotoCredit(post.photo_credit || '');
     setEditingPost(post);
     setTab('articles');
     window.scrollTo(0, 0);
@@ -250,8 +302,13 @@ export default function Cms({ go, toast, openModal }) {
       sub: heroSub.trim(),
       cta: heroCta.trim(),
       photo: heroPhoto,
+      photoCredit: heroPhotoCredit.trim(),
       clinicAbout: clinicAbout.trim(),
-      clinicServices: clinicServices.trim()
+      clinicServices: clinicServices.trim(),
+      approachTitle: approachTitle.trim(),
+      approachPhoto,
+      approachPhotoCredit: approachPhotoCredit.trim(),
+      approachPoints: approachPoints.map(p => p.trim())
     };
     const existingHomepage = dbPosts.find(p => p.category === '_homepage');
     try {
@@ -278,22 +335,24 @@ export default function Cms({ go, toast, openModal }) {
       toast('Write a title or message first', 'fa-circle-exclamation');
       return;
     }
+    const body = {
+      title: annTitle.trim() || 'Announcement',
+      body: annText.trim(),
+      starts_on: annStart || new Date().toISOString().slice(0, 10),
+      ends_on: annEnd || null,
+      status: 'published'
+    };
     try {
-      const ann = await api('/cms/announcements', {
-        method: 'POST',
-        body: {
-          title: annTitle.trim() || 'Announcement',
-          body: annText.trim(),
-          starts_on: annStart || new Date().toISOString().slice(0, 10),
-          ends_on: annEnd || null,
-          status: 'published'
-        }
-      });
-      setDbAnnouncements(prev => [ann, ...prev]);
-      toast('Announcement is now live on the website!', 'fa-bullhorn');
-      setAnnTitle('');
-      setAnnText('');
-      setAnnEnd('');
+      if (editingAnnouncement) {
+        const updated = await api('/cms/announcements/' + editingAnnouncement.id, { method: 'PUT', body });
+        setDbAnnouncements(prev => prev.map(a => a.id === editingAnnouncement.id ? updated : a));
+        toast('Announcement updated and published!', 'fa-bullhorn');
+      } else {
+        const ann = await api('/cms/announcements', { method: 'POST', body });
+        setDbAnnouncements(prev => [ann, ...prev]);
+        toast('Announcement is now live on the website!', 'fa-bullhorn');
+      }
+      resetAnnouncementForm();
     } catch (e) {
       toast('Failed to publish: ' + (e.message || 'Unknown error'), 'fa-circle-exclamation');
     }
@@ -304,25 +363,46 @@ export default function Cms({ go, toast, openModal }) {
       toast('Write something first', 'fa-circle-exclamation');
       return;
     }
+    const body = {
+      title: annTitle.trim() || 'Announcement',
+      body: annText.trim(),
+      starts_on: annStart || new Date().toISOString().slice(0, 10),
+      ends_on: annEnd || null,
+      status: 'draft'
+    };
     try {
-      const ann = await api('/cms/announcements', {
-        method: 'POST',
-        body: {
-          title: annTitle.trim() || 'Announcement',
-          body: annText.trim(),
-          starts_on: annStart || new Date().toISOString().slice(0, 10),
-          ends_on: annEnd || null,
-          status: 'draft'
-        }
-      });
-      setDbAnnouncements(prev => [ann, ...prev]);
-      toast('Saved as draft', 'fa-floppy-disk');
-      setAnnTitle('');
-      setAnnText('');
-      setAnnEnd('');
+      if (editingAnnouncement) {
+        const updated = await api('/cms/announcements/' + editingAnnouncement.id, { method: 'PUT', body });
+        setDbAnnouncements(prev => prev.map(a => a.id === editingAnnouncement.id ? updated : a));
+        toast('Draft updated', 'fa-floppy-disk');
+      } else {
+        const ann = await api('/cms/announcements', { method: 'POST', body });
+        setDbAnnouncements(prev => [ann, ...prev]);
+        toast('Saved as draft', 'fa-floppy-disk');
+      }
+      resetAnnouncementForm();
     } catch (e) {
       toast('Failed to save: ' + (e.message || 'Unknown error'), 'fa-circle-exclamation');
     }
+  }
+
+  function resetAnnouncementForm() {
+    setAnnTitle('');
+    setAnnText('');
+    setAnnStart(new Date().toISOString().slice(0, 10));
+    setAnnEnd('');
+    setEditingAnnouncement(null);
+  }
+
+  function editAnnouncement(ann) {
+    setAnnTitle(ann.title || '');
+    setAnnText(ann.body || '');
+    setAnnStart(ann.starts_on || new Date().toISOString().slice(0, 10));
+    setAnnEnd(ann.ends_on || '');
+    setEditingAnnouncement(ann);
+    setTab('announcements');
+    window.scrollTo(0, 0);
+    toast('Editing "' + ann.title + '"', 'fa-pen');
   }
 
   /* ── Announcement: live preview ── */
@@ -354,7 +434,7 @@ export default function Cms({ go, toast, openModal }) {
           <h1 style={{ fontSize: 22, fontWeight: 700, color: '#0F172A', margin: '0 0 4px' }}>Website Content</h1>
         </div>
         <a href="index.html" target="_blank" className="qa-btn" style={{ width: 'auto', padding: '10px 16px', fontSize: 13, textDecoration: 'none' }}>
-          <i className="fa-solid fa-arrow-up-right-from-square" style={{ color: '#0D9488' }} /> Open Public Website
+          <i className="fa-solid fa-arrow-up-right-from-square" style={{ color: 'var(--color-teal)' }} /> Open Public Website
         </a>
       </div>
 
@@ -363,6 +443,7 @@ export default function Cms({ go, toast, openModal }) {
         <button className={'cms-tab-btn' + (tab === 'articles' ? ' active' : '')} onClick={() => setTab('articles')}><i className="fa-solid fa-newspaper" style={{ marginRight: 6 }} />News Post</button>
         <button className={'cms-tab-btn' + (tab === 'announcements' ? ' active' : '')} onClick={() => setTab('announcements')}><i className="fa-solid fa-bullhorn" style={{ marginRight: 6 }} />Announcement</button>
         <button className={'cms-tab-btn' + (tab === 'homepage' ? ' active' : '')} onClick={() => setTab('homepage')}><i className="fa-solid fa-panorama" style={{ marginRight: 6 }} />Homepage</button>
+        <button className={'cms-tab-btn' + (tab === 'approach' ? ' active' : '')} onClick={() => setTab('approach')}><i className="fa-solid fa-route" style={{ marginRight: 6 }} />Our Approach</button>
         <button className={'cms-tab-btn' + (tab === 'branding' ? ' active' : '')} onClick={() => setTab('branding')}><i className="fa-solid fa-palette" style={{ marginRight: 6 }} />Branding &amp; Theme</button>
       </div>
 
@@ -409,9 +490,16 @@ export default function Cms({ go, toast, openModal }) {
                   <img key={url} className={'photo-opt' + (currentPhoto === url ? ' selected' : '')} src={url} alt="Uploaded" style={{ objectFit: 'cover' }} onClick={() => pickPhoto(url)} />
                 ))}
                 <div className={'photo-none' + (currentPhoto === null ? ' selected' : '')} onClick={() => pickPhoto(null)} title="No photo"><i className="fa-solid fa-image-slash" /></div>
-                <div className="photo-none" onClick={() => fileInputRef.current?.click()} title="Upload new photo" style={{ opacity: uploading ? 0.5 : 1 }}><i className={'fa-solid ' + (uploading ? 'fa-spinner fa-spin' : 'fa-cloud-arrow-up')} /></div>
+                <div className="photo-none" onClick={() => { setUploadTarget('post'); fileInputRef.current?.click(); }} title="Upload new photo" style={{ opacity: uploading ? 0.5 : 1 }}><i className={'fa-solid ' + (uploading ? 'fa-spinner fa-spin' : 'fa-cloud-arrow-up')} /></div>
                 <input ref={fileInputRef} type="file" accept="image/*" onChange={handleFileUpload} style={{ display: 'none' }} />
               </div>
+              {currentPhoto && (
+                <div style={{ paddingLeft: 36, marginTop: 12 }}>
+                  <label className="form-label">Photo Credit (optional)</label>
+                  <input className="big-input" placeholder="e.g. Photo by Jane Doe on Unsplash" value={postPhotoCredit} onChange={e => setPostPhotoCredit(e.target.value)} />
+                  <div style={{ fontSize: 10.5, color: '#94A3B8', marginTop: 4 }}>Where: shown as small, discreet text over the bottom-right corner of this post's thumbnail on the public website</div>
+                </div>
+              )}
             </div>
 
             {/* Step 3 */}
@@ -421,7 +509,7 @@ export default function Cms({ go, toast, openModal }) {
                 <button className="btn-primary" style={{ padding: '12px 24px', fontSize: 14 }} onClick={publishPost}><i className="fa-solid fa-paper-plane" style={{ marginRight: 6 }} />{editingPost ? 'Update & Publish' : 'Publish to Website'}</button>
                 <button className="btn-secondary" style={{ padding: '12px 18px' }} onClick={saveDraft}><i className="fa-solid fa-floppy-disk" style={{ marginRight: 5 }} />{editingPost ? 'Save Changes' : 'Save for Later'}</button>
                 {editingPost && (
-                  <button className="btn-secondary" style={{ padding: '12px 18px', color: '#EF4444' }} onClick={resetForm}><i className="fa-solid fa-xmark" style={{ marginRight: 5 }} />Cancel Edit</button>
+                  <button className="btn-secondary" style={{ padding: '12px 18px', color: 'var(--color-danger-strong)' }} onClick={resetForm}><i className="fa-solid fa-xmark" style={{ marginRight: 5 }} />Cancel Edit</button>
                 )}
               </div>
             </div>
@@ -436,7 +524,7 @@ export default function Cms({ go, toast, openModal }) {
             <div className="browser-frame">
               <div className="browser-bar">
                 <span className="b-dot" style={{ background: '#FCA5A5' }} /><span className="b-dot" style={{ background: '#FDE68A' }} /><span className="b-dot" style={{ background: '#86EFAC' }} />
-                <span className="browser-url">bloomsdale-kid.ph, News & Announcements</span>
+                <span className="browser-url">News & Announcements</span>
               </div>
               <div style={{ padding: '22px 16px', background: '#FDFCFA' }}>
                 <div className="ix-card">
@@ -509,8 +597,8 @@ export default function Cms({ go, toast, openModal }) {
           {/* Composer */}
           <div className="card" style={{ padding: 24 }}>
             <div style={{ marginBottom: 20 }}>
-              <div className="section-title" style={{ fontSize: 16 }}>Post an Announcement</div>
-              <div className="section-sub">Announcements appear in the yellow bar at the very top of the website, perfect for schedules and reminders.</div>
+              <div className="section-title" style={{ fontSize: 16 }}>{editingAnnouncement ? 'Edit Announcement' : 'Post an Announcement'}</div>
+              <div className="section-sub">{editingAnnouncement ? 'Update your announcement, the live preview shows how it will look.' : 'Announcements appear in the yellow bar at the very top of the website, perfect for schedules and reminders.'}</div>
             </div>
 
             <div style={{ marginBottom: 22 }}>
@@ -538,8 +626,11 @@ export default function Cms({ go, toast, openModal }) {
             <div>
               <div className="step-row"><span className="step-num">3</span><div><div className="step-title">Publish it</div><div className="step-hint">It goes live at the top of every page instantly.</div></div></div>
               <div style={{ display: 'flex', gap: 10, paddingLeft: 36, flexWrap: 'wrap' }}>
-                <button className="btn-primary" style={{ padding: '12px 24px', fontSize: 14 }} onClick={publishAnnouncement}><i className="fa-solid fa-bullhorn" style={{ marginRight: 6 }} />Publish Announcement</button>
-                <button className="btn-secondary" style={{ padding: '12px 18px' }} onClick={saveDraftAnnouncement}><i className="fa-solid fa-floppy-disk" style={{ marginRight: 5 }} />Save for Later</button>
+                <button className="btn-primary" style={{ padding: '12px 24px', fontSize: 14 }} onClick={publishAnnouncement}><i className="fa-solid fa-bullhorn" style={{ marginRight: 6 }} />{editingAnnouncement ? 'Update & Publish' : 'Publish Announcement'}</button>
+                <button className="btn-secondary" style={{ padding: '12px 18px' }} onClick={saveDraftAnnouncement}><i className="fa-solid fa-floppy-disk" style={{ marginRight: 5 }} />{editingAnnouncement ? 'Save Changes' : 'Save for Later'}</button>
+                {editingAnnouncement && (
+                  <button className="btn-secondary" style={{ padding: '12px 18px', color: 'var(--color-danger-strong)' }} onClick={resetAnnouncementForm}><i className="fa-solid fa-xmark" style={{ marginRight: 5 }} />Cancel Edit</button>
+                )}
               </div>
             </div>
           </div>
@@ -553,7 +644,7 @@ export default function Cms({ go, toast, openModal }) {
             <div className="browser-frame">
               <div className="browser-bar">
                 <span className="b-dot" style={{ background: '#FCA5A5' }} /><span className="b-dot" style={{ background: '#FDE68A' }} /><span className="b-dot" style={{ background: '#86EFAC' }} />
-                <span className="browser-url">bloomsdale-kid.ph, Home</span>
+                <span className="browser-url">Home</span>
               </div>
               <div className="ix-band">
                 <span className="ix-band-label">Announcement</span>
@@ -573,7 +664,7 @@ export default function Cms({ go, toast, openModal }) {
         {/* Existing announcements */}
         <div className="card" style={{ padding: '22px 20px', marginBottom: 24 }}>
           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16 }}>
-            <div><div className="section-title"><i className="fa-solid fa-bullhorn" style={{ color: '#818CF8', marginRight: 6 }} />Current Announcements</div><div className="section-sub">Edit or remove what's showing now</div></div>
+            <div><div className="section-title"><i className="fa-solid fa-bullhorn" style={{ color: 'var(--cat-8)', marginRight: 6 }} />Current Announcements</div><div className="section-sub">Edit or remove what's showing now</div></div>
           </div>
           {dbAnnouncements.length === 0 && (
             <div style={{ textAlign: 'center', padding: '20px 0', color: '#94A3B8', fontSize: 13 }}>No announcements yet. Create one above!</div>
@@ -600,6 +691,7 @@ export default function Cms({ go, toast, openModal }) {
                       } catch (e) { toast('Failed: ' + e.message, 'fa-circle-exclamation'); }
                     }}>Publish</button>
                   )}
+                  <button className="btn-secondary" style={{ padding: '5px 10px', fontSize: 11.5 }} onClick={() => editAnnouncement(ann)}><i className="fa-solid fa-pen" style={{ marginRight: 3 }} />Edit</button>
                   <button className="btn-danger" onClick={() => setConfirmDelete({ type: 'announcement', id: ann.id, title: ann.title })}><i className="fa-solid fa-trash" style={{ marginRight: 3 }} />Delete</button>
                 </div>
               </div>
@@ -640,8 +732,13 @@ export default function Cms({ go, toast, openModal }) {
                   {uploadedPhotos.map(url => (
                     <img key={url} className={'photo-opt' + (heroPhoto === url ? ' selected' : '')} src={url} alt="Uploaded" style={{ objectFit: 'cover' }} onClick={() => pickHeroPhoto(url)} />
                   ))}
-                  <div className="photo-none" onClick={() => fileInputRef.current?.click()} title="Upload new photo"><i className="fa-solid fa-cloud-arrow-up" /></div>
+                  <div className="photo-none" onClick={() => { setUploadTarget('hero'); fileInputRef.current?.click(); }} title="Upload new photo"><i className="fa-solid fa-cloud-arrow-up" /></div>
                 </div>
+              </div>
+              <div>
+                <label className="form-label">Photo Credit (optional)</label>
+                <input className="big-input" placeholder="e.g. Photo by Jane Doe on Unsplash" value={heroPhotoCredit} onChange={e => setHeroPhotoCredit(e.target.value)} />
+                <div style={{ fontSize: 10.5, color: '#94A3B8', marginTop: 4 }}>Where: shown as small, discreet text over the bottom-right corner of the welcome photo on the public homepage, leave blank to show nothing</div>
               </div>
               <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', marginTop: 4 }}>
                 <button className="btn-primary" style={{ padding: '12px 24px', fontSize: 14 }} onClick={publishHomepage}><i className="fa-solid fa-globe" style={{ marginRight: 6 }} />Publish Changes</button>
@@ -659,7 +756,7 @@ export default function Cms({ go, toast, openModal }) {
               <div className="browser-frame">
                 <div className="browser-bar">
                   <span className="b-dot" style={{ background: '#FCA5A5' }} /><span className="b-dot" style={{ background: '#FDE68A' }} /><span className="b-dot" style={{ background: '#86EFAC' }} />
-                  <span className="browser-url">bloomsdale-kid.ph, Home</span>
+                  <span className="browser-url">Home</span>
                 </div>
                 <div className="ix-hero">
                   <div>
@@ -676,7 +773,7 @@ export default function Cms({ go, toast, openModal }) {
             {/* Informational descriptions */}
             <div className="card" style={{ padding: '22px 20px' }}>
               <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 4 }}>
-                <div className="section-title"><i className="fa-solid fa-align-left" style={{ color: '#0D9488', marginRight: 7 }} />Clinic Descriptions</div>
+                <div className="section-title"><i className="fa-solid fa-align-left" style={{ color: 'var(--color-teal)', marginRight: 7 }} />Clinic Descriptions</div>
                 <span className="live-tag"><span className="dot" />LIVE</span>
               </div>
               <div className="section-sub" style={{ marginBottom: 14 }}>Short text used across the website</div>
@@ -685,28 +782,18 @@ export default function Cms({ go, toast, openModal }) {
                   <label className="form-label">About the Clinic</label>
                   <textarea className="big-input" rows="3" value={clinicAbout} onChange={e => setClinicAbout(e.target.value)} />
                 </div>
-                <div>
-                  <label className="form-label">Services Description</label>
-                  <textarea className="big-input" rows="2" value={clinicServices} onChange={e => setClinicServices(e.target.value)} />
-                </div>
                 <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end' }}>
                   <button className="btn-primary" onClick={publishHomepage}><i className="fa-solid fa-floppy-disk" style={{ marginRight: 4 }} />Save & Publish</button>
                 </div>
               </div>
 
-              {/* Separate preview, these two fields render in different parts of the
-                  public site (footer + "Our Approach" section), not in the hero above. */}
+              {/* Separate preview, this renders in the dark footer at the bottom of the public site, not in the hero above. */}
               <div style={{ marginTop: 18 }}>
                 <div className="browser-frame">
                   <div className="browser-bar">
                     <span className="b-dot" style={{ background: '#FCA5A5' }} /><span className="b-dot" style={{ background: '#FDE68A' }} /><span className="b-dot" style={{ background: '#86EFAC' }} />
-                    <span className="browser-url">bloomsdale-kid.ph, Home</span>
+                    <span className="browser-url">Home</span>
                   </div>
-                  <div style={{ padding: '18px 20px', background: '#fff' }}>
-                    <div style={{ fontSize: 10.5, fontWeight: 700, color: '#0D9488', letterSpacing: '.06em', textTransform: 'uppercase', marginBottom: 6 }}>Our Approach section</div>
-                    <div style={{ fontSize: 13, color: '#334155', lineHeight: 1.6 }}>{pvClinicServices}</div>
-                  </div>
-                  <div style={{ height: 1, background: '#F1F5F9' }} />
                   <div style={{ padding: '18px 20px', background: '#0F172A' }}>
                     <div style={{ fontSize: 10.5, fontWeight: 700, color: '#5EEAD4', letterSpacing: '.06em', textTransform: 'uppercase', marginBottom: 6 }}>Footer brand blurb</div>
                     <div style={{ fontSize: 12.5, color: '#CBD5E1', lineHeight: 1.6 }}>{pvClinicAbout}</div>
@@ -718,9 +805,95 @@ export default function Cms({ go, toast, openModal }) {
         </div>
       </div>
 
+      {/* ══════════ TAB: OUR APPROACH ══════════ */}
+      <div id="tab-approach" style={{ display: tab === 'approach' ? '' : 'none' }}>
+        <div style={{ display: 'grid', gridTemplateColumns: '1.15fr 1fr', gap: 16, marginBottom: 24, alignItems: 'start' }}>
+
+          {/* Editor */}
+          <div className="card" style={{ padding: 24 }}>
+            <div style={{ marginBottom: 20 }}>
+              <div className="section-title" style={{ fontSize: 16 }}>Our Approach Section</div>
+              <div className="section-sub">The section further down the homepage with the photo, title, and 3 numbered points.</div>
+            </div>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
+              <div>
+                <label className="form-label">Section title</label>
+                <input className="big-input" value={approachTitle} onChange={e => setApproachTitle(e.target.value)} />
+              </div>
+              <div>
+                <label className="form-label">Lead paragraph</label>
+                <textarea className="big-input" rows="2" value={clinicServices} onChange={e => setClinicServices(e.target.value)} />
+              </div>
+              <div>
+                <label className="form-label">Photo</label>
+                <div className="photo-pick">
+                  <img className={'photo-opt' + (approachPhoto === 'KID INDEX HTML PICTURES 1.webp' ? ' selected' : '')} src="KID INDEX HTML PICTURES 1.webp" alt="Mother and daughter" onClick={() => pickApproachPhoto('KID INDEX HTML PICTURES 1.webp')} />
+                  <img className={'photo-opt' + (approachPhoto === 'KID INDEX HTML PICTURES 2.jpg' ? ' selected' : '')} src="KID INDEX HTML PICTURES 2.jpg" alt="Holding hands" onClick={() => pickApproachPhoto('KID INDEX HTML PICTURES 2.jpg')} />
+                  <img className={'photo-opt' + (approachPhoto === 'KID INDEX HTML PICTURES 3.jfif' ? ' selected' : '')} src="KID INDEX HTML PICTURES 3.jfif" alt="Mother and son" onClick={() => pickApproachPhoto('KID INDEX HTML PICTURES 3.jfif')} />
+                  {uploadedPhotos.map(url => (
+                    <img key={url} className={'photo-opt' + (approachPhoto === url ? ' selected' : '')} src={url} alt="Uploaded" style={{ objectFit: 'cover' }} onClick={() => pickApproachPhoto(url)} />
+                  ))}
+                  <div className="photo-none" onClick={() => { setUploadTarget('approach'); fileInputRef.current?.click(); }} title="Upload new photo"><i className="fa-solid fa-cloud-arrow-up" /></div>
+                </div>
+              </div>
+              <div>
+                <label className="form-label">Photo Credit (optional)</label>
+                <input className="big-input" placeholder="e.g. Photo by Jane Doe on Unsplash" value={approachPhotoCredit} onChange={e => setApproachPhotoCredit(e.target.value)} />
+                <div style={{ fontSize: 10.5, color: '#94A3B8', marginTop: 4 }}>Where: shown as small, discreet text over the bottom-right corner of this photo on the public homepage, leave blank to show nothing</div>
+              </div>
+              <div>
+                <label className="form-label">The 3 numbered points</label>
+                <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+                  {approachPoints.map((p, i) => (
+                    <div key={i} style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                      <span style={{ width: 22, height: 22, borderRadius: '50%', background: 'var(--color-primary)', color: '#fff', fontWeight: 700, fontSize: 11, display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}>{String(i + 1).padStart(2, '0')}</span>
+                      <input className="big-input" value={p} onChange={e => setApproachPoint(i, e.target.value)} />
+                    </div>
+                  ))}
+                </div>
+              </div>
+              <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', marginTop: 4 }}>
+                <button className="btn-primary" style={{ padding: '12px 24px', fontSize: 14 }} onClick={publishHomepage}><i className="fa-solid fa-globe" style={{ marginRight: 6 }} />Publish Changes</button>
+              </div>
+            </div>
+          </div>
+
+          {/* Live preview */}
+          <div className="card" style={{ padding: '22px 20px', position: 'sticky', top: 80 }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 14 }}>
+              <div><div className="section-title" style={{ fontSize: 15 }}>Live Preview</div><div className="section-sub">Further down the public homepage</div></div>
+              <span className="live-tag"><span className="dot" />LIVE</span>
+            </div>
+            <div className="browser-frame">
+              <div className="browser-bar">
+                <span className="b-dot" style={{ background: '#FCA5A5' }} /><span className="b-dot" style={{ background: '#FDE68A' }} /><span className="b-dot" style={{ background: '#86EFAC' }} />
+                <span className="browser-url">Home</span>
+              </div>
+              <div style={{ padding: 18, background: '#fff', display: 'grid', gridTemplateColumns: '1fr 1.2fr', gap: 14, alignItems: 'center' }}>
+                <img src={approachPhoto.startsWith('http') ? approachPhoto : '/' + approachPhoto} alt="Our Approach" style={{ width: '100%', height: 110, objectFit: 'cover', borderRadius: 9 }} />
+                <div>
+                  <div style={{ fontSize: 10, fontWeight: 700, color: 'var(--color-teal)', letterSpacing: '.06em', textTransform: 'uppercase', marginBottom: 4 }}>Our Approach</div>
+                  <div style={{ fontFamily: "'Poppins',sans-serif", fontSize: 15, fontWeight: 600, color: '#0F172A', marginBottom: 6, lineHeight: 1.25 }}>{pvApproachTitle}</div>
+                  <div style={{ fontSize: 11.5, color: '#334155', lineHeight: 1.5, marginBottom: 8 }}>{pvClinicServices}</div>
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+                    {approachPoints.map((p, i) => (
+                      <div key={i} style={{ display: 'flex', gap: 6, alignItems: 'flex-start', fontSize: 10.5, color: '#475569' }}>
+                        <span style={{ fontWeight: 700, color: 'var(--color-primary)', flexShrink: 0 }}>{String(i + 1).padStart(2, '0')}</span>
+                        <span>{p.trim() || '—'}</span>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              </div>
+            </div>
+            <div style={{ marginTop: 12, fontSize: 12, color: '#94A3B8', textAlign: 'center' }}><i className="fa-solid fa-circle-info" style={{ marginRight: 5 }} />This matches the real "Our Approach" section on the public website.</div>
+          </div>
+        </div>
+      </div>
+
       {/* ══════════ TAB: BRANDING & THEME ══════════ */}
       <div id="tab-branding" style={{ display: tab === 'branding' ? '' : 'none' }}>
-        <Branding toast={toast} embedded />
+        <Branding toast={toast} embedded onDirtyChange={onUnsavedChange} />
       </div>
 
       <div className="page-footer"><span style={{ fontSize: 12, color: '#94A3B8' }}>© 2026 KID Clinic Information Management System · Content Management</span></div>
@@ -729,8 +902,8 @@ export default function Cms({ go, toast, openModal }) {
       {confirmDelete && (
         <div style={{ position: 'fixed', inset: 0, background: 'rgba(15,23,42,.45)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 200, padding: 20 }}>
           <div style={{ background: '#fff', borderRadius: 16, padding: '32px 28px', width: '100%', maxWidth: 400, boxShadow: '0 24px 64px rgba(15,23,42,.3)', textAlign: 'center' }}>
-            <div style={{ width: 56, height: 56, borderRadius: '50%', background: '#FEE2E2', display: 'flex', alignItems: 'center', justifyContent: 'center', margin: '0 auto 16px' }}>
-              <i className="fa-solid fa-trash" style={{ fontSize: 22, color: '#EF4444' }} />
+            <div style={{ width: 56, height: 56, borderRadius: '50%', background: 'var(--color-danger-bg)', display: 'flex', alignItems: 'center', justifyContent: 'center', margin: '0 auto 16px' }}>
+              <i className="fa-solid fa-trash" style={{ fontSize: 22, color: 'var(--color-danger-strong)' }} />
             </div>
             <div style={{ fontSize: 18, fontWeight: 700, color: '#0F172A', marginBottom: 8 }}>Delete {confirmDelete.type === 'post' ? 'Post' : 'Announcement'}?</div>
             <p style={{ fontSize: 13.5, color: '#64748B', lineHeight: 1.6, marginBottom: 24 }}>
@@ -738,7 +911,7 @@ export default function Cms({ go, toast, openModal }) {
             </p>
             <div style={{ display: 'flex', gap: 10, justifyContent: 'center' }}>
               <button onClick={() => setConfirmDelete(null)} style={{ padding: '10px 24px', background: '#F1F5F9', color: '#475569', border: 'none', borderRadius: 8, fontSize: 14, fontWeight: 600, cursor: 'pointer' }}>Cancel</button>
-              <button onClick={confirmDeleteAction} style={{ padding: '10px 24px', background: '#EF4444', color: '#fff', border: 'none', borderRadius: 8, fontSize: 14, fontWeight: 700, cursor: 'pointer' }}>Yes, Delete</button>
+              <button onClick={confirmDeleteAction} style={{ padding: '10px 24px', background: 'var(--color-danger-strong)', color: '#fff', border: 'none', borderRadius: 8, fontSize: 14, fontWeight: 700, cursor: 'pointer' }}>Yes, Delete</button>
             </div>
           </div>
         </div>

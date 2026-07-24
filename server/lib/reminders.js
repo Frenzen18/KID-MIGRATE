@@ -1,9 +1,9 @@
 import { db } from '../supabase.js';
-import { notifyEvent, channelEnabled } from './notify.js';
+import { notifyEvent, channelEnabled, therapistUserId } from './notify.js';
 import { sendSms } from '../sms.js';
 
 /** "h:mm AM/PM" + a date -> epoch ms, treating the pair as Philippine local time (UTC+8, no DST). */
-function sessionStartMs(dateStr, timeLabel) {
+export function sessionStartMs(dateStr, timeLabel) {
   const m = /^(\d{1,2}):(\d{2})\s?(AM|PM)$/i.exec(String(timeLabel || '').trim());
   if (!m) return null;
   let [, h, min, ap] = m;
@@ -90,6 +90,54 @@ async function sendSessionReminders(settings) {
   }
 }
 
+/** Notifies (in-app only, this is an internal staff nudge, not guardian-facing) the
+ *  assigned therapist that yesterday's session still has no Milestone (GAS) entry logged. */
+async function notifyMilestoneReminderRow(r, settings) {
+  const therapistId = await therapistUserId(r.therapist_name);
+  if (!therapistId) return;
+  const childName = r.clients?.full_name || 'this child';
+  await notifyEvent('notify_milestone_reminder', {
+    title: 'Milestone entry needed',
+    body: `You need to input the milestone for ${childName}, you had a session on ${r.date}.`,
+    icon: 'fa-trophy',
+    target_user: therapistId
+  });
+}
+
+/**
+ * Once, the day after a session happens: if the therapist still hasn't logged
+ * a Milestone (GAS) entry for it, remind them. `milestone_reminder_sent_at`
+ * makes each reservation eligible exactly once, same pattern as
+ * `reminder_sent_at` above, so re-running the sweep never re-sends it, and
+ * there's deliberately no escalation or repeat beyond this single nudge.
+ */
+async function sendMilestoneReminders(settings) {
+  if (settings.notify_milestone_reminder === false) return;
+  if (settings.channel_in_app === false) return;
+  const yesterday = new Date(Date.now() + 8 * 60 * 60 * 1000 - 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
+
+  const { data: reservations, error } = await db.from('reservations')
+    .select('id, date, therapist_name, client_id, clients(full_name)')
+    .in('status', ['confirmed', 'completed', 'rescheduled'])
+    .eq('date', yesterday)
+    .is('milestone_reminder_sent_at', null);
+  if (error) { console.error('reminders: milestone reservations query failed:', error.message); return; }
+  if (!reservations?.length) return;
+
+  // A GAS entry is linked to the exact reservation it's for (auto-matched at
+  // submit time, see server/routes/gas.js), so "already logged" is just this lookup.
+  const { data: linkedEntries } = await db.from('gas_entries')
+    .select('reservation_id').in('reservation_id', reservations.map(r => r.id));
+  const linked = new Set((linkedEntries || []).map(e => e.reservation_id));
+
+  for (const r of reservations) {
+    if (!linked.has(r.id) && r.therapist_name) await notifyMilestoneReminderRow(r, settings);
+    // Marked as swept either way, logged, unassigned, or reminded, none of those
+    // should make this same reservation get re-evaluated on every future sweep.
+    await db.from('reservations').update({ milestone_reminder_sent_at: new Date().toISOString() }).eq('id', r.id);
+  }
+}
+
 /**
  * Re-reminds guardians about an unpaid invoice every `balance_reminder_frequency_days`,
  * measured from the last reminder (or the invoice date, for the first one).
@@ -148,6 +196,7 @@ export async function runReminderSweep() {
     if (!settings) return;
     await sendSessionReminders(settings);
     await sendBalanceReminders(settings);
+    await sendMilestoneReminders(settings);
   } catch (e) {
     console.error('runReminderSweep failed:', e.message);
   }

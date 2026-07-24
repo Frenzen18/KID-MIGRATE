@@ -15,3 +15,30 @@ export function passwordPolicyError(pw) {
   if (!/[^A-Za-z0-9]/.test(pw)) return 'Password must contain at least 1 special character (e.g. ! @ # $ % ^ & *).';
   return null;
 }
+
+/**
+ * A person's name field: letters, spaces, hyphens, and apostrophes only, no
+ * digits or other special characters, mirrors the client's live filter
+ * (client/src/nameInput.js) as a server-side backstop for direct API calls.
+ * Includes accented Latin letters (é, ñ, ...) common in Filipino/Spanish-
+ * influenced names like "Peña" or "José".
+ */
+const NAME_RE = /^[A-Za-zÀ-ſ' -]+$/;
+
+export function isValidName(str) {
+  return typeof str === 'string' && NAME_RE.test(str.trim());
+}
+
+/**
+ * A general free-text field (Allergies, Daily Medication, Development &
+ * Functional Information, ...): letters, numbers, spaces, and common
+ * punctuation only, mirrors the client's live filter
+ * (client/src/textInput.js) as a server-side backstop for direct API calls.
+ * Unlike isValidName, digits are allowed since these fields legitimately
+ * need them (e.g. "500mg").
+ */
+const SAFE_TEXT_RE = /^[A-Za-z0-9À-ſ\s.,'()\-/:;]*$/;
+
+export function isSafeText(str) {
+  return typeof str === 'string' && SAFE_TEXT_RE.test(str.trim());
+}

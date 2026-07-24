@@ -3,7 +3,7 @@ import { db } from '../supabase.js';
 import { requireAuth, requireRole } from '../middleware/auth.js';
 import { normalizePhone } from '../phone.js';
 import { nextUserCode } from '../usercode.js';
-import { EMAIL_RE, passwordPolicyError } from '../validate.js';
+import { EMAIL_RE, passwordPolicyError, isValidName } from '../validate.js';
 import { logAudit } from '../lib/audit.js';
 
 const router = Router();
@@ -40,6 +40,9 @@ router.post('/', requireRole('admin'), async (req, res) => {
   }
   if (!email || !password || !first_name || !role) {
     return res.status(400).json({ error: 'email, password, first name and role are required' });
+  }
+  if (!isValidName(first_name) || (last_name && !isValidName(last_name))) {
+    return res.status(400).json({ error: 'Names can only contain letters, spaces, hyphens, and apostrophes.' });
   }
   if (!['admin', 'staff', 'ot', 'speech', 'parent'].includes(role)) {
     return res.status(400).json({ error: 'Invalid role' });
@@ -107,6 +110,12 @@ router.put('/:id', requireRole('admin'), async (req, res) => {
   const patch = {};
   for (const k of ['full_name', 'first_name', 'last_name', 'role', 'active']) if (k in req.body) patch[k] = req.body[k];
 
+  for (const k of ['full_name', 'first_name', 'last_name']) {
+    if (patch[k] && !isValidName(patch[k])) {
+      return res.status(400).json({ error: 'Names can only contain letters, spaces, hyphens, and apostrophes.' });
+    }
+  }
+
   // Guardian/Caretaker is a portal category, not a staff role, block crossing the boundary in
   // either direction (the client's Edit User form already only offers same-category options,
   // this is the server-side backstop for direct API calls).
@@ -167,7 +176,11 @@ router.put('/:id', requireRole('admin'), async (req, res) => {
 /** DELETE /api/users/:id */
 router.delete('/:id', requireRole('admin'), async (req, res) => {
   const { data: existing } = await db.from('profiles').select('full_name').eq('id', req.params.id).maybeSingle();
-  await db.from('profiles').delete().eq('id', req.params.id);
+  const { error: profileErr } = await db.from('profiles').delete().eq('id', req.params.id);
+  // Only delete the Auth user once the profile row is confirmed gone, otherwise
+  // a failed profile delete would still remove Auth and leave an orphaned
+  // profiles row pointing at a user that no longer exists.
+  if (profileErr) return res.status(500).json({ error: profileErr.message });
   const { error } = await db.auth.admin.deleteUser(req.params.id);
   if (error) return res.status(500).json({ error: error.message });
 

@@ -29,8 +29,10 @@ export default function AuthLeftPanel({ icon, iconSize = 40, eyebrow }) {
         backgroundSize: 'cover', backgroundPosition: 'center'
       } : undefined}
     >
-      <div className="login-icon-ring" style={{ width: 96, height: 96, borderRadius: '50%', border: '1.5px solid rgba(255,255,255,.45)', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-        <i className={'fa-solid ' + icon} style={{ color: '#fff', fontSize: iconSize }} />
+      <div className="login-icon-ring" style={{ width: 96, height: 96, borderRadius: '50%', border: '1.5px solid rgba(255,255,255,.45)', display: 'flex', alignItems: 'center', justifyContent: 'center', overflow: 'hidden' }}>
+        {brand?.logo_url
+          ? <img src={brand.logo_url} alt={brand.clinic_name || 'Clinic logo'} style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
+          : <i className={'fa-solid ' + icon} style={{ color: '#fff', fontSize: iconSize }} />}
       </div>
       <div style={{ fontFamily: 'Poppins,sans-serif', fontSize: 30, fontWeight: 600, color: '#fff', maxWidth: 280, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }} title={brand?.clinic_name}>{brand?.clinic_name || 'KID'}</div>
       <div style={{ fontSize: 12, color: 'rgba(255,255,255,.7)', letterSpacing: '.05em', textTransform: 'uppercase', fontWeight: 600, lineHeight: 1.6 }}>

@@ -57,7 +57,7 @@ const PAGE_SIZE = 20;
 function UserLink({ person, onClick }) {
   if (!person?.id) return '-';
   return (
-    <button type="button" onClick={() => onClick(person.id)} style={{ background: 'none', border: 'none', padding: 0, color: '#0284C7', fontSize: 12, fontWeight: 600, cursor: 'pointer', textDecoration: 'underline' }}>
+    <button type="button" onClick={() => onClick(person.id)} style={{ background: 'none', border: 'none', padding: 0, color: 'var(--cat-1)', fontSize: 12, fontWeight: 600, cursor: 'pointer', textDecoration: 'underline' }}>
       {person.full_name}
     </button>
   );
@@ -167,10 +167,10 @@ export default function Audit({ toast }) {
         </div>
         <div style={{ display: 'flex', gap: 8 }}>
           <button className="qa-btn" style={{ width: 'auto', padding: '10px 16px', fontSize: 13 }} onClick={exportCsv}>
-            <i className="fa-solid fa-file-export" style={{ color: '#0D9488' }} /> Export CSV
+            <i className="fa-solid fa-file-export" style={{ color: 'var(--cat-3)' }} /> Export CSV
           </button>
           <button className="qa-btn" style={{ width: 'auto', padding: '10px 16px', fontSize: 13 }} onClick={exportPdf}>
-            <i className="fa-solid fa-file-pdf" style={{ color: '#EF4444' }} /> Export PDF
+            <i className="fa-solid fa-file-pdf" style={{ color: 'var(--color-danger-strong)' }} /> Export PDF
           </button>
         </div>
       </div>
@@ -225,22 +225,22 @@ export default function Audit({ toast }) {
         {userFilter && (
           <div className="no-print" style={{ margin: '0 24px 16px', padding: '14px 18px', borderRadius: 10, background: '#F5F3FF', border: '1px solid #DDD6FE', display: 'flex', alignItems: 'center', gap: 16, flexWrap: 'wrap' }}>
             {userSummaryLoading ? (
-              <span style={{ fontSize: 12.5, color: '#6D28D9' }}><i className="fa-solid fa-spinner fa-spin" style={{ marginRight: 6 }} />Loading user activity…</span>
+              <span style={{ fontSize: 12.5, color: 'var(--cat-5)' }}><i className="fa-solid fa-spinner fa-spin" style={{ marginRight: 6 }} />Loading user activity…</span>
             ) : userSummary ? (
               <>
                 <div style={{ flex: 1, minWidth: 180 }}>
-                  <div style={{ fontSize: 13.5, fontWeight: 700, color: '#4C1D95' }}>{userSummary.profile.full_name}</div>
-                  <div style={{ fontSize: 11.5, color: '#6D28D9' }}>{ROLE_LABEL[userSummary.profile.role] || userSummary.profile.role}{userSummary.profile.active === false ? ' · Inactive' : ''}</div>
+                  <div style={{ fontSize: 13.5, fontWeight: 700, color: 'var(--cat-5)' }}>{userSummary.profile.full_name}</div>
+                  <div style={{ fontSize: 11.5, color: 'var(--cat-5)' }}>{ROLE_LABEL[userSummary.profile.role] || userSummary.profile.role}{userSummary.profile.active === false ? ' · Inactive' : ''}</div>
                 </div>
                 <div style={{ display: 'flex', gap: 18, flexWrap: 'wrap' }}>
                   {STAT_CONFIG.filter(s => (ROLE_VISIBLE_STATS[userSummary.profile.role] || []).includes(s.key)).map(s => (
-                    <div key={s.key}><div style={{ fontSize: 17, fontWeight: 700, color: '#0F172A' }}>{s.value(userSummary)}</div><div style={{ fontSize: 10.5, color: '#6D28D9' }}>{s.label}</div></div>
+                    <div key={s.key}><div style={{ fontSize: 17, fontWeight: 700, color: '#0F172A' }}>{s.value(userSummary)}</div><div style={{ fontSize: 10.5, color: 'var(--cat-5)' }}>{s.label}</div></div>
                   ))}
-                  <div><div style={{ fontSize: 17, fontWeight: 700, color: '#0F172A' }}>{userSummary.total_actions}</div><div style={{ fontSize: 10.5, color: '#6D28D9' }}>Total</div></div>
+                  <div><div style={{ fontSize: 17, fontWeight: 700, color: '#0F172A' }}>{userSummary.total_actions}</div><div style={{ fontSize: 10.5, color: 'var(--cat-5)' }}>Total</div></div>
                 </div>
               </>
             ) : (
-              <span style={{ fontSize: 12.5, color: '#6D28D9' }}>Couldn't load activity for this user.</span>
+              <span style={{ fontSize: 12.5, color: 'var(--cat-5)' }}>Couldn't load activity for this user.</span>
             )}
           </div>
         )}
@@ -271,7 +271,7 @@ export default function Audit({ toast }) {
               )}
               {!logsLoading && pagedLogs.map(l => (
                 <tr key={l.id}>
-                  <td style={{ paddingLeft: 24, fontSize: 12, fontWeight: 600, color: '#0284C7' }}>{TABLE_LABEL[l.table_name] || l.table_name}</td>
+                  <td style={{ paddingLeft: 24, fontSize: 12, fontWeight: 600, color: 'var(--cat-1)' }}>{TABLE_LABEL[l.table_name] || l.table_name}</td>
                   <td><span className={ACTION_PILL[l.action] || 'pill'} style={{ fontSize: 10 }}>{l.action}</span></td>
                   <td style={{ fontSize: 12.5, color: '#64748B', maxWidth: 320 }}>{l.description || '-'}</td>
                   <td style={{ fontSize: 12 }}><UserLink person={l.creator} onClick={selectUser} /></td>

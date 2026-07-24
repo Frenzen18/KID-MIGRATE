@@ -105,7 +105,8 @@ create table reservations (
   created_by uuid references profiles (id) on delete set null,
   created_at timestamptz not null default now(),
   reminder_sent_at timestamptz, -- set once the pre-session reminder sweep (server/lib/reminders.js) has notified the guardian
-  payment_expires_at timestamptz -- deadline for an 'awaiting_payment' hold before it's auto-released, see server/lib/bookingHolds.js
+  payment_expires_at timestamptz, -- deadline for an 'awaiting_payment' hold before it's auto-released, see server/lib/bookingHolds.js
+  milestone_reminder_sent_at timestamptz -- set once the day-after sweep (server/lib/reminders.js) has told the therapist a Milestone entry is still missing for this session
 );
 create index reservations_date_idx on reservations (date, time_slot);
 -- Real double-booking guard: the app-level check-then-insert has a race window,
@@ -203,7 +204,22 @@ create table payments (
   last_reminder_at timestamptz -- last time the balance-reminder sweep (server/lib/reminders.js) notified the guardian
 );
 create index payments_reservation_idx on payments (reservation_id);
+-- Real duplicate-invoice guard: ensurePaymentForReservation()'s check-then-insert
+-- has a race window (concurrent requests, double-clicked Confirm), same pattern
+-- as reservations_active_slot_therapist_uidx for double-booking.
+create unique index payments_reservation_uidx on payments (reservation_id) where reservation_id is not null;
 create unique index payments_pm_intent_uidx on payments (pm_payment_intent_id) where pm_payment_intent_id is not null;
+
+-- Invoice numbers: a single global counter so numbers are strictly
+-- incremental across the whole clinic (never random, never reused),
+-- called from server/lib/billing.js via db.rpc('next_invoice_no').
+create sequence if not exists invoice_no_seq start 1;
+create or replace function next_invoice_no()
+returns text
+language sql
+as $$
+  select 'INV-' || to_char(now(), 'YYYYMMDD') || '-' || lpad(nextval('invoice_no_seq')::text, 5, '0');
+$$;
 
 -- In-app notifications
 create table notifications (
@@ -233,6 +249,7 @@ create table notification_settings (
   notify_session_change boolean not null default true,
   notify_balance_reminder boolean not null default true,
   notify_session_reminder boolean not null default true,
+  notify_milestone_reminder boolean not null default true,
   cooldown_minutes int not null default 30,
   balance_reminder_frequency_days int not null default 3,
   session_reminder_lead_hours int not null default 24,
@@ -300,10 +317,18 @@ create table gas_entries (
   therapist_name text,
   remarks text,
   gas_t_score numeric,                -- computed Kiresuk & Sherman T-score
+  -- Which booking this entry is for (auto-matched by client + session date +
+  -- therapist at submit time, see server/routes/gas.js), and whether it was
+  -- logged more than a day after that session, both nullable: an entry with
+  -- no matching reservation (ad-hoc/manual historical entry) has nothing to
+  -- compare against, so it's never flagged late.
+  reservation_id uuid references reservations (id) on delete set null,
+  is_late boolean,
   created_at timestamptz not null default now(),
   created_by uuid references profiles (id) on delete set null
 );
 create index gas_entries_client_idx on gas_entries (client_id, session_date);
+create index gas_entries_reservation_idx on gas_entries (reservation_id);
 
 create table gas_entry_scores (
   id uuid primary key default gen_random_uuid(),
