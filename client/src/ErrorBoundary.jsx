@@ -21,7 +21,7 @@ export default class ErrorBoundary extends Component {
         <i className="fa-solid fa-triangle-exclamation" style={{ fontSize: 40, color: '#F59E0B' }} />
         <div style={{ fontSize: 18, fontWeight: 700, color: '#0F172A' }}>Something went wrong</div>
         <div style={{ fontSize: 13.5, color: '#64748B', maxWidth: 420 }}>
-          This page hit an unexpected error. Your data is safe — reloading usually fixes it.
+          This page hit an unexpected error. Your data is safe, reloading usually fixes it.
         </div>
         <button
           className="btn-primary"

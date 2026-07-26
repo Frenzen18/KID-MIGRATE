@@ -346,6 +346,9 @@ export default function Reservations({ toast, openModal }) {
   /* ── Master Calendar week navigation, 0 = the current week, +/-1 a week
      ahead/behind, etc. ── */
   const [masterWeekOffset, setMasterWeekOffset] = useState(0);
+  // '' = every therapist (the original combined view), or one therapist's exact
+  // name to see only their own individual weekly schedule, who's handling what.
+  const [masterTherapistFilter, setMasterTherapistFilter] = useState('');
 
   /* ── Page-local modal state ── */
   const [modal, setModal] = useState(null);
@@ -644,13 +647,13 @@ export default function Reservations({ toast, openModal }) {
     }
   }
 
-  async function noShowSlot(reservationId) {
+  async function noShowSlot(reservationId, excused) {
     setBusy(true);
     try {
-      await api('/reservations/' + reservationId, { method: 'PUT', body: { status: 'no_show' } });
+      await api('/reservations/' + reservationId, { method: 'PUT', body: { status: 'no_show', excused: !!excused } });
       closeModal();
       await refetchReservations();
-      toast('Client marked as no-show', 'fa-user-slash');
+      toast(excused ? 'Client marked as excused, no fee charged' : 'Client marked as no-show, fee added', 'fa-user-slash');
     } catch (e) {
       toast(e.message || 'Failed to mark as no-show', 'fa-circle-exclamation');
     } finally {
@@ -672,16 +675,14 @@ export default function Reservations({ toast, openModal }) {
     }
   }
 
-  async function rescheduleSlot(reservationId, oldTime) {
-    const sel = document.getElementById('reschedule-new-time');
-    const newTime = sel ? sel.value.trim() : '';
-    if (!newTime || newTime === oldTime) { toast('Pick a different time slot to reschedule to', 'fa-circle-exclamation'); return; }
+  async function rescheduleSlot(reservationId, newDate, newTime) {
+    if (!newDate || !newTime) { toast('Pick a date and time to reschedule to', 'fa-circle-exclamation'); return; }
     setBusy(true);
     try {
-      await api('/reservations/' + reservationId, { method: 'PUT', body: { date: selected.date, time_slot: newTime } });
+      await api('/reservations/' + reservationId, { method: 'PUT', body: { date: newDate, time_slot: newTime } });
       closeModal();
       await refetchReservations();
-      toast('Rescheduled ' + oldTime + ' → ' + newTime, 'fa-arrows-rotate');
+      toast('Rescheduled to ' + newDate + ' · ' + newTime, 'fa-arrows-rotate');
     } catch (e) {
       toast(e.message || 'Failed to reschedule', 'fa-circle-exclamation');
     } finally {
@@ -938,7 +939,19 @@ export default function Reservations({ toast, openModal }) {
 
     const dateStr = d => fmtYMD(d);
     const dayShort = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
-    const timeSlots = daySlots.map(s => s.time_slot);
+    // The time axis must stand on its own, not borrow daySlots (that's the Book
+    // Client tab's slots for whichever single day/service-type is selected
+    // there, e.g. empty on a Sunday with no shifts, which used to make the
+    // whole Master Calendar look empty until you happened to pick a working
+    // day on that other tab). Spans every active therapist's actual shift
+    // hours instead, so it's always populated as long as any shift exists.
+    const shiftHours = shifts.filter(s => s.role === 'ot' || s.role === 'speech');
+    const timeSlots = shiftHours.length
+      ? Array.from(
+          { length: Math.max(...shiftHours.map(s => s.end_hour)) - Math.min(...shiftHours.map(s => s.start_hour)) },
+          (_, i) => hourLabel(Math.min(...shiftHours.map(s => s.start_hour)) + i)
+        )
+      : [];
 
     const header = (
       <tr style={{ background: '#F8FAFC' }}>
@@ -959,7 +972,7 @@ export default function Reservations({ toast, openModal }) {
         {weekDays.map((d, i) => {
           const isToday = dateStr(d) === dateStr(today);
           const cellBg = isToday ? { background: '#F0F9FF' } : {};
-          const bks = slotMap[dateStr(d) + '|' + time] || [];
+          const bks = (slotMap[dateStr(d) + '|' + time] || []).filter(bk => !masterTherapistFilter || bk.therapist_name === masterTherapistFilter);
           if (bks.length) {
             return (
               <td key={i} style={{ padding: '6px 4px', textAlign: 'center', ...cellBg }}>
@@ -1028,6 +1041,11 @@ export default function Reservations({ toast, openModal }) {
               {ASSESSMENT_TYPES.map(t => (
                 <button key={t} className="btn-secondary" style={{ padding: '16px 14px', textAlign: 'left', fontWeight: 600 }} onClick={() => setBookingServiceType(t)}>
                   <i className="fa-solid fa-clipboard-check" style={{ marginRight: 8, color: '#0EA5E9' }} />{t}
+                </button>
+              ))}
+              {['Occupational Therapy', 'Speech Therapy'].map(t => (
+                <button key={t} className="btn-secondary" style={{ padding: '16px 14px', textAlign: 'left', fontWeight: 600 }} onClick={() => setBookingServiceType(t)}>
+                  <i className="fa-solid fa-calendar-week" style={{ marginRight: 8, color: '#0D9488' }} />{t}
                 </button>
               ))}
             </div>
@@ -1148,6 +1166,10 @@ export default function Reservations({ toast, openModal }) {
           <div style={{ padding: '0 24px 16px', borderBottom: '1px solid #F1F5F9', display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: 10 }}>
             <div><div className="section-title">Master Calendar: Therapist Assignments, Rooms &amp; Parent-Booked Slots</div><div className="section-sub">Comprehensive weekly view of all confirmed sessions, room allocations, and pending parent bookings</div></div>
             <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+              <select className="form-select" style={{ width: 'auto', height: 34, fontSize: 12.5 }} value={masterTherapistFilter} onChange={e => setMasterTherapistFilter(e.target.value)} title="View one therapist's own schedule only">
+                <option value="">All Therapists</option>
+                {shifts.map(s => <option key={s.therapist_id || s.name} value={s.name}>{s.name} ({s.role === 'speech' ? 'Speech' : 'OT'})</option>)}
+              </select>
               <button className="topnav-btn" style={{ width: 28, height: 28 }} onClick={() => setMasterWeekOffset(o => o - 1)} title="Previous week"><i className="fa-solid fa-chevron-left" style={{ fontSize: 10 }} /></button>
               <span className="pill pill-blue">{master.weekSelLabel}</span>
               <button className="topnav-btn" style={{ width: 28, height: 28 }} onClick={() => setMasterWeekOffset(o => o + 1)} title="Next week"><i className="fa-solid fa-chevron-right" style={{ fontSize: 10 }} /></button>

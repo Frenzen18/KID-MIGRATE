@@ -20,6 +20,8 @@ import settingsRoutes from './routes/settings.js';
 import { handlePaymongoWebhook } from './lib/paymongoWebhook.js';
 import { runReminderSweep } from './lib/reminders.js';
 import { expireUnpaidBookingHolds } from './lib/bookingHolds.js';
+import { sweepUnpaidPastSessions } from './lib/noShowSweep.js';
+import { sweepMonthlyAttendance } from './lib/monthlyAttendanceSweep.js';
 
 dotenv.config();
 const app = express();
@@ -89,3 +91,19 @@ runReminderSweep();
 const BOOKING_HOLD_SWEEP_INTERVAL_MS = 2 * 60 * 1000;
 setInterval(expireUnpaidBookingHolds, BOOKING_HOLD_SWEEP_INTERVAL_MS);
 expireUnpaidBookingHolds();
+
+// Auto-no-show for a confirmed session whose own date has fully passed with
+// its invoice still unpaid (see server/lib/noShowSweep.js), the real trigger
+// moment is once per day (right after midnight PH time), 30 min just keeps it
+// self-healing if the server was down exactly then.
+const NO_SHOW_SWEEP_INTERVAL_MS = 30 * 60 * 1000;
+setInterval(sweepUnpaidPastSessions, NO_SHOW_SWEEP_INTERVAL_MS);
+sweepUnpaidPastSessions();
+
+// MOA monthly-attendance monitoring (see server/lib/monthlyAttendanceSweep.js),
+// only ever meaningfully fires once a new month starts (checks the
+// just-completed previous month), a few-hour interval is plenty, this is a
+// monitoring notification, not a time-sensitive action.
+const MONTHLY_ATTENDANCE_SWEEP_INTERVAL_MS = 6 * 60 * 60 * 1000;
+setInterval(sweepMonthlyAttendance, MONTHLY_ATTENDANCE_SWEEP_INTERVAL_MS);
+sweepMonthlyAttendance();

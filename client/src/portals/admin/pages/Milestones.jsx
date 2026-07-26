@@ -685,10 +685,9 @@ export default function Milestones({ go, toast, openModal }) {
         <div>
           <h1 style={{ fontSize: 22, fontWeight: 700, color: '#0F172A', margin: '0 0 4px' }}>Milestone Scorecard</h1>
         </div>
-        {!lockedDiscipline && (
+        {!isGasAdmin && (
           <div style={{ display: 'flex', gap: 8 }}>
             <button className="qa-btn" style={{ width: 'auto', padding: '10px 16px', fontSize: 13 }} onClick={() => openMsModal('new-entry')}><i className="fa-solid fa-plus" style={{ color: '#0EA5E9' }} /> Log New Session</button>
-            <button className="qa-btn" style={{ width: 'auto', padding: '10px 16px', fontSize: 13 }} onClick={() => toast('Scoreboard exported', 'fa-download')}><i className="fa-solid fa-download" style={{ color: '#0D9488' }} /> Export</button>
           </div>
         )}
       </div>
@@ -896,7 +895,7 @@ export default function Milestones({ go, toast, openModal }) {
                         ) : (
                           <div style={{ maxHeight: 420, overflowY: 'auto', paddingRight: 2 }}>
                             {[
-                              { key: 'notes', label: 'Recent Session Notes', body: (gasClientRecord?.session_notes || []).slice(-5).reverse().map(n => `${n.session_date} · ${n.domain}: ${n.score}${n.remark ? ' — ' + n.remark : ''}`).join('\n') || 'No session notes yet.' },
+                              { key: 'notes', label: 'Recent Session Notes', body: (gasClientRecord?.session_notes || []).slice(-5).reverse().map(n => `${n.session_date} · ${n.domain}: ${n.score}${n.remark ? ' (' + n.remark + ')' : ''}`).join('\n') || 'No session notes yet.' },
                               { key: 'allergies', label: 'Allergies', body: gasClientRecord?.allergies || 'None recorded.' },
                               { key: 'meds', label: 'Medical Alerts / Medication', body: gasClientRecord?.daily_medication || 'None recorded.' },
                               { key: 'gas', label: 'Recent GAS Summary', body: (gasClientRecord?.gas_entries || []).filter(e => e.discipline === gasDiscipline).slice(-5).reverse().map(e => `${e.session_date} · T-score ${e.gas_t_score}`).join('\n') || 'No GAS entries yet for this discipline.' }

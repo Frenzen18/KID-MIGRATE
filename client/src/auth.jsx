@@ -1,5 +1,5 @@
 import { createContext, useContext, useEffect, useState } from 'react';
-import { api, getToken } from './api.js';
+import { api, getToken, refreshAccessToken } from './api.js';
 
 const AuthCtx = createContext(null);
 
@@ -73,6 +73,8 @@ export function AuthProvider({ children }) {
   async function login(email, password, portal) {
     const data = await api('/auth/login', { method: 'POST', body: { email, password, ...(portal ? { portal } : {}) } });
     localStorage.setItem('kid_token', data.token);
+    localStorage.setItem('kid_refresh_token', data.refreshToken);
+    localStorage.setItem('kid_token_expires_at', String(data.expiresAt));
     localStorage.setItem('kid_user', JSON.stringify(data.user));
     // Stamped once, right here, so SessionWatcher can tell "a login happened
     // more recently than the one I'm using" apart from this login itself.
@@ -80,6 +82,16 @@ export function AuthProvider({ children }) {
     setUser(data.user);
     return data.user;
   }
+
+  // The access token Supabase issues only lasts 1 hour, refresh it well before
+  // that on a timer so an actively-open session never actually hits the expiry
+  // (api.js's own one-shot refresh-and-retry on a 401 is the fallback for
+  // whatever this timer can't cover, e.g. the laptop was asleep through it).
+  useEffect(() => {
+    if (!user) return;
+    const iv = setInterval(() => { if (getToken()) refreshAccessToken(); }, 10 * 60 * 1000);
+    return () => clearInterval(iv);
+  }, [user]);
 
   /** Self-service parent/guardian registration. The account must verify its email before logging in. */
   async function signup({ firstName, lastName, email, password, contact }) {
@@ -91,6 +103,8 @@ export function AuthProvider({ children }) {
 
   function logout() {
     localStorage.removeItem('kid_token');
+    localStorage.removeItem('kid_refresh_token');
+    localStorage.removeItem('kid_token_expires_at');
     localStorage.removeItem('kid_user');
     localStorage.removeItem('kid_admin_page');
     localStorage.removeItem('kid_login_at');
@@ -114,6 +128,8 @@ export function AuthProvider({ children }) {
     // just authenticated with, every subsequent call would 401 until a fresh
     // login otherwise, so swap in the new one the server hands back here.
     if (data.token) localStorage.setItem('kid_token', data.token);
+    if (data.refreshToken) localStorage.setItem('kid_refresh_token', data.refreshToken);
+    if (data.expiresAt) localStorage.setItem('kid_token_expires_at', String(data.expiresAt));
     updateUser({ must_change_password: false });
   }
 

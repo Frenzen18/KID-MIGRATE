@@ -6,6 +6,11 @@ import { db } from '../supabase.js';
  */
 const SESSION_RATES = { OT: 1400, Speech: 1200, Both: 2800, Default: 1400 };
 
+/** Flat no-show penalty (PHP), per the clinic's MOA no-show policy, a separate
+ *  charge from the session fee itself. Staff can still waive or edit the
+ *  amount on the payment record like any other invoice. */
+export const NO_SHOW_FEE = 500;
+
 const isOT = t => /occupational|\bOT\b/i.test(t || '');
 const isSpeech = t => /speech/i.test(t || '');
 
@@ -17,6 +22,12 @@ export function rateFor(sessionType) {
   if (sp) return SESSION_RATES.Speech;
   if (ot) return SESSION_RATES.OT;
   return SESSION_RATES.Default;
+}
+
+/** MOA slot-retainment fee: 50% of the regular session rate, charged once
+ *  when 3 consecutive excused absences threaten a recurring slot. */
+export function retainerFeeFor(sessionType) {
+  return Math.round(rateFor(sessionType) * 0.5);
 }
 
 /**

@@ -208,7 +208,10 @@ create index payments_reservation_idx on payments (reservation_id);
 -- has a race window (concurrent requests, double-clicked Confirm), same pattern
 -- as reservations_active_slot_therapist_uidx for double-booking.
 create unique index payments_reservation_uidx on payments (reservation_id) where reservation_id is not null;
-create unique index payments_pm_intent_uidx on payments (pm_payment_intent_id) where pm_payment_intent_id is not null;
+-- Not unique: a combined checkout (POST /payments/checkout/combined) deliberately
+-- puts the same PayMongo intent id on several invoices at once, one QR paying
+-- them all together, markPaidByIntentId marks every row sharing it paid as a group.
+create index payments_pm_intent_idx on payments (pm_payment_intent_id) where pm_payment_intent_id is not null;
 
 -- Invoice numbers: a single global counter so numbers are strictly
 -- incremental across the whole clinic (never random, never reused),

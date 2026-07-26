@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useRef } from 'react';
 import { api } from '../../../api.js';
 import { Modal } from '../../../components/ui.jsx';
 import GasProgressChart from '../../../components/GasProgressChart.jsx';
@@ -40,6 +40,15 @@ function calcAge(dob) {
 function formatDate(iso) {
   if (!iso) return '–';
   return new Date(iso).toLocaleDateString('en-PH', { month: 'short', day: 'numeric', year: 'numeric' });
+}
+
+// Mirrors Milestones.jsx's own gasScoreTone(), same green/blue/amber/red bands used for a GAS T-score pill everywhere else in the app.
+function gasScoreTone(score) {
+  if (score == null) return 'gray';
+  if (score >= 60) return 'green';
+  if (score >= 45) return 'blue';
+  if (score >= 35) return 'amber';
+  return 'red';
 }
 
 // Parent observation is folded into the stored remarks text as its own leading
@@ -169,6 +178,22 @@ export default function Clients({ go, toast, openModal, role = 'admin', scopeToT
   const [devFields, setDevFields] = useState([]);
   useEffect(() => { api('/dev-functional-fields').then(setDevFields).catch(() => setDevFields([])); }, []);
 
+  /* Generate Report: date-range picker + AI "Therapist Summary & Recommendations" */
+  const todayStr = () => new Date().toISOString().slice(0, 10);
+  const monthAgoStr = () => { const d = new Date(); d.setMonth(d.getMonth() - 1); return d.toISOString().slice(0, 10); };
+  const [reportFrom, setReportFrom] = useState(monthAgoStr());
+  const [reportTo, setReportTo] = useState(todayStr());
+  const [reportGenerating, setReportGenerating] = useState(false);
+  const [reportResult, setReportResult] = useState(null);
+  const [reportPopoverOpen, setReportPopoverOpen] = useState(false);
+  // Editable drafts, seeded from the AI result but the therapist's own edits
+  // are what actually prints and what gets sent to the guardian.
+  const [editedSummary, setEditedSummary] = useState('');
+  const [editedRecommendations, setEditedRecommendations] = useState('');
+  const [notifyingGuardian, setNotifyingGuardian] = useState(false);
+  // 'all' or 'YYYY-MM', scopes the GAS Longitudinal Progress charts (and what prints with them).
+  const [chartMonthFilter, setChartMonthFilter] = useState('all');
+
   const fetchClients = useCallback(async () => {
     try {
       setLoading(true);
@@ -276,6 +301,11 @@ export default function Clients({ go, toast, openModal, role = 'admin', scopeToT
       archived: !!c.archived,
     });
     setHistoryName(c.name);
+    setReportResult(null);
+    setReportPopoverOpen(false);
+    setEditedSummary('');
+    setEditedRecommendations('');
+    setChartMonthFilter('all');
 
     // GAS Longitudinal Progress
     setGasEntries([]);
@@ -284,6 +314,45 @@ export default function Clients({ go, toast, openModal, role = 'admin', scopeToT
       .then(setGasEntries)
       .catch(() => setGasEntries([]))
       .finally(() => setGasLoading(false));
+  }
+
+  async function generateClientReport() {
+    if (!selectedId) return;
+    if (reportFrom > reportTo) { toast('"From" date must be before "To" date', 'fa-triangle-exclamation'); return; }
+    setReportGenerating(true);
+    setReportResult(null);
+    try {
+      const result = await api('/clients/' + selectedId + '/generate-report', { method: 'POST', body: { from: reportFrom, to: reportTo } });
+      setReportResult(result);
+      setEditedSummary(result.summary || '');
+      setEditedRecommendations(result.recommendations || '');
+      setReportPopoverOpen(false);
+    } catch (err) {
+      toast(err.message || 'Failed to generate report', 'fa-triangle-exclamation');
+    } finally {
+      setReportGenerating(false);
+    }
+  }
+
+  async function notifyGuardianReportReady() {
+    if (!selectedId || !reportResult) return;
+    setNotifyingGuardian(true);
+    try {
+      const res = await api('/clients/' + selectedId + '/notify-report-ready', {
+        method: 'POST',
+        body: { from: reportResult.range.from, to: reportResult.range.to, summary: editedSummary, recommendations: editedRecommendations }
+      });
+      const via = [res.emailSent && 'email', res.smsSent && 'SMS'].filter(Boolean).join(' and ');
+      toast(via ? `Guardian notified via ${via}` : 'Guardian notified in-app (no email/SMS channel available)', 'fa-paper-plane');
+    } catch (err) {
+      toast(err.message || 'Failed to notify guardian', 'fa-triangle-exclamation');
+    } finally {
+      setNotifyingGuardian(false);
+    }
+  }
+
+  function printClientRecord() {
+    window.print();
   }
 
   function closeClientModal() {
@@ -377,26 +446,63 @@ export default function Clients({ go, toast, openModal, role = 'admin', scopeToT
   const outstandingCount = fin.filter(r => r.statusKey === 'pending' || r.statusKey === 'overdue').length;
   const recentlySealed = fin.filter(r => r.sealed).slice(0, 3);
 
+  // Which calendar months this client actually has GAS entries in, newest first,
+  // so "filterable what month" only ever offers months with real data.
+  const gasMonthOptions = [...new Set(gasEntries.map(e => (e.session_date || '').slice(0, 7)).filter(Boolean))].sort().reverse();
+  const filteredGasEntries = chartMonthFilter === 'all' ? gasEntries : gasEntries.filter(e => (e.session_date || '').startsWith(chartMonthFilter));
+
   return (
     <div className="spa-page" id="spa-clients">
       <style>{`
+        .print-only { display: none; }
         @media print {
-          body * { visibility: hidden; }
-          #client-record-print, #client-record-print * { visibility: visible; }
-          #client-record-print { position: fixed; top: 0; left: 0; width: 100%; max-height: none !important; overflow: visible !important; margin: 0; padding: 20px; box-shadow: none; border: none; }
-          #client-record-print .no-print { display: none !important; }
-          .client-photo-2x2 { width: 2in !important; height: 2in !important; border-radius: 4px !important; }
+          @page { margin: 14mm 12mm; }
+          /* Same fix as Reports.jsx: visibility:hidden + position:fixed only ever
+             printed one page, it clips to a single sheet in every print engine.
+             Removing the sidebar/topnav/page content with display:none (which frees
+             their layout space entirely) and letting the modal flow as a normal,
+             un-positioned block is what lets a long record paginate across as many
+             physical pages as it actually needs. */
+          #sidebar, #topnav, #section-clients, #section-financial, .no-print { display: none !important; }
+          #main { margin-left: 0 !important; }
+          #content { padding: 0 !important; }
+          /* Only the modal that actually holds the printable record, any OTHER
+             modal open at the same time (e.g. the new-sign-in alert) gets hidden
+             entirely instead of also being treated as printable. */
+          .modal-overlay:not(:has(#client-record-print)) { display: none !important; }
+          .modal-overlay:has(#client-record-print) { position: static !important; background: none !important; display: block !important; padding: 0 !important; z-index: auto !important; }
+          .modal-overlay:has(#client-record-print) .modal-box { max-width: 100% !important; max-height: none !important; overflow: visible !important; box-shadow: none !important; border-radius: 0 !important; padding: 0 !important; }
+          /* The Modal component's own title + × close button row, the first direct
+             child of .modal-box, everything printable lives in the second child
+             (#client-record-print), so this only ever hits the chrome, never content. */
+          .modal-overlay:has(#client-record-print) .modal-box > div:first-child { display: none !important; }
+          #client-record-print { max-height: none !important; overflow: visible !important; padding: 0 !important; }
+          #client-record-print .print-only { display: block !important; }
+          #client-record-print > div { break-inside: avoid; page-break-inside: avoid; }
+          /* Charts are exempted from avoid, an SVG can't be split, and refusing
+             a mid-card break just pushes this whole section whole to the next
+             page, wasting the rest of the current one, letting it flow and
+             split normally between individual charts uses the space instead of
+             wasting it. Border/background is dropped too, a bordered box that
+             does split across a page can render as if the box kept going with
+             nothing in it on the page before the real content, plain content
+             avoids that look entirely. */
+          .gas-print-section { break-inside: auto !important; page-break-inside: auto !important; border: none !important; background: none !important; border-radius: 0 !important; box-shadow: none !important; }
+          .gas-print-section .cp-wrap, .gas-print-section > div > div { border: none !important; background: none !important; border-radius: 0 !important; box-shadow: none !important; }
+          .client-photo-2x2 { width: 0.7in !important; height: 0.7in !important; border-radius: 4px !important; }
+          .print-header-block { margin-bottom: 8px !important; padding-bottom: 8px !important; }
+          .gas-print-section { margin-top: 0 !important; padding-top: 0 !important; }
         }
       `}</style>
       {/* Page Header */}
-      <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', marginBottom: 24, flexWrap: 'wrap', gap: 12 }}>
+      <div className="no-print" style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', marginBottom: 24, flexWrap: 'wrap', gap: 12 }}>
         <div>
           <h1 style={{ fontSize: 22, fontWeight: 700, color: '#0F172A', margin: '0 0 4px' }}>Client Records Management</h1>
         </div>
       </div>
 
       {/* Section Tabs: 3.1 / 3.2 / 3.3 */}
-      <div className="tab-nav">
+      <div className="tab-nav no-print">
         <button className={'section-tab' + (section === 'clients' ? ' active' : '')} onClick={() => setSection('clients')}><i className="fa-solid fa-child" style={{ marginRight: 6 }} />Client Records &amp; Profiles</button>
       </div>
 
@@ -473,15 +579,15 @@ export default function Clients({ go, toast, openModal, role = 'admin', scopeToT
                       ) : (
                         <>
                           {!scopeToTherapist && (
-                            <button className="btn-edit" onClick={() => { openModal('edit-client', { name: c.name, guardian: c.guardian, status: c.status, assignedOt: c.thxOt, assignedSpeech: c.thxSpeech, therapy_type: c.therapy_type, therapists: therapistList, onSave: async (patch) => {
+                            <button className="btn-edit" onClick={() => { openModal('edit-client', { clientId: c.id, name: c.name, guardian: c.guardian, status: c.status, assignedOt: c.thxOt, assignedSpeech: c.thxSpeech, therapy_type: c.therapy_type, recommendedOt: c.recommended_ot_weekly_sessions, recommendedSpeech: c.recommended_speech_weekly_sessions, initial_assessment_completed: c.initial_assessment_completed, therapists: therapistList, onSave: async (patch) => {
                               try {
                                 const body = {};
                                 if (patch.name) body.full_name = patch.name;
                                 if (patch.guardian) body.guardian_name = patch.guardian;
                                 if (patch.status) body.status = patch.status.toLowerCase();
                                 if ('therapy_type' in patch) body.therapy_type = patch.therapy_type || null;
-                                if ('thxOt' in patch) body.assigned_ot_therapist_name = patch.thxOt || null;
-                                if ('thxSpeech' in patch) body.assigned_speech_therapist_name = patch.thxSpeech || null;
+                                if ('recommendedOt' in patch) body.recommended_ot_weekly_sessions = patch.recommendedOt;
+                                if ('recommendedSpeech' in patch) body.recommended_speech_weekly_sessions = patch.recommendedSpeech;
                                 await api('/clients/' + c.id, { method: 'PUT', body });
                                 toast('Client profile updated: ' + (patch.name || c.name), 'fa-check');
                                 fetchClients();
@@ -522,16 +628,35 @@ export default function Clients({ go, toast, openModal, role = 'admin', scopeToT
         <Modal title="Client Clinical Record" onClose={closeClientModal} width={940}>
           <div id="client-record-print" style={{ maxHeight: '78vh', overflowY: 'auto', paddingRight: 4 }}>
             {/* Header */}
-            <div style={{ display: 'flex', alignItems: 'center', gap: 16, marginBottom: 22, paddingBottom: 18, borderBottom: '1px solid #F1F5F9' }}>
+            <div className="print-header-block" style={{ display: 'flex', alignItems: 'center', gap: 16, marginBottom: 22, paddingBottom: 18, borderBottom: '1px solid #F1F5F9' }}>
               {profile.photoUrl
                 ? <img className="client-photo-2x2" src={profile.photoUrl} alt={profile.name} style={{ width: 96, height: 96, borderRadius: 4, objectFit: 'cover', border: '1px solid #E2E8F0', flexShrink: 0 }} />
                 : <div className="client-photo-2x2" style={{ width: 96, height: 96, borderRadius: 4, border: '1px solid #E2E8F0', background: `linear-gradient(135deg,${profile.bg},${profile.color})`, display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 28, fontWeight: 700, color: '#fff', fontFamily: "'Poppins',sans-serif", flexShrink: 0 }}>{profile.initials}</div>}
               <div style={{ flex: 1, minWidth: 0 }}>
                 <div style={{ fontSize: 18, fontWeight: 700, color: '#0F172A', fontFamily: "'Poppins',sans-serif" }}>{profile.name}</div>
                 <div style={{ fontSize: 12.5, color: '#64748B', marginTop: 2 }}>{profile.clientCode} · {profile.meta?.split(' · ')[1]}</div>
-                <div style={{ display: 'flex', gap: 8, marginTop: 6 }}><span className={profile.statusPill}>{profile.status}</span><span className={profile.therapy === 'Speech' ? 'pill pill-teal' : 'pill pill-blue'}>{{ OT: 'Occupational Therapy', Speech: 'Speech Therapy', Both: 'Combined' }[profile.therapy] || 'Occupational Therapy'}</span></div>
+                <div style={{ display: 'flex', gap: 8, marginTop: 6 }}><span className={profile.therapy === 'Speech' ? 'pill pill-teal' : 'pill pill-blue'}>{{ OT: 'Occupational Therapy', Speech: 'Speech Therapy', Both: 'Combined' }[profile.therapy] || 'Occupational Therapy'}</span></div>
               </div>
               <div className="no-print" style={{ display: 'flex', gap: 8, flexShrink: 0 }}>
+                <div style={{ position: 'relative' }}>
+                  <button className="btn-edit" onClick={() => setReportPopoverOpen(o => !o)}><i className="fa-solid fa-file-medical" style={{ marginRight: 4 }} />Generate Report</button>
+                  {reportPopoverOpen && (
+                    <div style={{ position: 'absolute', top: '100%', right: 0, zIndex: 30, marginTop: 6, width: 300, background: '#fff', border: '1px solid #E2E8F0', borderRadius: 10, boxShadow: '0 12px 28px rgba(15,23,42,.16)', padding: 16 }}>
+                      <div style={{ fontSize: 12.5, fontWeight: 700, color: '#0F172A', marginBottom: 10 }}>Generate Report</div>
+                      <div style={{ display: 'flex', gap: 8, marginBottom: 12 }}>
+                        <div style={{ flex: 1 }}><label className="form-label">From</label><input type="date" className="form-input" max={reportTo} value={reportFrom} onChange={e => setReportFrom(e.target.value)} /></div>
+                        <div style={{ flex: 1 }}><label className="form-label">To</label><input type="date" className="form-input" max={todayStr()} value={reportTo} onChange={e => setReportTo(e.target.value)} /></div>
+                      </div>
+                      <div style={{ display: 'flex', gap: 8 }}>
+                        <button className="btn-secondary" style={{ flex: 1 }} onClick={() => setReportPopoverOpen(false)}>Cancel</button>
+                        <button className="btn-primary" style={{ flex: 1 }} disabled={reportGenerating} onClick={generateClientReport}>
+                          <i className={'fa-solid ' + (reportGenerating ? 'fa-spinner fa-spin' : 'fa-wand-magic-sparkles')} style={{ marginRight: 5 }} />
+                          {reportGenerating ? 'Generating…' : 'Generate'}
+                        </button>
+                      </div>
+                    </div>
+                  )}
+                </div>
                 {profile.archived ? (
                   <>
                     <button className="btn-edit" onClick={() => downloadArchiveSnapshot(profile.id)}><i className="fa-solid fa-download" style={{ marginRight: 4 }} />Download Backup</button>
@@ -539,14 +664,14 @@ export default function Clients({ go, toast, openModal, role = 'admin', scopeToT
                   </>
                 ) : (
                   <>
-                    {!scopeToTherapist && <button className="btn-edit" onClick={() => { const c = clients.find(cl => cl.id === selectedId); openModal('edit-client', c ? { name: c.name, guardian: c.guardian, status: c.status, assignedOt: c.thxOt, assignedSpeech: c.thxSpeech, therapy_type: c.therapy_type, therapists: therapistList, onSave: async (patch) => { try { const body = {}; if (patch.name) body.full_name = patch.name; if (patch.guardian) body.guardian_name = patch.guardian; if (patch.status) body.status = patch.status.toLowerCase(); if ('therapy_type' in patch) body.therapy_type = patch.therapy_type || null; if ('thxOt' in patch) body.assigned_ot_therapist_name = patch.thxOt || null; if ('thxSpeech' in patch) body.assigned_speech_therapist_name = patch.thxSpeech || null; await api('/clients/' + c.id, { method: 'PUT', body }); toast('Client profile updated', 'fa-check'); fetchClients(); closeClientModal(); } catch (err) { toast('Error: ' + err.message, 'fa-triangle-exclamation'); } } } : { name: profile.name }); }}><i className="fa-solid fa-pen" style={{ marginRight: 4 }} />Edit</button>}
+                    {!scopeToTherapist && <button className="btn-edit" onClick={() => { const c = clients.find(cl => cl.id === selectedId); openModal('edit-client', c ? { clientId: c.id, name: c.name, guardian: c.guardian, status: c.status, assignedOt: c.thxOt, assignedSpeech: c.thxSpeech, therapy_type: c.therapy_type, recommendedOt: c.recommended_ot_weekly_sessions, recommendedSpeech: c.recommended_speech_weekly_sessions, initial_assessment_completed: c.initial_assessment_completed, therapists: therapistList, onSave: async (patch) => { try { const body = {}; if (patch.name) body.full_name = patch.name; if (patch.guardian) body.guardian_name = patch.guardian; if (patch.status) body.status = patch.status.toLowerCase(); if ('therapy_type' in patch) body.therapy_type = patch.therapy_type || null; if ('recommendedOt' in patch) body.recommended_ot_weekly_sessions = patch.recommendedOt; if ('recommendedSpeech' in patch) body.recommended_speech_weekly_sessions = patch.recommendedSpeech; await api('/clients/' + c.id, { method: 'PUT', body }); toast('Client profile updated', 'fa-check'); fetchClients(); closeClientModal(); } catch (err) { toast('Error: ' + err.message, 'fa-triangle-exclamation'); } } } : { clientId: profile.id, name: profile.name }); }}><i className="fa-solid fa-pen" style={{ marginRight: 4 }} />Edit</button>}
                     {role === 'admin' && <button className="btn-archive" onClick={() => openModal('delete-client', { name: profile.name, onConfirm: async () => { if (!selectedId) return; try { await api('/clients/' + selectedId, { method: 'DELETE' }); toast('Client profile archived', 'fa-box-archive'); closeClientModal(); fetchClients(); } catch (err) { toast('Error: ' + err.message, 'fa-triangle-exclamation'); } } })}><i className="fa-solid fa-box-archive" style={{ marginRight: 4 }} />Archive</button>}
                   </>
                 )}
               </div>
             </div>
             {/* Two-column info */}
-            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 16, marginBottom: 20 }}>
+            <div className="no-print" style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 16, marginBottom: 20 }}>
               <div style={{ padding: '16px 18px', borderRadius: 12, border: '1px solid #E2E8F0', background: '#FAFBFC' }}>
                 <div style={{ fontSize: 12.5, fontWeight: 700, color: '#0F172A', marginBottom: 12, display: 'flex', alignItems: 'center', gap: 6 }}><i className="fa-solid fa-id-card" style={{ color: '#818CF8' }} />Personal Information</div>
                 <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
@@ -568,7 +693,7 @@ export default function Clients({ go, toast, openModal, role = 'admin', scopeToT
             {/* Assigned Therapist, unassigned shows a muted "not yet assigned" state instead of a
                 bare "–" standing in for both the avatar initials and the name, which read like
                 missing data rather than an intentional empty state. */}
-            <div style={{ display: 'flex', flexDirection: 'column', gap: 10, marginBottom: 20 }}>
+            <div className="no-print" style={{ display: 'flex', flexDirection: 'column', gap: 10, marginBottom: 20 }}>
               {[
                 ...(profile.thxOt ? [{ name: profile.thxOt, role: 'Occupational Therapist' }] : []),
                 ...(profile.thxSpeech ? [{ name: profile.thxSpeech, role: 'Speech-Language Pathologist' }] : []),
@@ -593,7 +718,7 @@ export default function Clients({ go, toast, openModal, role = 'admin', scopeToT
               )}
             </div>
             {/* Development & Functional Information */}
-            <div style={{ padding: '16px 18px', borderRadius: 12, border: '1px solid #E2E8F0', background: '#FAFBFC', marginBottom: 20 }}>
+            <div className="no-print" style={{ padding: '16px 18px', borderRadius: 12, border: '1px solid #E2E8F0', background: '#FAFBFC', marginBottom: 20 }}>
               <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12 }}>
                 <div style={{ fontSize: 12.5, fontWeight: 700, color: '#0F172A', display: 'flex', alignItems: 'center', gap: 6 }}><i className="fa-solid fa-child-reaching" style={{ color: '#4F46E5' }} />Development &amp; Functional Information</div>
               </div>
@@ -611,16 +736,28 @@ export default function Clients({ go, toast, openModal, role = 'admin', scopeToT
               )}
             </div>
             {/* GAS Progress */}
-            <div style={{ padding: '16px 18px', borderRadius: 12, border: '1px solid #E2E8F0', background: '#FAFBFC' }}>
-              <div style={{ fontSize: 12.5, fontWeight: 700, color: '#0F172A', marginBottom: 12, display: 'flex', alignItems: 'center', gap: 6 }}><i className="fa-solid fa-chart-line" style={{ color: '#4F46E5' }} />GAS Longitudinal Progress</div>
+            <div className="gas-print-section" style={{ padding: '16px 18px', borderRadius: 12, border: '1px solid #E2E8F0', background: '#FAFBFC' }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: 10, marginBottom: 12 }}>
+                <div style={{ fontSize: 12.5, fontWeight: 700, color: '#0F172A', display: 'flex', alignItems: 'center', gap: 6 }}><i className="fa-solid fa-chart-line" style={{ color: '#4F46E5' }} />GAS Longitudinal Progress</div>
+                {!gasLoading && gasMonthOptions.length > 0 && (
+                  <select className="form-select no-print" style={{ width: 'auto', height: 30, fontSize: 12 }} value={chartMonthFilter} onChange={e => setChartMonthFilter(e.target.value)}>
+                    <option value="all">All Months</option>
+                    {gasMonthOptions.map(m => (
+                      <option key={m} value={m}>{new Date(m + '-01T00:00:00').toLocaleDateString('en-US', { month: 'long', year: 'numeric' })}</option>
+                    ))}
+                  </select>
+                )}
+              </div>
               {gasLoading ? (
                 <div style={{ padding: 24, textAlign: 'center', color: '#94A3B8', fontSize: 13 }}><i className="fa-solid fa-spinner fa-spin" style={{ marginRight: 8 }} />Loading…</div>
+              ) : filteredGasEntries.length === 0 ? (
+                <div style={{ padding: 24, textAlign: 'center', color: '#94A3B8', fontSize: 13 }}>No GAS entries in {chartMonthFilter === 'all' ? 'range' : new Date(chartMonthFilter + '-01T00:00:00').toLocaleDateString('en-US', { month: 'long', year: 'numeric' })}.</div>
               ) : (
-                <GasProgressChart entries={gasEntries} />
+                <GasProgressChart entries={filteredGasEntries} />
               )}
             </div>
             {/* Session History Remarks */}
-            <div style={{ padding: '16px 18px', borderRadius: 12, border: '1px solid #E2E8F0', background: '#FAFBFC', marginTop: 20 }}>
+            <div className="no-print" style={{ padding: '16px 18px', borderRadius: 12, border: '1px solid #E2E8F0', background: '#FAFBFC', marginTop: 20 }}>
               <div style={{ fontSize: 12.5, fontWeight: 700, color: '#0F172A', marginBottom: 12, display: 'flex', alignItems: 'center', gap: 6 }}><i className="fa-solid fa-comment-medical" style={{ color: '#4F46E5' }} />Session History Remarks</div>
               {gasLoading ? (
                 <div style={{ padding: 24, textAlign: 'center', color: '#94A3B8', fontSize: 13 }}><i className="fa-solid fa-spinner fa-spin" style={{ marginRight: 8 }} />Loading…</div>
@@ -654,6 +791,40 @@ export default function Clients({ go, toast, openModal, role = 'admin', scopeToT
                 </>
               )}
             </div>
+            {reportResult && (
+              <div style={{ padding: '16px 18px', borderRadius: 12, border: '1px solid #E2E8F0', background: '#FAFBFC', marginTop: 20 }}>
+                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit,minmax(120px,1fr))', gap: 10, marginBottom: 18 }}>
+                  <div><div style={{ fontSize: 10.5, color: '#94A3B8', fontWeight: 600, textTransform: 'uppercase', letterSpacing: '.3px', marginBottom: 2 }}>Period</div><div style={{ fontSize: 13, color: '#0F172A', fontWeight: 500 }}>{formatDate(reportResult.range.from)} – {formatDate(reportResult.range.to)}</div></div>
+                  <div><div style={{ fontSize: 10.5, color: '#94A3B8', fontWeight: 600, textTransform: 'uppercase', letterSpacing: '.3px', marginBottom: 2 }}>Sessions</div><div style={{ fontSize: 13, color: '#0F172A', fontWeight: 500 }}>{reportResult.session_count}</div></div>
+                  <div><div style={{ fontSize: 10.5, color: '#94A3B8', fontWeight: 600, textTransform: 'uppercase', letterSpacing: '.3px', marginBottom: 2 }}>Avg T-Score</div><span className={'pill pill-' + gasScoreTone(reportResult.avg_t_score)}>{reportResult.avg_t_score ?? '–'}</span></div>
+                  <div><div style={{ fontSize: 10.5, color: '#94A3B8', fontWeight: 600, textTransform: 'uppercase', letterSpacing: '.3px', marginBottom: 2 }}>Trend</div><div style={{ fontSize: 13, color: '#0F172A', fontWeight: 500, textTransform: 'capitalize' }}>{reportResult.trend}</div></div>
+                </div>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: 8, marginBottom: 10 }}>
+                  <div style={{ fontSize: 11.5, fontWeight: 700, color: '#4F46E5', textTransform: 'uppercase', letterSpacing: '.4px', display: 'flex', alignItems: 'center', gap: 6 }}>
+                    Therapist Summary &amp; Recommendations
+                  </div>
+                  <div className="no-print" style={{ display: 'flex', gap: 8 }}>
+                    <button className="btn-edit" onClick={printClientRecord}><i className="fa-solid fa-print" style={{ marginRight: 4 }} />Print</button>
+                    <button className="btn-primary" disabled={notifyingGuardian} onClick={notifyGuardianReportReady}>
+                      <i className={'fa-solid ' + (notifyingGuardian ? 'fa-spinner fa-spin' : 'fa-paper-plane')} style={{ marginRight: 4 }} />
+                      {notifyingGuardian ? 'Notifying…' : 'Notify Guardian'}
+                    </button>
+                  </div>
+                </div>
+                <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+                  <div>
+                    <div style={{ fontSize: 10.5, color: '#94A3B8', fontWeight: 600, textTransform: 'uppercase', letterSpacing: '.3px', marginBottom: 4 }}>Summary</div>
+                    <textarea className="form-input no-print" rows="3" style={{ height: 'auto', padding: '8px 12px', resize: 'vertical', fontSize: 13, lineHeight: 1.6 }} value={editedSummary} onChange={e => setEditedSummary(e.target.value)} placeholder="No summary generated." />
+                    <div className="print-only" style={{ fontSize: 13, color: '#0F172A', lineHeight: 1.6, whiteSpace: 'pre-wrap' }}>{editedSummary || 'No summary generated.'}</div>
+                  </div>
+                  <div>
+                    <div style={{ fontSize: 10.5, color: '#94A3B8', fontWeight: 600, textTransform: 'uppercase', letterSpacing: '.3px', marginBottom: 4 }}>Recommendations</div>
+                    <textarea className="form-input no-print" rows="3" style={{ height: 'auto', padding: '8px 12px', resize: 'vertical', fontSize: 13, lineHeight: 1.6 }} value={editedRecommendations} onChange={e => setEditedRecommendations(e.target.value)} placeholder="No recommendations generated." />
+                    <div className="print-only" style={{ fontSize: 13, color: '#0F172A', lineHeight: 1.6, whiteSpace: 'pre-wrap' }}>{editedRecommendations || 'No recommendations generated.'}</div>
+                  </div>
+                </div>
+              </div>
+            )}
           </div>
         </Modal>
       )}
@@ -766,7 +937,7 @@ export default function Clients({ go, toast, openModal, role = 'admin', scopeToT
         </div>
       </div>{/* end section-financial */}
 
-      <div className="page-footer"><span style={{ fontSize: 12, color: '#94A3B8' }}>© 2026 KID Clinic Information Management System · Client Records Management</span></div>
+      <div className="page-footer no-print"><span style={{ fontSize: 12, color: '#94A3B8' }}>© 2026 KID Clinic Information Management System · Client Records Management</span></div>
     </div>
   );
 }

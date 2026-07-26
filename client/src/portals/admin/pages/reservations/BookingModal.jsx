@@ -23,7 +23,7 @@ export default function BookingModal({ selected, daySlots, slotState, defaultTim
   // Speech-Language/Occupational Assessment are follow-ups for clients already
   // designated into that discipline (or Combined), not a fresh intake, so only
   // clients matching that therapy_type are selectable.
-  const DISCIPLINE_FOR_TYPE = { 'Speech-Language Assessment': 'Speech', 'Occupational Assessment': 'OT' };
+  const DISCIPLINE_FOR_TYPE = { 'Speech-Language Assessment': 'Speech', 'Occupational Assessment': 'OT', 'Occupational Therapy': 'OT', 'Speech Therapy': 'Speech' };
   const requiredDiscipline = DISCIPLINE_FOR_TYPE[serviceType];
   const bookableClients = isInitialAssessment
     ? clients.filter(c => !c.assigned_ot_therapist_name && !c.assigned_speech_therapist_name && !c.therapy_type)
@@ -76,6 +76,21 @@ export default function BookingModal({ selected, daySlots, slotState, defaultTim
     setSelectedTherapist(eligibleTherapists.length === 1 ? eligibleTherapists[0].name : '');
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [selectedClientId, therapists]);
+
+  // For a regular Occupational/Speech Therapy booking, surface the client's
+  // fixed recurring schedule(s) for this discipline, if any, so staff can see
+  // at a glance which day/time/therapist to pick instead of guessing.
+  const WEEKDAY_NAMES = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
+  const [clientSchedules, setClientSchedules] = useState([]);
+  useEffect(() => {
+    if (!selectedClientId || !DISCIPLINE_FOR_TYPE[serviceType]) { setClientSchedules([]); return; }
+    let cancelled = false;
+    api('/reservations/' + selectedClientId + '/schedules')
+      .then(list => { if (!cancelled) setClientSchedules((list || []).filter(s => s.status === 'active' && s.discipline === DISCIPLINE_FOR_TYPE[serviceType])); })
+      .catch(() => { if (!cancelled) setClientSchedules([]); });
+    return () => { cancelled = true; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selectedClientId, serviceType]);
 
   // Once a client (or, for assessments, a therapist) is picked, re-fetch slots
   // scoped to that specific therapist's shift so Start Time only shows hours
@@ -162,6 +177,12 @@ export default function BookingModal({ selected, daySlots, slotState, defaultTim
               ? <div style={{ fontSize: 11.5, color: 'var(--color-primary)', marginTop: 5 }}><i className="fa-solid fa-circle-info" style={{ marginRight: 5 }} />Showing available times for {name}'s schedule only.</div>
               : null;
           })()}
+          {clientSchedules.length > 0 && (
+            <div style={{ fontSize: 11.5, color: '#0D9488', marginTop: 5 }}>
+              <i className="fa-solid fa-calendar-week" style={{ marginRight: 5 }} />
+              Fixed schedule: {clientSchedules.map((s, i) => <span key={s.id}>{i > 0 ? '; ' : ''}{WEEKDAY_NAMES[s.day_of_week]}s at {s.time_slot} with {s.therapist_name}</span>)}
+            </div>
+          )}
         </div>
         {requiredRole && (
           <div style={{ gridColumn: '1/-1' }}>

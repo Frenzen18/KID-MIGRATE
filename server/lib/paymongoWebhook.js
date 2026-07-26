@@ -43,69 +43,82 @@ export async function handlePaymongoWebhook(req, res) {
   await markPaidByIntentId(intentId);
 }
 
-/** Shared by the webhook and the manual status-poll fallback. */
+/**
+ * Shared by the webhook and the manual status-poll fallback. A combined
+ * checkout (see POST /payments/checkout/combined) means several payment rows
+ * can share the same intent id, so this always marks the WHOLE group paid
+ * together, not just one row, singleton QRPh payments are just a group of one.
+ */
 export async function markPaidByIntentId(intentId) {
-  const { data: payment, error } = await db.from('payments').select('*').eq('pm_payment_intent_id', intentId).maybeSingle();
-  if (error || !payment) return null;
-  if (payment.status === 'paid') return payment; // already handled, webhook + poll can race
+  const { data: group, error } = await db.from('payments').select('*').eq('pm_payment_intent_id', intentId);
+  if (error || !group?.length) return null;
+  if (group.every(p => p.status === 'paid')) return group[0]; // already handled, webhook + poll can race
 
-  const { data: updated, error: upErr } = await db.from('payments').update({
+  const { data: updatedRows, error: upErr } = await db.from('payments').update({
     status: 'paid',
     method: 'QRPh',
     reference: intentId,
     paid_at: new Date().toISOString()
-  }).eq('id', payment.id).select().single();
-  if (upErr) { console.error('Failed to mark payment paid:', upErr.message); return null; }
+  }).eq('pm_payment_intent_id', intentId).select();
+  if (upErr) { console.error('Failed to mark payment(s) paid:', upErr.message); return null; }
 
-  await logAudit({
-    table_name: 'payments', record_id: payment.id, action: 'approve',
-    description: `QRPh payment confirmed (${payment.invoice_no || payment.id})`,
-    approved_by: null // confirmed by PayMongo, not a portal user
-  });
-
-  const { data: client } = await db.from('clients').select('parent_id').eq('id', payment.client_id).maybeSingle();
-  if (client?.parent_id) {
-    await notifyEvent('notify_payment_received', {
-      title: 'Payment received',
-      body: `We received your QRPh payment of ₱${Number(updated.amount).toLocaleString()} (${updated.invoice_no || updated.id}).`,
-      icon: 'fa-peso-sign',
-      target_user: client.parent_id
+  for (const updated of updatedRows) {
+    await logAudit({
+      table_name: 'payments', record_id: updated.id, action: 'approve',
+      description: `QRPh payment confirmed (${updated.invoice_no || updated.id})`,
+      approved_by: null // confirmed by PayMongo, not a portal user
     });
   }
 
+  // One combined notification per client covered by this payment (almost
+  // always just one), rather than a separate "payment received" per invoice.
+  const clientIds = [...new Set(updatedRows.map(p => p.client_id))];
+  for (const clientId of clientIds) {
+    const { data: client } = await db.from('clients').select('parent_id').eq('id', clientId).maybeSingle();
+    if (!client?.parent_id) continue;
+    const rowsForClient = updatedRows.filter(p => p.client_id === clientId);
+    const amt = rowsForClient.reduce((sum, p) => sum + Number(p.amount), 0);
+    const body = rowsForClient.length > 1
+      ? `We received your combined QRPh payment of ₱${amt.toLocaleString()}, covering ${rowsForClient.length} invoices.`
+      : `We received your QRPh payment of ₱${amt.toLocaleString()} (${rowsForClient[0].invoice_no || rowsForClient[0].id}).`;
+    await notifyEvent('notify_payment_received', { title: 'Payment received', body, icon: 'fa-peso-sign', target_user: client.parent_id });
+  }
+
   // A guardian's own booking is held as 'awaiting_payment' until this exact
-  // moment, payment succeeding is what actually gives them the slot.
-  if (payment.reservation_id) {
-    const { data: reservation } = await db.from('reservations').select('*').eq('id', payment.reservation_id).maybeSingle();
-    if (reservation && reservation.status === 'awaiting_payment') {
-      await db.from('reservations').update({ status: 'confirmed', payment_expires_at: null }).eq('id', reservation.id);
-      await logAudit({
-        table_name: 'reservations', record_id: reservation.id, action: 'approve',
-        description: `Booking confirmed on QRPh payment (${reservation.date} ${reservation.time_slot})`,
-        approved_by: null
+  // moment, payment succeeding is what actually gives them the slot. Checked
+  // for every row in the group, a combined payment can cover more than one.
+  for (const updated of updatedRows) {
+    if (!updated.reservation_id) continue;
+    const { data: reservation } = await db.from('reservations').select('*').eq('id', updated.reservation_id).maybeSingle();
+    if (!reservation || reservation.status !== 'awaiting_payment') continue;
+
+    await db.from('reservations').update({ status: 'confirmed', payment_expires_at: null }).eq('id', reservation.id);
+    await logAudit({
+      table_name: 'reservations', record_id: reservation.id, action: 'approve',
+      description: `Booking confirmed on QRPh payment (${reservation.date} ${reservation.time_slot})`,
+      approved_by: null
+    });
+    if (reservation.created_by) {
+      await notifyEvent('notify_session_change', {
+        title: 'Booking confirmed',
+        body: `Payment received, your session on ${reservation.date} at ${reservation.time_slot} is confirmed.`,
+        icon: 'fa-calendar-check',
+        target_user: reservation.created_by
       });
-      if (reservation.created_by) {
-        await notifyEvent('notify_session_change', {
-          title: 'Booking confirmed',
-          body: `Payment received, your session on ${reservation.date} at ${reservation.time_slot} is confirmed.`,
-          icon: 'fa-calendar-check',
-          target_user: reservation.created_by
-        });
-      }
-      // The assigned therapist only had a tentative hold to go on until now,
-      // this is the first moment the session is real, they need to know too.
-      const therapistId = await therapistUserId(reservation.therapist_name);
-      if (therapistId) {
-        const { data: client } = await db.from('clients').select('full_name').eq('id', reservation.client_id).maybeSingle();
-        await notifyEvent('notify_session_change', {
-          title: 'New session confirmed',
-          body: `${client?.full_name || 'A client'}'s ${reservation.session_type} session on ${reservation.date} at ${reservation.time_slot} is now confirmed on your schedule.`,
-          icon: 'fa-calendar-check',
-          target_user: therapistId
-        });
-      }
+    }
+    // The assigned therapist only had a tentative hold to go on until now,
+    // this is the first moment the session is real, they need to know too.
+    const therapistId = await therapistUserId(reservation.therapist_name);
+    if (therapistId) {
+      const { data: resClient } = await db.from('clients').select('full_name').eq('id', reservation.client_id).maybeSingle();
+      await notifyEvent('notify_session_change', {
+        title: 'New session confirmed',
+        body: `${resClient?.full_name || 'A client'}'s ${reservation.session_type} session on ${reservation.date} at ${reservation.time_slot} is now confirmed on your schedule.`,
+        icon: 'fa-calendar-check',
+        target_user: therapistId
+      });
     }
   }
 
-  return updated;
+  return updatedRows[0];
 }

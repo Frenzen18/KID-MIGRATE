@@ -72,6 +72,70 @@ router.post('/', requireRole('admin', 'staff'), async (req, res) => {
   res.status(201).json(data);
 });
 
+/**
+ * POST /api/payments/checkout/combined { payment_ids: [...] }
+ * Generates ONE PayMongo QRPh code covering the combined total of several
+ * pending session invoices at once ("Fast Checkout" pay-several-at-a-time),
+ * instead of a separate QR per invoice. Every payment row given here ends up
+ * sharing the same PayMongo payment_intent_id; markPaidByIntentId
+ * (paymongoWebhook.js) marks every row sharing that intent id paid together
+ * the moment it succeeds, whether via webhook or the status-poll fallback.
+ */
+router.post('/checkout/combined', qrphLimiter, async (req, res) => {
+  const ids = Array.isArray(req.body?.payment_ids) ? [...new Set(req.body.payment_ids)] : [];
+  if (ids.length < 1) return res.status(400).json({ error: 'payment_ids is required' });
+
+  const { data: rows, error } = await db.from('payments').select('*, clients(parent_id)').in('id', ids);
+  if (error) return res.status(500).json({ error: error.message });
+  if (!rows || rows.length !== ids.length) return res.status(404).json({ error: 'One or more invoices were not found' });
+
+  const canAccess = req.user.role === 'admin' || req.user.role === 'staff'
+    || (req.user.role === 'parent' && rows.every(p => p.clients?.parent_id === req.user.id));
+  if (!canAccess) return res.status(403).json({ error: 'Not your invoice' });
+
+  if (rows.some(p => p.status === 'paid')) return res.status(400).json({ error: 'One or more of these invoices is already paid' });
+  if (rows.some(p => p.fee_type !== 'session')) return res.status(400).json({ error: 'Only session invoices can be combined into one payment' });
+
+  // Same "settle in order" rule as a single invoice's own /:id/qrph check,
+  // applied per client, combining later invoices can't be used to skip an
+  // earlier unpaid one. Staff/admin (e.g. helping a walk-in) are exempt.
+  if (req.user.role === 'parent') {
+    const clientIds = [...new Set(rows.map(p => p.client_id))];
+    for (const clientId of clientIds) {
+      const { data: allPending } = await db.from('payments')
+        .select('id, reservations(date)')
+        .eq('client_id', clientId).eq('fee_type', 'session').in('status', ['pending', 'overdue']);
+      const sorted = (allPending || []).slice().sort((a, b) => (a.reservations?.date || '').localeCompare(b.reservations?.date || ''));
+      const selectedForClient = new Set(rows.filter(p => p.client_id === clientId).map(p => p.id));
+      const prefix = sorted.slice(0, selectedForClient.size).map(p => p.id);
+      if (!prefix.every(id => selectedForClient.has(id))) {
+        return res.status(400).json({ error: 'Please settle outstanding session invoices in order, sessions must be paid earliest-first.' });
+      }
+    }
+  }
+
+  const amount = rows.reduce((sum, p) => sum + Number(p.amount), 0);
+  try {
+    const qr = await generateQrph({
+      amount,
+      description: `KID Clinic combined invoice (${rows.length} session${rows.length > 1 ? 's' : ''})`,
+      metadata: { payment_ids: ids.join(','), combined: 'true' }
+    });
+    const { error: upErr } = await db.from('payments').update({
+      pm_payment_intent_id: qr.intentId,
+      pm_client_key: qr.clientKey,
+      qr_image_url: qr.qrImageUrl,
+      qr_expires_at: qr.expiresAt,
+      qr_test_url: qr.testUrl
+    }).in('id', ids);
+    if (upErr) return res.status(500).json({ error: upErr.message });
+
+    res.json({ qr_image_url: qr.qrImageUrl, expires_at: qr.expiresAt, payment_intent_id: qr.intentId, test_url: qr.testUrl, amount, payment_ids: ids });
+  } catch (e) {
+    res.status(502).json({ error: 'PayMongo error: ' + e.message });
+  }
+});
+
 /** PUT /api/payments/:id, update status / seal / amount */
 router.put('/:id', requireRole('admin', 'staff'), async (req, res) => {
   const patch = {};
@@ -212,6 +276,25 @@ router.post('/:id/qrph', qrphLimiter, async (req, res) => {
     || (req.user.role === 'parent' && payment.clients?.parent_id === req.user.id);
   if (!canAccess) return res.status(403).json({ error: 'Not your invoice' });
   if (payment.status === 'paid') return res.status(400).json({ error: 'This invoice is already paid' });
+
+  // Guardians must settle a client's session invoices in date order, "advance
+  // payment" means paying an upcoming session early, not skipping ahead of an
+  // still-unpaid earlier one. No-show fees are a separate penalty charge and
+  // aren't part of this ordering. Staff/admin generating a QR (e.g. helping a
+  // walk-in guardian in person) are exempt, they can see the full picture.
+  if (req.user.role === 'parent' && payment.fee_type === 'session' && payment.reservation_id) {
+    const { data: thisRes } = await db.from('reservations').select('date').eq('id', payment.reservation_id).maybeSingle();
+    if (thisRes?.date) {
+      const { data: otherPending } = await db.from('payments')
+        .select('id, reservations(date)')
+        .eq('client_id', payment.client_id).eq('fee_type', 'session').in('status', ['pending', 'overdue'])
+        .neq('id', payment.id);
+      const hasEarlierUnpaid = (otherPending || []).some(p => p.reservations?.date && p.reservations.date < thisRes.date);
+      if (hasEarlierUnpaid) {
+        return res.status(400).json({ error: 'Please pay your earliest outstanding session invoice first, sessions must be settled in order.' });
+      }
+    }
+  }
 
   // Reuse an existing unexpired QR, but only if it's still actually payable,
   // an unexpired-but-failed source (e.g. a simulated failed test payment)

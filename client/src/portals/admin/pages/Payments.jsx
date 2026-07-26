@@ -31,6 +31,28 @@ export default function Payments({ go, toast }) {
   const [invoice, setInvoice] = useState(null);
   function printInvoice() { window.print(); }
 
+  /* ── Record an in-person payment (e.g. guardian pays cash face-to-face at
+     the clinic for an invoice that's otherwise only payable online via QRPh),
+     staff marks it paid here instead of the guardian ever touching QRPh. ── */
+  const [recordTarget, setRecordTarget] = useState(null);
+  const [recordReference, setRecordReference] = useState('');
+  const [recordSaving, setRecordSaving] = useState(false);
+  function openRecordPayment(p) { setRecordTarget(p); setRecordReference(''); }
+  async function submitRecordPayment() {
+    if (!recordTarget) return;
+    setRecordSaving(true);
+    try {
+      await api('/payments/' + recordTarget.id, { method: 'PUT', body: { status: 'paid', method: 'Cash', reference: recordReference || undefined } });
+      toast(`Payment recorded: ${recordTarget.invoice_no || 'invoice'} marked paid (Cash)`, 'fa-check');
+      setRecordTarget(null);
+      fetchAll();
+    } catch (err) {
+      toast('Error: ' + err.message, 'fa-triangle-exclamation');
+    } finally {
+      setRecordSaving(false);
+    }
+  }
+
   const [brand, setBrand] = useState(null);
   useEffect(() => { fetch('/api/settings/branding/public').then(r => r.json()).then(setBrand).catch(() => {}); }, []);
 
@@ -135,14 +157,24 @@ export default function Payments({ go, toast }) {
             {!loading && filteredTxns.length === 0 && <tr><td colSpan={8} style={{ textAlign: 'center', padding: 24, fontSize: 12.5, color: '#94A3B8' }}>No transactions match these filters</td></tr>}
             {!loading && pagedTxns.map(p => (
               <tr key={p.id}>
-                <td style={{ paddingLeft: 24, fontWeight: 600, fontSize: 12.5 }}>{p.invoice_no || '-'}</td>
+                <td style={{ paddingLeft: 24, fontWeight: 600, fontSize: 12.5 }}>
+                  {p.invoice_no || '-'}
+                  {p.fee_type === 'no_show_fee' && <span className="pill pill-red" style={{ fontSize: 9, marginLeft: 6 }}>No-Show</span>}
+                  {p.fee_type === 'retainer_fee' && <span className="pill pill-amber" style={{ fontSize: 9, marginLeft: 6 }}>Retainer</span>}
+                  {!p.reservation_id && p.status === 'paid' && p.fee_type === 'session' && <span className="pill pill-green" style={{ fontSize: 9, marginLeft: 6 }}>Unallocated Credit</span>}
+                </td>
                 <td><div style={{ fontWeight: 600 }}>{p.clients?.full_name || '-'}</div><div style={{ fontSize: 11, color: '#94A3B8' }}>{p.clients?.guardian_name || ''}</div></td>
                 <td><span className={'pill ' + (CHANNEL_PILL[METHOD_CHANNEL[p.method]] || 'pill')} style={{ fontSize: 10 }}>{METHOD_CHANNEL[p.method] || p.method}</span></td>
                 <td style={{ fontFamily: 'monospace', fontSize: 12, color: 'var(--cat-1)' }}>{p.reference || '-'}</td>
                 <td style={{ fontWeight: 700, color: p.status === 'refunded' ? 'var(--color-warning)' : 'var(--color-success)' }}>₱{Number(p.amount).toLocaleString()}</td>
                 <td style={{ fontSize: 12.5 }}>{fmtDate(p.created_at)}</td>
                 <td><span className={'pill ' + STATUS_PILL[p.status]} style={{ fontSize: 10 }}>{p.status}</span></td>
-                <td style={{ textAlign: 'right', paddingRight: 24 }}><button className="btn-edit" style={{ fontSize: 11 }} onClick={() => setInvoice(p)}><i className="fa-solid fa-file-invoice" /> View</button></td>
+                <td style={{ textAlign: 'right', paddingRight: 24 }}>
+                  {(p.status === 'pending' || p.status === 'overdue') && (
+                    <button className="btn-primary" style={{ fontSize: 11, marginRight: 6 }} onClick={() => openRecordPayment(p)}><i className="fa-solid fa-money-bill-wave" /> Record Payment</button>
+                  )}
+                  <button className="btn-edit" style={{ fontSize: 11 }} onClick={() => setInvoice(p)}><i className="fa-solid fa-file-invoice" /> View</button>
+                </td>
               </tr>
             ))}
           </tbody>
@@ -162,6 +194,33 @@ export default function Payments({ go, toast }) {
       </div>
 
       <div className="page-footer"><span style={{ fontSize: 12, color: '#94A3B8' }}>© 2026 KID Clinic Information Management System · Secure Payment Checkout</span></div>
+
+      {/* ── Record an in-person (Cash/Check) payment ── */}
+      {recordTarget && (
+        <div style={{ position: 'fixed', inset: 0, background: 'rgba(15,23,42,.5)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 1000 }} onClick={() => !recordSaving && setRecordTarget(null)}>
+          <div style={{ background: '#fff', borderRadius: 16, padding: 24, width: 400 }} onClick={e => e.stopPropagation()}>
+            <div style={{ fontSize: 16, fontWeight: 700, color: '#0F172A', marginBottom: 4 }}>Record Payment</div>
+            <div style={{ fontSize: 12.5, color: '#64748B', marginBottom: 18 }}>
+              {recordTarget.invoice_no || 'Invoice'} · {recordTarget.clients?.full_name || '-'} · ₱{Number(recordTarget.amount).toLocaleString()}
+            </div>
+            <div style={{ marginBottom: 14 }}>
+              <label className="form-label">Payment Method</label>
+              <div className="form-input" style={{ display: 'flex', alignItems: 'center', fontWeight: 600 }}>Cash</div>
+            </div>
+            <div style={{ marginBottom: 6 }}>
+              <label className="form-label">Reference / OR Number (optional)</label>
+              <input className="form-input" value={recordReference} onChange={e => setRecordReference(e.target.value)} placeholder="e.g. OR-00123" />
+            </div>
+            <div style={{ fontSize: 11, color: '#94A3B8', marginBottom: 18 }}>Use this when the guardian pays in person at the clinic (cash or check), instead of QRPh. This marks the invoice paid immediately.</div>
+            <div style={{ display: 'flex', gap: 10 }}>
+              <button className="btn-secondary" style={{ flex: 1, padding: 10 }} disabled={recordSaving} onClick={() => setRecordTarget(null)}>Cancel</button>
+              <button className="btn-primary" style={{ flex: 1, padding: 10 }} disabled={recordSaving} onClick={submitRecordPayment}>
+                <i className={'fa-solid ' + (recordSaving ? 'fa-spinner fa-spin' : 'fa-check')} style={{ marginRight: 5 }} />{recordSaving ? 'Saving…' : 'Mark Paid'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* ── Printable invoice modal ── */}
       {invoice && (

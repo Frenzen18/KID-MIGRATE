@@ -43,11 +43,21 @@ export function rateForSessionType(sessionType) {
 export function defaultRateFor(client) {
   return rateForSessionType(defaultSessionTypeFor(client));
 }
-export const ASSESSMENT_TYPES = ['Initial Assessment', 'Speech-Language Assessment', 'Occupational Assessment'];
+// Intake is the only stand-alone "assessment" type left, per-discipline
+// follow-up assessments (the old "Speech-Language Assessment"/"Occupational
+// Assessment") were redundant once ongoing care became continuous recurring
+// Occupational/Speech Therapy sessions, same reasoning as dropping the old
+// Re-evaluation Assessment concept. disciplineOfSessionType below still
+// recognizes the old type strings, so any reservation already booked under
+// them keeps classifying correctly, they're just not offered for new bookings.
+export const ASSESSMENT_TYPES = ['Initial Assessment'];
 
 /** Assessment types that must go to a therapist of one specific discipline;
- *  booking requires picking that therapist before a day/time can be chosen. */
-export const REQUIRED_ROLE_FOR_TYPE = { 'Speech-Language Assessment': 'speech', 'Occupational Assessment': 'ot' };
+ *  booking requires picking that therapist before a day/time can be chosen.
+ *  Empty now that the only stand-alone assessment type left (Initial
+ *  Assessment) is discipline-agnostic, kept as a map (not deleted) since
+ *  disciplineOpenCount/BookingModal key off it generically. */
+export const REQUIRED_ROLE_FOR_TYPE = {};
 
 /** Which discipline a session type belongs to, null for discipline-agnostic
  *  types (e.g. Initial Assessment). Mirrors server/routes/reservations.js's

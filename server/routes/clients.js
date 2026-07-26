@@ -4,6 +4,11 @@ import { db } from '../supabase.js';
 import { requireAuth, requireRole } from '../middleware/auth.js';
 import { nextClientCode } from '../usercode.js';
 import { logAudit } from '../lib/audit.js';
+import { notifyEvent, channelEnabled } from '../lib/notify.js';
+import { generateReportSummary } from '../services/gemini.service.js';
+import { makeLimiter, isProd, MIN } from '../lib/rateLimit.js';
+import { sendMail } from '../mailer.js';
+import { sendSms } from '../sms.js';
 import { calendarAge } from '../age.js';
 import { isValidName, isSafeText } from '../validate.js';
 
@@ -20,6 +25,14 @@ const photoUpload = multer({
 
 /** Mirrors client/src/components/DevFunctionalField.jsx's LETTERS_ONLY_SECTIONS. */
 const LETTERS_ONLY_SECTIONS = ['Behavior & Social', 'Motor Skills'];
+
+/** An 'ot'/'speech' account only ever generates a report for their own discipline's
+ *  entries, mirrors server/routes/gas.js's own ROLE_DISCIPLINE map. */
+const ROLE_DISCIPLINE = { ot: 'Occupational Therapy', speech: 'Speech-Language Therapy' };
+
+// Each call is a real, billed Gemini request, cap it per IP so the client
+// record's "Generate Report" button can't be spammed into a runaway bill.
+const reportSummaryLimiter = makeLimiter(isProd ? MIN : 10 * 1000, 10, 'Too many report requests. Please wait a moment and try again.');
 
 /** Strips PostgREST filter-DSL special characters (,()."*) so user search text can't inject extra filter clauses. */
 function sanitizeSearchTerm(s) {
@@ -134,6 +147,149 @@ router.get('/:id', async (req, res) => {
   }
 
   res.json({ ...client, session_notes: notes || [], attendance: attendance || [], gas_entries });
+});
+
+/**
+ * POST /api/clients/:id/generate-report { from, to }, aggregates this client's
+ * GAS entries over a date range and asks Gemini for a "Therapist Summary &
+ * Recommendations" section, the same clinical-data-only, identity-withheld
+ * contract as POST /gas/ai-summary, the child's name/code is never sent, the
+ * model only ever sees T-scores, goal titles, and score levels.
+ */
+router.post('/:id/generate-report', reportSummaryLimiter, requireRole('admin', 'staff', 'ot', 'speech'), async (req, res) => {
+  const { from, to } = req.body || {};
+  if (!from || !to) return res.status(400).json({ error: 'from and to dates are required' });
+  if (from > to) return res.status(400).json({ error: '"From" date must be before "To" date.' });
+
+  const { data: client } = await db.from('clients').select('id').eq('id', req.params.id).maybeSingle();
+  if (!client) return res.status(404).json({ error: 'Client not found' });
+
+  const lockedDiscipline = ROLE_DISCIPLINE[req.user.role];
+  let q = db.from('gas_entries').select('*').eq('client_id', client.id).eq('archived', false)
+    .gte('session_date', from).lte('session_date', to).order('session_date', { ascending: true });
+  if (lockedDiscipline) q = q.eq('discipline', lockedDiscipline);
+  const { data: gasEntries, error: gasErr } = await q;
+  if (gasErr) return res.status(500).json({ error: gasErr.message });
+  if (!gasEntries?.length) return res.status(400).json({ error: 'No session entries found in that date range to summarize.' });
+
+  const { data: scores } = await db.from('gas_entry_scores').select('*').in('entry_id', gasEntries.map(e => e.id));
+
+  // Each goal's level across every session it was scored in, oldest first,
+  // so the AI (and the on-screen report) can see the actual trajectory, not
+  // just a final number.
+  const goalsByTitle = {};
+  for (const s of scores || []) {
+    const g = (goalsByTitle[s.item_title] ||= { title: s.item_title, weight: s.weight, levels: [] });
+    g.levels.push(s.level);
+  }
+  const goalTrends = Object.values(goalsByTitle);
+
+  const tScores = gasEntries.map(e => e.gas_t_score).filter(v => v != null);
+  const avgTScore = tScores.length ? Math.round((tScores.reduce((s, v) => s + v, 0) / tScores.length) * 10) / 10 : null;
+  const trend = tScores.length < 2 ? 'insufficient data'
+    : tScores[tScores.length - 1] > tScores[0] ? 'improving'
+    : tScores[tScores.length - 1] < tScores[0] ? 'declining' : 'stable';
+  const disciplines = [...new Set(gasEntries.map(e => e.discipline))];
+
+  let ai;
+  try {
+    ai = await generateReportSummary({
+      disciplines, fromDate: from, toDate: to, sessionCount: gasEntries.length,
+      avgTScore, trend, goalTrends
+    });
+  } catch (e) {
+    return res.status(502).json({ error: 'AI summary generation failed: ' + e.message });
+  }
+
+  await logAudit({
+    table_name: 'clients', record_id: client.id, action: 'update',
+    description: `Generated a therapist report (${from} to ${to}) for a client record`,
+    created_by: req.user.id
+  });
+
+  res.json({
+    range: { from, to },
+    session_count: gasEntries.length,
+    avg_t_score: avgTScore,
+    trend,
+    disciplines,
+    goal_trends: goalTrends,
+    summary: ai.summary || '',
+    recommendations: ai.recommendations || ''
+  });
+});
+
+/**
+ * POST /api/clients/:id/notify-report-ready { from, to, summary, recommendations },
+ * lets the guardian know their (possibly earlier-requested) progress report is
+ * ready, by email and/or SMS per the clinic's notification channel settings,
+ * plus the usual in-app notification. `summary`/`recommendations` are the
+ * therapist's own final text (the AI draft, edited or not), never regenerated
+ * here, this endpoint only delivers what the therapist already reviewed.
+ */
+router.post('/:id/notify-report-ready', requireRole('admin', 'staff', 'ot', 'speech'), async (req, res) => {
+  const { from, to, summary, recommendations } = req.body || {};
+  if (!from || !to) return res.status(400).json({ error: 'from and to dates are required' });
+
+  const { data: client } = await db.from('clients').select('id, full_name, parent_id, guardian_contact').eq('id', req.params.id).maybeSingle();
+  if (!client) return res.status(404).json({ error: 'Client not found' });
+  if (!client.parent_id) return res.status(400).json({ error: 'This client has no linked guardian account to notify.' });
+
+  const { data: guardian } = await db.from('profiles').select('email, full_name, contact').eq('id', client.parent_id).maybeSingle();
+
+  const periodLabel = `${from} to ${to}`;
+  let emailSent = false, smsSent = false;
+
+  if (guardian?.email && await channelEnabled('channel_email')) {
+    try {
+      await sendMail({
+        to: guardian.email,
+        subject: `Progress Report Ready: ${client.full_name}`,
+        html: `
+          <div style="font-family: Arial, sans-serif; max-width: 480px; margin: 0 auto; padding: 24px;">
+            <div style="text-align: center; margin-bottom: 20px;"><h2 style="color: #1F4E9E; margin: 0;">KID Clinic</h2></div>
+            <div style="background: #F8FAFC; border: 1px solid #E2E8F0; border-radius: 12px; padding: 24px;">
+              <p style="color: #334155; font-size: 14px; margin: 0 0 12px;">Hi ${guardian.full_name || 'there'},</p>
+              <p style="color: #334155; font-size: 14px; margin: 0 0 16px;">${client.full_name}'s progress report for ${periodLabel} is ready.</p>
+              ${summary ? `<p style="color: #64748B; font-size: 13px; margin: 0 0 10px;"><b>Summary:</b> ${summary}</p>` : ''}
+              ${recommendations ? `<p style="color: #64748B; font-size: 13px; margin: 0 0 10px;"><b>Recommendations:</b> ${recommendations}</p>` : ''}
+              <p style="color: #94A3B8; font-size: 12px; margin: 16px 0 0;">Please contact the clinic for the full printed copy and any related fees.</p>
+            </div>
+          </div>
+        `
+      });
+      emailSent = true;
+    } catch (e) {
+      console.error('notify-report-ready email failed:', e.message);
+    }
+  }
+
+  if (client.guardian_contact && await channelEnabled('channel_sms')) {
+    try {
+      await sendSms({
+        to: client.guardian_contact,
+        message: `Hi! ${client.full_name}'s progress report for ${periodLabel} is ready. Please contact the clinic for the full copy. KID Clinic`
+      });
+      smsSent = true;
+    } catch (e) {
+      console.error('notify-report-ready SMS failed:', e.message);
+    }
+  }
+
+  await notifyEvent(null, {
+    title: 'Progress report ready',
+    body: `${client.full_name}'s progress report for ${periodLabel} is ready.`,
+    icon: 'fa-file-circle-check',
+    target_user: client.parent_id
+  });
+
+  await logAudit({
+    table_name: 'clients', record_id: client.id, action: 'update',
+    description: `Notified guardian that the progress report (${periodLabel}) for ${client.full_name} is ready`,
+    updated_by: req.user.id
+  });
+
+  res.json({ ok: true, emailSent, smsSent });
 });
 
 /** POST /api/clients/self-register, parent self-registers their child (intake form) */
@@ -296,7 +452,8 @@ router.post('/', requireRole('admin', 'staff'), async (req, res) => {
 router.put('/:id', requireRole('admin', 'staff', 'ot', 'speech'), async (req, res) => {
   const isTherapist = ['ot', 'speech'].includes(req.user.role);
   const allowed = isTherapist ? [] : [
-    'full_name','first_name','last_name','dob','gender','guardian_name','guardian_contact','parent_id','therapy_type','status','assigned_ot_therapist_name','assigned_speech_therapist_name'
+    'full_name','first_name','last_name','dob','gender','guardian_name','guardian_contact','parent_id','therapy_type','status','assigned_ot_therapist_name','assigned_speech_therapist_name',
+    'recommended_ot_weekly_sessions','recommended_speech_weekly_sessions','initial_assessment_completed'
   ];
   const patch = {};
   for (const k of allowed) if (k in req.body) patch[k] = req.body[k];
@@ -304,6 +461,16 @@ router.put('/:id', requireRole('admin', 'staff', 'ot', 'speech'), async (req, re
   for (const k of ['full_name', 'first_name', 'last_name', 'guardian_name']) {
     if (patch[k] && !isValidName(patch[k])) {
       return res.status(400).json({ error: 'Names can only contain letters, spaces, hyphens, and apostrophes.' });
+    }
+  }
+
+  for (const k of ['recommended_ot_weekly_sessions', 'recommended_speech_weekly_sessions']) {
+    if (k in patch && patch[k] !== null) {
+      const n = Number(patch[k]);
+      if (!Number.isInteger(n) || n < 1 || n > 7) {
+        return res.status(400).json({ error: 'Recommended weekly sessions must be a whole number between 1 and 7.' });
+      }
+      patch[k] = n;
     }
   }
 
@@ -329,7 +496,8 @@ router.put('/:id', requireRole('admin', 'staff', 'ot', 'speech'), async (req, re
 
   await logAudit({
     table_name: 'clients', record_id: req.params.id, action: 'update',
-    description: `Updated client profile for ${data.full_name}` + (patch.status ? `, status set to ${patch.status}` : ''),
+    description: `Updated client profile for ${data.full_name}` + (patch.status ? `, status set to ${patch.status}` : '')
+      + ('initial_assessment_completed' in patch ? `, Initial Assessment manually marked ${patch.initial_assessment_completed ? 'completed' : 'not completed'}` : ''),
     updated_by: req.user.id
   });
 
@@ -381,6 +549,34 @@ router.post('/:id/photo', (req, res, next) => {
   });
 
   res.json(data);
+});
+
+/**
+ * POST /api/clients/:id/request-progress-report, guardian requests a written
+ * progress report for their child. Per the clinic's Memorandum of Agreement,
+ * progress reports carry their own fee (₱1,000, +₱500 for a rush request)
+ * settled directly between the family and the clinic, this endpoint only
+ * relays the request to staff/admin, it never generates the report or
+ * collects payment itself.
+ */
+router.post('/:id/request-progress-report', async (req, res) => {
+  if (req.user.role !== 'parent') return res.status(403).json({ error: 'Only a guardian can request a progress report.' });
+
+  const { data: client } = await db.from('clients').select('id, parent_id, full_name').eq('id', req.params.id).maybeSingle();
+  if (!client) return res.status(404).json({ error: 'Client not found' });
+  if (client.parent_id !== req.user.id) return res.status(403).json({ error: 'Not your child record' });
+
+  const body = `${req.user.name || 'A guardian'} requested a written progress report for ${client.full_name}. Fees and delivery are arranged directly with the family.`;
+  await notifyEvent(null, { title: 'Progress report requested', body, icon: 'fa-file-medical', target_role: 'admin' });
+  await notifyEvent(null, { title: 'Progress report requested', body, icon: 'fa-file-medical', target_role: 'staff' });
+
+  await logAudit({
+    table_name: 'clients', record_id: client.id, action: 'update',
+    description: `Guardian requested a progress report for ${client.full_name}`,
+    created_by: req.user.id
+  });
+
+  res.json({ ok: true });
 });
 
 /**

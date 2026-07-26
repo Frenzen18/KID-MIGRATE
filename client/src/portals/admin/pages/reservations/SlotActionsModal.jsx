@@ -1,5 +1,10 @@
+import { useState, useEffect } from 'react';
 import { Modal } from '../../../../components/ui.jsx';
-import { STATUS_PILL, toMinutes, todayPH, nowPH, isOngoingReservation, isEffectivelyCompleted, effectiveStatusKey } from './reservationsHelpers.js';
+import { api } from '../../../../api.js';
+import {
+  STATUS_PILL, toMinutes, todayPH, nowPH, isOngoingReservation, isEffectivelyCompleted, effectiveStatusKey,
+  minBookableDatePH, effectiveSlotAvailable
+} from './reservationsHelpers.js';
 
 export default function SlotActionsModal({ selected, daySlots, time, reservation, busy, onClose, onReschedule, onCancel, onNoShow, onEndSession }) {
   const bk = reservation;
@@ -24,10 +29,36 @@ export default function SlotActionsModal({ selected, daySlots, time, reservation
   // be cancelled anymore, there's nothing left to free up.
   const canCancel = !['cancelled', 'declined', 'completed', 'no_show'].includes(bk?.status) && !isEffectivelyCompleted(bk);
 
-  const rescheduleOpts = daySlots.filter(s => {
-    if (s.time_slot === time) return false;
-    if (s.available <= 0) return false;
-    if (isToday && toMinutes(s.time_slot) <= nowMinutes) return false;
+  // Reschedule can move to a different DAY, not just a different time slot the
+  // same day, a missed/no-show session especially often needs a whole new day.
+  // Defaults to this booking's own current date, options for the chosen date
+  // are fetched fresh (real therapist shift/lunch/holiday-aware availability,
+  // same engine every booking uses), same day's slots reuse the already-loaded
+  // `daySlots` prop instead of a redundant refetch.
+  const [rescheduleDate, setRescheduleDate] = useState(selected.date);
+  const [rescheduleSlots, setRescheduleSlots] = useState(daySlots);
+  const [slotsLoading, setSlotsLoading] = useState(false);
+  const [newTime, setNewTime] = useState('');
+
+  useEffect(() => {
+    if (rescheduleDate === selected.date) { setRescheduleSlots(daySlots); return; }
+    let cancelled = false;
+    setSlotsLoading(true);
+    setNewTime('');
+    const qs = 'date=' + rescheduleDate + (bk?.client_id ? '&client_id=' + bk.client_id : '') + (sessionType ? '&session_type=' + encodeURIComponent(sessionType) : '');
+    api('/reservations/slots?' + qs)
+      .then(data => { if (!cancelled) setRescheduleSlots(data || []); })
+      .catch(() => { if (!cancelled) setRescheduleSlots([]); })
+      .finally(() => { if (!cancelled) setSlotsLoading(false); });
+    return () => { cancelled = true; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [rescheduleDate]);
+
+  const rescheduleIsToday = rescheduleDate === todayPH();
+  const rescheduleOpts = rescheduleSlots.filter(s => {
+    if (rescheduleDate === selected.date && s.time_slot === time) return false;
+    if (effectiveSlotAvailable(s, sessionType) <= 0) return false;
+    if (rescheduleIsToday && toMinutes(s.time_slot) <= nowMinutes) return false;
     return true;
   }).map(s => s.time_slot);
 
@@ -43,17 +74,25 @@ export default function SlotActionsModal({ selected, daySlots, time, reservation
       </div>
       <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
         <div style={{ padding: 14, borderRadius: 10, border: '1px solid #E2E8F0', background: '#F8FAFC' }}>
-          <div style={{ fontSize: 12.5, fontWeight: 700, color: '#0F172A', marginBottom: 10 }}><i className="fa-solid fa-arrows-rotate" style={{ color: 'var(--color-primary)', marginRight: 7 }} />Reschedule to a different time</div>
-          {!rescheduleOpts.length && (
-            <div style={{ fontSize: 12, color: 'var(--color-danger)', padding: '8px 0' }}><i className="fa-solid fa-circle-exclamation" style={{ marginRight: 5 }} />No available future time slots on this day.</div>
-          )}
-          {!!rescheduleOpts.length && (
+          <div style={{ fontSize: 12.5, fontWeight: 700, color: '#0F172A', marginBottom: 10 }}><i className="fa-solid fa-arrows-rotate" style={{ color: 'var(--color-primary)', marginRight: 7 }} />Reschedule to a different date &amp; time</div>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap', marginBottom: rescheduleOpts.length || slotsLoading ? 10 : 0 }}>
+            <input
+              type="date" className="form-input" style={{ flex: 1, minWidth: 150 }}
+              min={minBookableDatePH()} value={rescheduleDate}
+              onChange={e => e.target.value && setRescheduleDate(e.target.value)}
+            />
+          </div>
+          {slotsLoading ? (
+            <div style={{ fontSize: 12, color: '#94A3B8', padding: '8px 0' }}><i className="fa-solid fa-spinner fa-spin" style={{ marginRight: 6 }} />Checking availability for that day…</div>
+          ) : !rescheduleOpts.length ? (
+            <div style={{ fontSize: 12, color: 'var(--color-danger)', padding: '8px 0' }}><i className="fa-solid fa-circle-exclamation" style={{ marginRight: 5 }} />No available time slots on this day.</div>
+          ) : (
             <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
-              <select className="form-select" id="reschedule-new-time" style={{ flex: 1, minWidth: 130 }} defaultValue="">
+              <select className="form-select" style={{ flex: 1, minWidth: 130 }} value={newTime} onChange={e => setNewTime(e.target.value)}>
                 <option value="">- Select new time -</option>
                 {rescheduleOpts.map(t2 => <option key={t2} value={t2}>{t2}</option>)}
               </select>
-              <button className="btn-primary" style={{ padding: '8px 14px', fontSize: 12, whiteSpace: 'nowrap' }} disabled={busy} onClick={() => onReschedule(bk.id, time)}>
+              <button className="btn-primary" style={{ padding: '8px 14px', fontSize: 12, whiteSpace: 'nowrap' }} disabled={busy || !newTime} onClick={() => onReschedule(bk.id, rescheduleDate, newTime)}>
                 <i className="fa-solid fa-arrows-rotate" style={{ marginRight: 5 }} />Confirm Reschedule
               </button>
             </div>
@@ -71,10 +110,17 @@ export default function SlotActionsModal({ selected, daySlots, time, reservation
         {canMarkNoShow && (
           <div style={{ padding: 14, borderRadius: 10, border: '1px solid #FECACA', background: '#FEF2F2' }}>
             <div style={{ fontSize: 12.5, fontWeight: 700, color: 'var(--color-danger)', marginBottom: 8 }}><i className="fa-solid fa-user-slash" style={{ marginRight: 7 }} />Client didn't show up</div>
-            <div style={{ fontSize: 12, color: '#64748B', marginBottom: 10 }}>This session is ongoing right now. Mark it as a no-show, it'll count against attendance and won't hold the slot.</div>
-            <button style={{ padding: '8px 18px', borderRadius: 8, border: 'none', background: 'var(--color-danger-strong)', fontSize: 12.5, fontWeight: 600, color: '#fff', cursor: 'pointer' }} disabled={busy} onClick={() => onNoShow(bk.id)}>
-              <i className="fa-solid fa-user-slash" style={{ marginRight: 5 }} />Mark as No-Show
-            </button>
+            <div style={{ fontSize: 12, color: '#64748B', marginBottom: 10 }}>
+              Unexcused adds a ₱500 no-show fee. Excused charges nothing, and if this session was already paid, that payment carries forward to their next session.
+            </div>
+            <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+              <button style={{ padding: '8px 18px', borderRadius: 8, border: 'none', background: 'var(--color-danger-strong)', fontSize: 12.5, fontWeight: 600, color: '#fff', cursor: 'pointer' }} disabled={busy} onClick={() => onNoShow(bk.id, false)}>
+                <i className="fa-solid fa-user-slash" style={{ marginRight: 5 }} />Unexcused (fee)
+              </button>
+              <button style={{ padding: '8px 18px', borderRadius: 8, border: '1px solid #CBD5E1', background: '#fff', fontSize: 12.5, fontWeight: 600, color: '#334155', cursor: 'pointer' }} disabled={busy} onClick={() => onNoShow(bk.id, true)}>
+                <i className="fa-solid fa-circle-check" style={{ marginRight: 5 }} />Excused (no fee)
+              </button>
+            </div>
           </div>
         )}
         {canCancel && (

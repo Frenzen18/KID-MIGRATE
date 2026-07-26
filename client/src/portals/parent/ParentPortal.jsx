@@ -96,13 +96,18 @@ function minBookableDateStr() {
 /** Session types a child is currently eligible to book: intake (no therapy type
  *  and no assigned therapist yet) means only an Initial Assessment can be
  *  requested, once assigned, only sessions matching that discipline (or both,
- *  for a Combined program) become available. */
+ *  for a Combined program) become available. A discipline pinned to a fixed
+ *  weekly schedule stays in this list (self-booking isn't blocked), it's just
+ *  restricted to that exact day/time once selected, see the schedule-locked
+ *  booking UI in renderBooking(). */
 function sessionTypesFor(child) {
   if (!child) return [];
   if (!child.assigned_ot_therapist_name && !child.assigned_speech_therapist_name && !child.therapy_type) return ['Initial Assessment'];
   const map = { OT: ['Occupational Therapy'], Speech: ['Speech Therapy'], Both: ['Occupational Therapy', 'Speech Therapy'] };
   return map[child.therapy_type] || ['Initial Assessment'];
 }
+const WEEKDAY_NAMES = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
+
 /** Which discipline a session type belongs to, null for discipline-agnostic types (e.g. Initial Assessment). */
 function disciplineOfType(type) {
   if (type === 'Occupational Therapy' || type === 'Occupational Assessment') return 'ot';
@@ -182,10 +187,15 @@ export default function ParentPortal() {
   const [children, setChildren] = useState(null); // null = loading
   const [activeChild, setActiveChild] = useState(null); // full child detail with session_notes + attendance
   const [photoUploading, setPhotoUploading] = useState(false);
+  const [requestingReport, setRequestingReport] = useState(false);
   const [reservations, setReservations] = useState(null);
   const [payments, setPayments] = useState(null);
   const [notifications, setNotifications] = useState(null);
   const [loading, setLoading] = useState(true);
+  // The active child's fixed recurring therapy schedule(s), if any (assigned by
+  // staff after Initial Assessment), drives both the read-only schedule card and
+  // which session types are actually self-bookable (see sessionTypesFor above).
+  const [childSchedules, setChildSchedules] = useState([]);
   // Clinic-wide closures (holidays), so "no time slots" can explain why instead
   // of just looking broken, no booking of any kind is allowed on one.
   const [holidays, setHolidays] = useState([]);
@@ -203,6 +213,15 @@ export default function ParentPortal() {
   const [slotError, setSlotError] = useState(false);
   const [bookingConfirm, setBookingConfirm] = useState(false);
   const [bookingSessionType, setBookingSessionType] = useState('');
+  // Quick Book: instantly book several upcoming occurrences of a fixed
+  // recurring slot at once, instead of repeating the single-date flow above
+  // one week at a time. Since a locked slot is stackable (paid per-session,
+  // no cap), this is just that same single-booking call looped, over
+  // whichever exact dates the guardian picks (not just the next N in a row).
+  const [quickBookScheduleId, setQuickBookScheduleId] = useState('');
+  const [quickBookCount, setQuickBookCount] = useState(4);
+  const [quickBookSelected, setQuickBookSelected] = useState(new Set());
+  const [quickBooking, setQuickBooking] = useState(false);
 
   /* ── Progress page state ── */
 
@@ -222,6 +241,11 @@ export default function ParentPortal() {
   const [invoice, setInvoice] = useState(null);
   function printInvoice() { window.print(); }
 
+  // "Fast Checkout": pays several of a child's earliest-due session invoices
+  // at once with ONE combined QRPh code for their total, instead of a
+  // separate QR/scan per invoice. See POST /payments/checkout/combined.
+  const [fastCheckoutCount, setFastCheckoutCount] = useState(2);
+
   async function generateQr(payment) {
     setQrBusy(true);
     try {
@@ -234,6 +258,23 @@ export default function ParentPortal() {
     }
   }
 
+  async function startFastCheckout(ids) {
+    if (!ids.length || qrBusy) return;
+    setQrBusy(true);
+    try {
+      const res = await api('/payments/checkout/combined', { method: 'POST', body: { payment_ids: ids } });
+      setQrModal({
+        payment: { id: ids[0], amount: res.amount, invoice_no: `${ids.length} invoice${ids.length > 1 ? 's' : ''} combined` },
+        image: res.qr_image_url, expiresAt: res.expires_at, testUrl: res.test_url,
+        status: 'awaiting_payment', combinedCount: ids.length
+      });
+    } catch (e) {
+      toast(e.message || 'Failed to generate combined QRPh code', 'fa-triangle-exclamation');
+    } finally {
+      setQrBusy(false);
+    }
+  }
+
   useEffect(() => {
     if (!qrModal || qrModal.status === 'paid') return;
     const iv = setInterval(async () => {
@@ -241,7 +282,10 @@ export default function ParentPortal() {
         const res = await api(`/payments/${qrModal.payment.id}/qrph/status`);
         if (res.status === 'paid') {
           setQrModal(m => (m ? { ...m, status: 'paid' } : m));
-          toast('Payment received, your booking is confirmed', 'fa-circle-check');
+          toast(
+            qrModal.combinedCount > 1 ? `Payment received, ${qrModal.combinedCount} invoices paid` : 'Payment received, your booking is confirmed',
+            'fa-circle-check'
+          );
           const fresh = await api('/payments').catch(() => null);
           if (fresh) setPayments(fresh);
           // The held slot only becomes 'confirmed' once payment succeeds (see
@@ -332,6 +376,18 @@ export default function ParentPortal() {
       api('/notifications').then(setNotifications).catch(() => {});
     }, 30000);
     return () => clearInterval(iv);
+  }, [activeChild?.id]);
+
+  /* ── Load the active child's recurring therapy schedule(s) whenever the
+     selected child changes, so switching between siblings shows the right
+     one's fixed schedule instead of a stale one. ── */
+  useEffect(() => {
+    if (!activeChild?.id) { setChildSchedules([]); return; }
+    let cancelled = false;
+    api('/reservations/' + activeChild.id + '/schedules')
+      .then(list => { if (!cancelled) setChildSchedules(list || []); })
+      .catch(() => { if (!cancelled) setChildSchedules([]); });
+    return () => { cancelled = true; };
   }, [activeChild?.id]);
 
   /* ── Fetch slot availability when booking date (or the active child) changes ──
@@ -496,6 +552,31 @@ export default function ParentPortal() {
 
   /* ── Derived data ── */
   const pendingPayments = (payments || []).filter(p => p.status === 'pending' || p.status === 'overdue');
+  // Sessions must be paid in date order, "advance payment" means paying an
+  // upcoming session early, not skipping ahead of a still-unpaid earlier one
+  // (see server/routes/payments.js's own matching check on /qrph). Only the
+  // earliest unpaid session invoice per child is actually payable, the rest
+  // show locked until it's settled. No-show fees are a separate penalty
+  // charge, not part of this ordering, always payable on their own.
+  // Per-client date-ordered queues of pending session invoices, built once and
+  // reused for both "which one is unlocked right now" and Fast Checkout's
+  // "pay the next N" order (concatenating each child's own queue keeps every
+  // child's own sequence intact regardless of how they interleave).
+  const sessionInvoiceQueuesByClient = (() => {
+    const byClient = {};
+    for (const p of pendingPayments) {
+      if (p.fee_type !== 'session') continue;
+      const date = (reservations || []).find(r => r.id === p.reservation_id)?.date;
+      if (!date) continue;
+      (byClient[p.client_id] = byClient[p.client_id] || []).push({ id: p.id, date });
+    }
+    for (const list of Object.values(byClient)) list.sort((a, b) => a.date.localeCompare(b.date));
+    return byClient;
+  })();
+  const payableSessionInvoiceIds = new Set(Object.values(sessionInvoiceQueuesByClient).map(list => list[0]?.id).filter(Boolean));
+  // Flat pay-in-order queue for Fast Checkout, e.g. "Pay First 3" takes the
+  // first 3 ids off this list, always respecting each child's own sequence.
+  const fastCheckoutOrder = Object.values(sessionInvoiceQueuesByClient).flat().map(x => x.id);
   const paidPayments = (payments || []).filter(p => p.status === 'paid');
   const refundedPayments = (payments || []).filter(p => p.status === 'refunded');
   // A booking only still "blocks" a new one while it hasn't happened yet, once its own
@@ -503,7 +584,11 @@ export default function ParentPortal() {
   // This spans every linked child, callers that gate on "does THIS child already
   // have a booking" must filter it down by client_id (see upcomingReservationsFor)
   // instead of using it directly, one child's booking must never block another's.
-  const upcomingReservations = (reservations || []).filter(r => r.date >= todayStr() && !isSlotPast(r.date, r.time_slot) && ['awaiting_payment', 'pending', 'confirmed', 'rescheduled'].includes(r.status));
+  // A session generated by a staff-assigned fixed schedule is never a "pending
+  // single booking" the guardian requested and could cancel here, it's shown
+  // instead in the schedule card on the Booking page, excluded here so it never
+  // wrongly trips the "you already have an upcoming booking" self-booking gate.
+  const upcomingReservations = (reservations || []).filter(r => r.date >= todayStr() && !isSlotPast(r.date, r.time_slot) && !r.recurring_schedule_id && ['awaiting_payment', 'pending', 'confirmed', 'rescheduled'].includes(r.status));
   function upcomingReservationsFor(childId) {
     return childId ? upcomingReservations.filter(r => r.client_id === childId) : [];
   }
@@ -543,8 +628,11 @@ export default function ParentPortal() {
     // the same exception the render side (hasActiveBooking) and the server apply.
     const bookingChildForCheck = activeChild || children[0];
     const checkDiscipline = disciplineOfType(bookingSessionType);
+    // A discipline locked to a fixed weekly schedule is exempt, stacking
+    // several future occurrences of that same slot is the whole point.
+    const checkLocked = checkDiscipline && childSchedules.some(s => s.status === 'active' && s.discipline === (checkDiscipline === 'ot' ? 'OT' : 'Speech'));
     const childReservations = upcomingReservationsFor(bookingChildForCheck?.id);
-    const conflictingBooking = (bookingChildForCheck?.therapy_type === 'Both' && checkDiscipline)
+    const conflictingBooking = checkLocked ? null : (bookingChildForCheck?.therapy_type === 'Both' && checkDiscipline)
       ? childReservations.find(r => disciplineOfType(r.session_type) === checkDiscipline)
       : childReservations[0];
     if (conflictingBooking) {
@@ -605,6 +693,64 @@ export default function ParentPortal() {
       // meantime) so the parent can see the error and retry or back out.
     } finally {
       setBookingBusy(false);
+    }
+  }
+
+  /** Every upcoming valid occurrence of `schedule`'s weekday for `child` that
+   *  isn't a clinic holiday or already booked, up to `limit` candidates, so
+   *  the guardian has real dates to actually choose from in Quick Book
+   *  (not just however many they typed, picked automatically in a row). */
+  function quickBookCandidates(schedule, child, limit) {
+    if (!schedule || !child) return [];
+    const existingDates = new Set(
+      (reservations || [])
+        .filter(r => r.client_id === child.id && r.time_slot === schedule.time_slot
+          && ['awaiting_payment', 'pending', 'confirmed', 'rescheduled'].includes(r.status))
+        .map(r => r.date)
+    );
+    const holidayDates = new Set((holidays || []).map(h => h.date));
+    const dates = [];
+    const cursor = new Date(minBookableDateStr() + 'T00:00:00Z');
+    for (let guard = 0; dates.length < limit && guard < 730; guard++) {
+      const ds = cursor.toISOString().slice(0, 10);
+      if (cursor.getUTCDay() === schedule.day_of_week && !existingDates.has(ds) && !holidayDates.has(ds)) {
+        dates.push(ds);
+      }
+      cursor.setUTCDate(cursor.getUTCDate() + 1);
+    }
+    return dates;
+  }
+
+  /**
+   * Quick Book: instantly books whichever exact dates the guardian checked
+   * off (see quickBookCandidates), one POST /reservations call per date (same
+   * call the single-booking flow makes), looped sequentially.
+   */
+  async function quickBookRecurring(schedule, child, sessionType, dates) {
+    if (quickBooking || !schedule || !child || !dates.length) return;
+    setQuickBooking(true);
+    let booked = 0, failed = 0;
+    try {
+      for (const date of dates) {
+        try {
+          const { payment, ...res } = await api('/reservations', {
+            method: 'POST',
+            body: { date, time_slot: schedule.time_slot, client_id: child.id, session_type: sessionType }
+          });
+          setReservations(prev => [...(prev || []), res]);
+          booked++;
+        } catch {
+          failed++;
+        }
+      }
+      if (booked > 0) {
+        toast(`Booked ${booked} selected session${booked > 1 ? 's' : ''} at ${schedule.time_slot}${failed ? `, ${failed} couldn't be booked` : ''}`, 'fa-calendar-check');
+        setQuickBookSelected(new Set());
+      } else {
+        toast('Could not book the selected sessions right now', 'fa-triangle-exclamation');
+      }
+    } finally {
+      setQuickBooking(false);
     }
   }
 
@@ -832,6 +978,21 @@ export default function ParentPortal() {
     }
   }
 
+  /** Relays a request for a written progress report to clinic staff, per the MOA
+   *  this doesn't generate the report or collect its fee, that's arranged
+   *  directly with the family, it just lets staff know one was asked for. */
+  async function requestProgressReport(childId, childName) {
+    setRequestingReport(true);
+    try {
+      await api('/clients/' + childId + '/request-progress-report', { method: 'POST' });
+      toast('Progress report requested, the clinic will reach out about fees and timing', 'fa-file-medical');
+    } catch (err) {
+      toast('Error: ' + err.message, 'fa-triangle-exclamation');
+    } finally {
+      setRequestingReport(false);
+    }
+  }
+
   /* ═══════════════════════════════════════════════════════════
      DASHBOARD
      ═══════════════════════════════════════════════════════════ */
@@ -978,8 +1139,22 @@ export default function ParentPortal() {
           </div>
 
           <div className="card" style={{ padding: '22px 24px' }}>
-            <div className="section-title" style={{ marginBottom: 4 }}>Progress Trends</div>
-            <div className="section-sub" style={{ marginBottom: 16 }}>GAS (Goal Attainment Scaling) trend from therapy sessions</div>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', flexWrap: 'wrap', gap: 10, marginBottom: 4 }}>
+              <div>
+                <div className="section-title" style={{ marginBottom: 4 }}>Progress Trends</div>
+                <div className="section-sub">GAS (Goal Attainment Scaling) trend from therapy sessions</div>
+              </div>
+              <button
+                className="qa-btn" style={{ width: 'auto', padding: '8px 14px', fontSize: 12.5, whiteSpace: 'nowrap' }}
+                disabled={requestingReport}
+                onClick={() => requestProgressReport(child.id, child.full_name)}
+                title="The clinic will follow up directly about fees and timing"
+              >
+                <i className={'fa-solid ' + (requestingReport ? 'fa-spinner fa-spin' : 'fa-file-medical')} style={{ color: '#4F46E5', marginRight: 5 }} />
+                {requestingReport ? 'Requesting…' : 'Request Progress Report'}
+              </button>
+            </div>
+            <div style={{ marginBottom: 16 }} />
             {(child.gas_entries || []).length > 0 ? (
               <GasProgressChart entries={child.gas_entries} />
             ) : (
@@ -1003,16 +1178,35 @@ export default function ParentPortal() {
     const myReservations = (reservations || []).slice().sort((a, b) => (b.date || '').localeCompare(a.date || ''));
     const bookingChild = activeChild || (hasChildren ? children[0] : null);
     const sessionOptions = sessionTypesFor(bookingChild);
+    const activeSchedules = childSchedules.filter(s => s.status === 'active');
     // A Combined child may hold one OT and one Speech upcoming booking at once,
     // so the "already have an upcoming booking" gate only applies within the
     // currently selected session type's own discipline for them; any other
     // child (single discipline) keeps the original "any upcoming booking" gate.
     const selectedDiscipline = disciplineOfType(bookingSessionType);
+    // Every fixed weekly schedule for the currently selected discipline, a
+    // discipline can have more than one (1 session per therapist per week
+    // policy, so 2x/week needs 2 different therapists on different days/times).
+    // A discipline that's supposed to be self-bookable (OT/Speech, not an
+    // assessment type) but has NO active schedule at all can't be booked yet,
+    // therapy_type/assigned_therapist_name alone (which can be stale) never
+    // unlocks free-pick booking anymore, staff has to actually assign one first.
+    const lockedSchedules = selectedDiscipline ? activeSchedules.filter(s => s.discipline === (selectedDiscipline === 'ot' ? 'OT' : 'Speech')) : [];
+    const needsSchedule = !!selectedDiscipline && lockedSchedules.length === 0;
+    // The specific schedule matching whatever date is currently selected, if any.
+    const lockedSchedule = lockedSchedules.length
+      ? lockedSchedules.find(s => reservationDate && new Date(reservationDate + 'T00:00:00Z').getUTCDay() === s.day_of_week) || lockedSchedules[0]
+      : null;
     const childReservations = upcomingReservationsFor(bookingChild?.id);
-    const activeBooking = (bookingChild?.therapy_type === 'Both' && selectedDiscipline)
+    const activeBooking = lockedSchedules.length ? null : (bookingChild?.therapy_type === 'Both' && selectedDiscipline)
       ? childReservations.find(r => disciplineOfType(r.session_type) === selectedDiscipline)
       : childReservations[0];
     const hasActiveBooking = !!activeBooking;
+    // Only the assigned time(s) for the selected date's weekday are ever
+    // shown/bookable for a locked discipline.
+    const visibleSlots = lockedSchedules.length
+      ? slotsForDate.filter(s => lockedSchedules.some(sch => sch.time_slot === s.time_slot && reservationDate && new Date(reservationDate + 'T00:00:00Z').getUTCDay() === sch.day_of_week))
+      : slotsForDate;
 
     return (
       <div className="spa-page" id="spa-booking">
@@ -1026,6 +1220,29 @@ export default function ParentPortal() {
           </div>
         ) : (
           <>
+            {activeSchedules.length > 0 && (
+              <div className="card" style={{ padding: '18px 22px', marginBottom: 16 }}>
+                <div className="section-title" style={{ marginBottom: 10 }}>{bookingChild?.full_name}'s Fixed Therapy Schedule</div>
+                <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+                  {activeSchedules.map(s => (
+                    <div key={s.id} style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap', border: '1px solid #E2E8F0', borderRadius: 9, padding: '10px 12px' }}>
+                      <i className="fa-solid fa-calendar-week" style={{ color: '#4F46E5' }} />
+                      <div style={{ flex: 1, minWidth: 200 }}>
+                        <div style={{ fontSize: 13, fontWeight: 600, color: '#0F172A' }}>
+                          {s.discipline === 'OT' ? 'Occupational Therapy' : 'Speech Therapy'}, {WEEKDAY_NAMES[s.day_of_week]}s at {s.time_slot} with {s.therapist_name}
+                        </div>
+                        {s.sessions_completed > 0 && <div style={{ fontSize: 11.5, color: '#64748B', marginTop: 2 }}>{s.sessions_completed} session{s.sessions_completed === 1 ? '' : 's'} completed so far</div>}
+                      </div>
+                      <span className="pill pill-green">Active</span>
+                    </div>
+                  ))}
+                </div>
+                <div style={{ fontSize: 11.5, color: '#94A3B8', marginTop: 10 }}>
+                  <i className="fa-solid fa-circle-info" style={{ marginRight: 5 }} />
+                  This continues indefinitely on this fixed day/time. Pick any upcoming date below matching your assigned day to book and pay for that session, you can book several weeks ahead if you'd like. To change the day/time itself, please call the clinic.
+                </div>
+              </div>
+            )}
             <div style={{ display: 'grid', gridTemplateColumns: '1fr', gap: 16, marginBottom: 24 }}>
               <div className="card" style={{ padding: '22px 24px' }}>
                 <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 10, flexWrap: 'wrap', marginBottom: 16 }}>
@@ -1070,8 +1287,79 @@ export default function ParentPortal() {
                   {!bookingChild?.assigned_ot_therapist_name && !bookingChild?.assigned_speech_therapist_name && !bookingChild?.therapy_type && (
                     <div style={{ fontSize: 11.5, color: '#64748B', marginTop: 5 }}><i className="fa-solid fa-circle-info" style={{ marginRight: 5 }} />Only an Initial Assessment can be booked until the clinic assigns a therapy type and therapist.</div>
                   )}
+                  {lockedSchedules.length > 0 && (
+                    <div style={{ fontSize: 11.5, color: '#64748B', marginTop: 5 }}>
+                      <i className="fa-solid fa-lock" style={{ marginRight: 5 }} />
+                      Fixed to {lockedSchedules.map((s, i) => <span key={s.id}>{i > 0 ? '; ' : ''}{WEEKDAY_NAMES[s.day_of_week]}s at {s.time_slot} with {s.therapist_name}</span>)}. Pick any upcoming matching date below.
+                    </div>
+                  )}
+                  {lockedSchedules.length > 0 && (() => {
+                    const qbSchedule = lockedSchedules.find(s => s.id === quickBookScheduleId) || lockedSchedules[0];
+                    // A bigger pool than whatever's typed, so there are actual
+                    // real dates to choose from beyond just "the next N in a row".
+                    const qbCandidates = quickBookCandidates(qbSchedule, bookingChild, Math.max(quickBookCount * 2, 10));
+                    const toggleDate = ds => setQuickBookSelected(prev => {
+                      const next = new Set(prev);
+                      next.has(ds) ? next.delete(ds) : next.add(ds);
+                      return next;
+                    });
+                    return (
+                      <div style={{ background: '#F0F9FF', border: '1px solid #BAE6FD', borderRadius: 9, padding: '10px 12px', marginTop: 10 }}>
+                        <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap', marginBottom: 8 }}>
+                          <i className="fa-solid fa-calendar-week" style={{ color: '#0EA5E9' }} />
+                          <span style={{ fontSize: 12, color: '#0C4A6E', fontWeight: 600 }}>Quick Book</span>
+                          {lockedSchedules.length > 1 && (
+                            <select className="form-select" style={{ background: '#fff', width: 'auto', fontSize: 12, padding: '5px 8px' }} value={qbSchedule.id} onChange={e => { setQuickBookScheduleId(e.target.value); setQuickBookSelected(new Set()); }}>
+                              {lockedSchedules.map(s => <option key={s.id} value={s.id}>{WEEKDAY_NAMES[s.day_of_week]}s {s.time_slot} ({s.therapist_name})</option>)}
+                            </select>
+                          )}
+                          <span style={{ fontSize: 12, color: '#0C4A6E' }}>How many?</span>
+                          <input
+                            type="number" min={1} max={26} className="form-input" style={{ width: 60, fontSize: 12, padding: '5px 8px' }}
+                            value={quickBookCount}
+                            onChange={e => {
+                              // Typing a new count re-syncs the checked dates to
+                              // exactly the first N candidates, so lowering it
+                              // actually un-checks the extras instead of leaving
+                              // a stale, larger selection sitting there checked.
+                              // Individual boxes can still be toggled by hand
+                              // afterward, this only resets on the count itself changing.
+                              const n = Math.max(1, Math.min(26, Number(e.target.value) || 1));
+                              setQuickBookCount(n);
+                              const fresh = quickBookCandidates(qbSchedule, bookingChild, Math.max(n * 2, 10));
+                              setQuickBookSelected(new Set(fresh.slice(0, n)));
+                            }}
+                          />
+                        </div>
+                        <div style={{ fontSize: 10.5, color: '#0C4A6E', marginBottom: 6 }}>Pick exactly which {WEEKDAY_NAMES[qbSchedule.day_of_week]}s at {qbSchedule.time_slot} you want to book, each confirmed right away, pay for each from the Payments tab whenever you're ready.</div>
+                        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(110px, 1fr))', gap: 6, maxHeight: 140, overflowY: 'auto', marginBottom: 8 }}>
+                          {qbCandidates.length === 0 && <span style={{ fontSize: 11.5, color: '#0C4A6E' }}>No open upcoming dates found for this slot.</span>}
+                          {qbCandidates.map(ds => {
+                            const checked = quickBookSelected.has(ds);
+                            return (
+                              <label key={ds} style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 11.5, color: '#0C4A6E', background: checked ? '#DBEAFE' : '#fff', border: '1px solid ' + (checked ? '#93C5FD' : '#E2E8F0'), borderRadius: 7, padding: '5px 8px', cursor: 'pointer' }}>
+                                <input type="checkbox" checked={checked} onChange={() => toggleDate(ds)} style={{ margin: 0 }} />
+                                {fmtDate(ds)}
+                              </label>
+                            );
+                          })}
+                        </div>
+                        <button
+                          className="btn-primary" style={{ fontSize: 11.5, padding: '6px 12px' }}
+                          disabled={quickBooking || quickBookSelected.size === 0}
+                          onClick={() => quickBookRecurring(qbSchedule, bookingChild, bookingSessionType, Array.from(quickBookSelected))}
+                        >
+                          <i className={'fa-solid ' + (quickBooking ? 'fa-spinner fa-spin' : 'fa-bolt')} style={{ marginRight: 5 }} />
+                          {quickBooking ? 'Booking…' : `Book Selected (${quickBookSelected.size})`}
+                        </button>
+                      </div>
+                    );
+                  })()}
+                  {needsSchedule && (
+                    <div style={{ fontSize: 11.5, color: '#64748B', marginTop: 5 }}><i className="fa-solid fa-circle-info" style={{ marginRight: 5 }} />{bookingChild?.full_name} doesn't have a fixed {bookingSessionType} schedule assigned yet. Please contact the clinic to get one set up before booking.</div>
+                  )}
                 </div>
-                <div style={{ marginBottom: 14, opacity: hasActiveBooking ? .55 : 1, pointerEvents: hasActiveBooking ? 'none' : 'auto' }}>
+                <div style={{ marginBottom: 14, opacity: (hasActiveBooking || needsSchedule) ? .55 : 1, pointerEvents: (hasActiveBooking || needsSchedule) ? 'none' : 'auto' }}>
                   <label className="form-label">Requested Date &amp; Time</label>
                   <div className="booking-cal-grid">
                     <div>
@@ -1090,7 +1378,8 @@ export default function ParentPortal() {
                         {Array.from({ length: daysInMonth(calMonth) }).map((_, i) => {
                           const day = i + 1;
                           const dateStr = calMonth + '-' + String(day).padStart(2, '0');
-                          const disabled = dateStr < minBookableDateStr() || hasActiveBooking;
+                          const wrongWeekday = lockedSchedules.length > 0 && !lockedSchedules.some(s => s.day_of_week === new Date(dateStr + 'T00:00:00Z').getUTCDay());
+                          const disabled = dateStr < minBookableDateStr() || hasActiveBooking || wrongWeekday || needsSchedule;
                           const isSelected = dateStr === reservationDate;
                           const isToday = dateStr === todayStr();
                           const cls = 'cal-day' + (isSelected ? ' is-selected' : '') + (isToday && !isSelected ? ' is-today' : '');
@@ -1112,21 +1401,21 @@ export default function ParentPortal() {
                         style={{
                           // Column-major fill (top-to-bottom then next column), so row
                           // count must match the actual slot count, not a fixed guess.
-                          gridTemplateRows: 'repeat(' + Math.max(1, Math.ceil(slotsForDate.length / 2)) + ', auto)',
+                          gridTemplateRows: 'repeat(' + Math.max(1, Math.ceil(visibleSlots.length / 2)) + ', auto)',
                           ...(slotError ? { border: '1px solid #FCA5A5', borderRadius: 10, padding: 8, background: '#FEF2F2' } : null)
                         }}
                       >
-                        {slotsForDate.length === 0 && (() => {
+                        {visibleSlots.length === 0 && (() => {
                           const holiday = holidays.find(h => h.date === reservationDate);
                           return (
                             <div style={{ fontSize: 12.5, color: '#94A3B8', padding: '6px 2px' }}>
                               {holiday
                                 ? <>The clinic is closed on this date{holiday.label ? ' (' + holiday.label + ')' : ''}, please pick another day.</>
-                                : 'No time slots for this date, no therapists are on shift.'}
+                                : reservationDate ? 'No time slots for this date, no therapists are on shift.' : 'Select a date'}
                             </div>
                           );
                         })()}
-                        {slotsForDate.map(s => {
+                        {visibleSlots.map(s => {
                           const t = s.time_slot;
                           // Initial Assessment has no dedicated therapist picked ahead of time,
                           // so it's capped at one booking per hour clinic-wide, same rule as
@@ -1154,7 +1443,7 @@ export default function ParentPortal() {
                   </div>
                 </div>
                 <div style={{ display: 'flex', justifyContent: 'flex-end', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
-                  <button className="btn-primary" disabled={bookingBusy || hasActiveBooking} onClick={openBookingConfirm}>Book</button>
+                  <button className="btn-primary" disabled={bookingBusy || hasActiveBooking || needsSchedule} onClick={openBookingConfirm}>Book</button>
                 </div>
               </div>
             </div>
@@ -1230,6 +1519,9 @@ export default function ParentPortal() {
                     : r.status === 'declined' ? <span className="pill pill-red">Declined</span>
                     : r.status === 'cancelled' ? <span className="pill pill-gray">Cancelled</span>
                     : r.status === 'rescheduled' ? <span className="pill pill-blue">Rescheduled</span>
+                    : r.status === 'completed' ? <span className="pill pill-teal">Completed</span>
+                    : r.status === 'no_show' ? <span className="pill pill-red">No-Show</span>
+                    : r.status === 'ongoing' ? <span className="pill pill-purple">Ongoing</span>
                     : <span className="pill pill-amber">Pending Review</span>;
                   return (
                     <div className="history-item" key={r.id}>
@@ -1309,31 +1601,71 @@ export default function ParentPortal() {
               <div className="card" style={{ padding: '22px 0 0' }}>
                 <div style={{ padding: '0 20px 14px', borderBottom: '1px solid #F1F5F9' }}>
                   <div className="section-title"><i className="fa-solid fa-qrcode" style={{ color: '#0EA5E9', marginRight: 7 }} />Pay Pending Balance</div>
-                  <div className="section-sub">Pay any session instantly with a real QRPh code, scan with GCash, Maya, or any bank app</div>
+                  <div className="section-sub">Pay your next due session instantly with a real QRPh code, scan with GCash, Maya, or any bank app</div>
+                  {fastCheckoutOrder.length > 1 && (
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap', marginTop: 12 }}>
+                      <span style={{ fontSize: 11.5, color: '#94A3B8' }}><i className="fa-solid fa-bolt" style={{ marginRight: 4, color: '#0EA5E9' }} />Fast Checkout, one combined QR:</span>
+                      <select
+                        className="form-select" style={{ width: 'auto', height: 32, fontSize: 11.5 }}
+                        value={Math.min(fastCheckoutCount, fastCheckoutOrder.length)}
+                        onChange={e => setFastCheckoutCount(Number(e.target.value))}
+                        disabled={qrBusy}
+                      >
+                        {Array.from({ length: fastCheckoutOrder.length - 1 }, (_, i) => i + 2).map(n => (
+                          <option key={n} value={n}>Pay First {n}</option>
+                        ))}
+                      </select>
+                      <button className="btn-secondary" style={{ fontSize: 11.5, padding: '5px 12px' }} disabled={qrBusy} onClick={() => startFastCheckout(fastCheckoutOrder.slice(0, fastCheckoutCount))}>
+                        Start
+                      </button>
+                      <button className="btn-primary" style={{ fontSize: 11.5, padding: '5px 12px' }} disabled={qrBusy} onClick={() => startFastCheckout(fastCheckoutOrder)}>
+                        Pay All ({fastCheckoutOrder.length})
+                      </button>
+                    </div>
+                  )}
                 </div>
                 <div>
-                  {pendingPayments.map(p => {
+                  {pendingPayments.slice().sort((a, b) => {
+                    // Chronological by session date so "Pay This First" always
+                    // lands visually on top, no-show/retainer fees (no ordering
+                    // of their own) trail after every session invoice.
+                    const da = (reservations || []).find(r => r.id === a.reservation_id)?.date || '9999-99-99';
+                    const db_ = (reservations || []).find(r => r.id === b.reservation_id)?.date || '9999-99-99';
+                    if (a.fee_type !== 'session' && b.fee_type === 'session') return 1;
+                    if (b.fee_type !== 'session' && a.fee_type === 'session') return -1;
+                    return da.localeCompare(db_);
+                  }).map(p => {
                     // Cancelling only makes sense while the slot is still an unpaid
                     // hold, once confirmed (e.g. staff booked it in person and picked
                     // QRPh for a later payment), this is just an outstanding invoice,
                     // not a hold to release, so no Cancel option for that case.
                     const linkedRes = (reservations || []).find(r => r.id === p.reservation_id);
                     const cancellable = linkedRes?.status === 'awaiting_payment';
+                    const isStandaloneFee = p.fee_type !== 'session';
+                    const locked = !isStandaloneFee && !payableSessionInvoiceIds.has(p.id);
                     return (
-                      <div className="balance-row" key={p.id}>
+                      <div className="balance-row" key={p.id} style={locked ? { opacity: .55, background: '#F8FAFC' } : undefined}>
                         <div>
-                          <div style={{ fontSize: 13, fontWeight: 600, color: '#0F172A' }}>{p.invoice_no || 'Session'}</div>
-                          <div style={{ fontSize: 11.5, color: '#94A3B8' }}>{fmtDate((p.created_at || '').slice(0, 10))} · <span className="pill pill-amber" style={{ fontSize: 9 }}>{p.status}</span></div>
+                          <div style={{ fontSize: 13, fontWeight: 600, color: '#0F172A' }}>
+                            {p.invoice_no || 'Session'}
+                            {p.fee_type === 'no_show_fee' && <span className="pill pill-red" style={{ fontSize: 9, marginLeft: 6 }}>No-Show Fee</span>}
+                            {p.fee_type === 'retainer_fee' && <span className="pill pill-amber" style={{ fontSize: 9, marginLeft: 6 }}>Retainer Fee</span>}
+                            {!isStandaloneFee && !locked && pendingPayments.length > 1 && <span className="pill pill-green" style={{ fontSize: 9, marginLeft: 6 }}>Pay This First</span>}
+                          </div>
+                          <div style={{ fontSize: 11.5, color: '#94A3B8' }}>
+                            {linkedRes?.date ? fmtDate(linkedRes.date) + ' session' : fmtDate((p.created_at || '').slice(0, 10))} · <span className="pill pill-amber" style={{ fontSize: 9 }}>{p.status}</span>
+                          </div>
+                          {locked && <div style={{ fontSize: 11, color: '#94A3B8', marginTop: 3 }}><i className="fa-solid fa-lock" style={{ marginRight: 4 }} />Settle the earlier invoice above first</div>}
                         </div>
                         <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
                           <span style={{ fontSize: 13, fontWeight: 700, color: '#0F172A' }}>₱{Number(p.amount).toLocaleString()}</span>
-                          {cancellable && (
+                          {cancellable && !locked && (
                             <button className="btn-secondary" style={{ fontSize: 12, padding: '8px 14px' }} onClick={() => setCancelTarget(linkedRes)}>
                               <i className="fa-solid fa-xmark" style={{ marginRight: 5 }} />Cancel
                             </button>
                           )}
-                          <button className="btn-primary" style={{ fontSize: 12, padding: '8px 14px' }} disabled={qrBusy} onClick={() => generateQr(p)}>
-                            <i className="fa-solid fa-qrcode" style={{ marginRight: 5 }} />Pay with QRPh
+                          <button className="btn-primary" style={{ fontSize: 12, padding: '8px 14px', opacity: locked ? .5 : 1, cursor: locked ? 'not-allowed' : 'pointer' }} disabled={qrBusy || locked} onClick={() => generateQr(p)}>
+                            <i className={'fa-solid ' + (locked ? 'fa-lock' : 'fa-qrcode')} style={{ marginRight: 5 }} />{locked ? 'Locked' : 'Pay with QRPh'}
                           </button>
                         </div>
                       </div>
@@ -1366,7 +1698,12 @@ export default function ParentPortal() {
                   <tbody>
                     {paidPayments.map(p => (
                       <tr key={p.id}>
-                        <td style={{ paddingLeft: 24 }}><div style={{ fontSize: 12, fontWeight: 600, color: '#0F172A' }}>{p.invoice_no || '-'}</div></td>
+                        <td style={{ paddingLeft: 24 }}>
+                          <div style={{ fontSize: 12, fontWeight: 600, color: '#0F172A' }}>
+                            {p.invoice_no || '-'}
+                            {!p.reservation_id && p.fee_type === 'session' && <span className="pill pill-green" style={{ fontSize: 9, marginLeft: 6 }}>Unallocated Credit</span>}
+                          </div>
+                        </td>
                         <td style={{ fontSize: 12.5 }}>{p.paid_at ? fmtDate(p.paid_at.slice(0, 10)) : '-'}</td>
                         <td style={{ fontWeight: 700, color: '#10B981' }}>₱{Number(p.amount).toLocaleString()}</td>
                         <td><span className="pill pill-green" style={{ fontSize: 10 }}>{p.method}</span></td>
@@ -1529,16 +1866,27 @@ export default function ParentPortal() {
       </div>
 
       {qrModal && (
-        <Modal onClose={() => setQrModal(null)} title={qrModal.payment.invoice_no || 'QRPh Payment'}>
+        <Modal onClose={() => setQrModal(null)} title={qrModal.combinedCount > 1 ? `Combined Payment (${qrModal.combinedCount} invoices)` : (qrModal.payment.invoice_no || 'QRPh Payment')}>
           <div style={{ textAlign: 'center', padding: '10px 0' }}>
+            {qrModal.combinedCount > 1 && (
+              <div style={{ fontSize: 11.5, fontWeight: 700, color: '#0EA5E9', marginBottom: 8 }}><i className="fa-solid fa-bolt" style={{ marginRight: 4 }} />Fast Checkout, {qrModal.combinedCount} invoices in one QR</div>
+            )}
             <div style={{ fontSize: 13, color: '#64748B', marginBottom: 16 }}>₱{Number(qrModal.payment.amount).toLocaleString()}</div>
             {qrModal.status === 'paid' ? (
               <>
                 <div style={{ width: 64, height: 64, borderRadius: '50%', background: '#DCFCE7', display: 'flex', alignItems: 'center', justifyContent: 'center', margin: '0 auto 16px' }}><i className="fa-solid fa-check" style={{ fontSize: 28, color: '#16A34A' }} /></div>
-                <div style={{ fontSize: 18, fontWeight: 700, color: '#0F172A', marginBottom: 16 }}>Payment Confirmed</div>
-                <button className="btn-primary" style={{ width: '100%' }} onClick={() => { const p = qrModal.payment; setQrModal(null); setInvoice(p); }}>
-                  <i className="fa-solid fa-file-invoice" style={{ marginRight: 6 }} />View Invoice
-                </button>
+                <div style={{ fontSize: 18, fontWeight: 700, color: '#0F172A', marginBottom: 16 }}>
+                  {qrModal.combinedCount > 1 ? `Payment Confirmed, ${qrModal.combinedCount} invoices paid` : 'Payment Confirmed'}
+                </div>
+                {qrModal.combinedCount > 1 ? (
+                  <button className="btn-primary" style={{ width: '100%' }} onClick={() => { setQrModal(null); setPayTab('receipts'); }}>
+                    <i className="fa-solid fa-file-invoice" style={{ marginRight: 6 }} />View Invoices
+                  </button>
+                ) : (
+                  <button className="btn-primary" style={{ width: '100%' }} onClick={() => { const p = qrModal.payment; setQrModal(null); setInvoice(p); }}>
+                    <i className="fa-solid fa-file-invoice" style={{ marginRight: 6 }} />View Invoice
+                  </button>
+                )}
               </>
             ) : qrModal.image ? (
               <>
@@ -1557,7 +1905,9 @@ export default function ParentPortal() {
             ) : (
               <div style={{ fontSize: 12.5, color: '#94A3B8', padding: '24px 0' }}>Generating QR code…</div>
             )}
-            <button className="btn-secondary" style={{ width: '100%', marginTop: 16 }} onClick={() => setQrModal(null)}>Close</button>
+            <button className="btn-secondary" style={{ width: '100%', marginTop: 16 }} onClick={() => setQrModal(null)}>
+              Close
+            </button>
           </div>
         </Modal>
       )}

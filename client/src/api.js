@@ -4,6 +4,33 @@ export const getToken = () => localStorage.getItem('kid_token');
 
 const sleep = (ms) => new Promise(r => setTimeout(r, ms));
 
+// The access token Supabase issues on login is only good for 1 hour, with no
+// refresh anywhere in this app it used to just die mid-session, every portal,
+// no warning, silently breaking every fetch until a full reload forced a
+// re-login. One in-flight refresh at a time (concurrent 401s from several
+// components at once all await the same promise instead of each hitting
+// /auth/refresh separately and racing to rotate the same refresh token).
+let refreshPromise = null;
+export async function refreshAccessToken() {
+  const refreshToken = localStorage.getItem('kid_refresh_token');
+  if (!refreshToken) return false;
+  if (!refreshPromise) {
+    refreshPromise = fetch(BASE + '/auth/refresh', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ refresh_token: refreshToken })
+    }).then(async res => {
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) return false;
+      localStorage.setItem('kid_token', data.token);
+      localStorage.setItem('kid_refresh_token', data.refreshToken);
+      localStorage.setItem('kid_token_expires_at', String(data.expiresAt));
+      return true;
+    }).catch(() => false).finally(() => { refreshPromise = null; });
+  }
+  return refreshPromise;
+}
+
 // A momentary Supabase/network hiccup, or the dev server restarting mid-request
 // (node --watch reloads on every file save), shouldn't surface as a hard error
 // right away, callers are already showing a loading spinner while this promise
@@ -20,6 +47,7 @@ const MAX_ATTEMPTS = RETRY_DELAYS_MS.length + 1;
 const GENERIC_ERROR_MESSAGE = 'Something went wrong. Please try again.';
 
 export async function api(path, { method = 'GET', body } = {}) {
+  let refreshedOnce = false;
   for (let attempt = 0; ; attempt++) {
     let res, data;
     try {
@@ -53,6 +81,19 @@ export async function api(path, { method = 'GET', body } = {}) {
     // ours ever ran. A real app error on a mutation, though, only retries for
     // GET, it may have already partially applied server-side.
     const reachedApp = data && typeof data.error === 'string';
+
+    // A 401 with a refresh token on hand gets exactly one silent refresh-and-
+    // retry before giving up, this is what actually keeps a session alive past
+    // the 1-hour access-token expiry during normal use (the periodic proactive
+    // refresh in auth.jsx covers most of it, but not e.g. a laptop asleep
+    // through the whole refresh window). If the refresh itself fails, falls
+    // through to the normal error below, whatever called this sees the 401
+    // and (for auth.jsx's own checks) logs out cleanly, same as before this existed.
+    if (res.status === 401 && reachedApp && !refreshedOnce && localStorage.getItem('kid_refresh_token')) {
+      refreshedOnce = true;
+      if (await refreshAccessToken()) continue;
+    }
+
     const safeToRetry = method === 'GET' || !reachedApp;
     if (res.status >= 500 && safeToRetry && attempt < MAX_ATTEMPTS - 1) {
       await sleep(RETRY_DELAYS_MS[attempt]);

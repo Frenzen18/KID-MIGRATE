@@ -116,6 +116,8 @@ router.post('/login', loginRateLimit, async (req, res) => {
 
   res.json({
     token: data.session.access_token,
+    refreshToken: data.session.refresh_token,
+    expiresAt: data.session.expires_at, // unix seconds, lets the client refresh ahead of the 1-hour expiry instead of only reacting after it
     user: {
       id: data.user.id,
       email: data.user.email,
@@ -126,6 +128,30 @@ router.post('/login', loginRateLimit, async (req, res) => {
       privacy_consent_at: profile.privacy_consent_at || null,
       must_change_password: profile.must_change_password === true
     }
+  });
+});
+
+/**
+ * POST /api/auth/refresh  { refresh_token }
+ * Exchanges a still-valid refresh token for a new access token, silently,
+ * so a session doesn't just die the instant the 1-hour access token expires,
+ * every portal (admin/staff/therapist/parent) was hard-logging-out mid-use
+ * with no warning before this existed. No requireAuth here on purpose, the
+ * access token is presumed already expired, that's the whole point of calling this.
+ */
+router.post('/refresh', async (req, res) => {
+  const { refresh_token } = req.body || {};
+  if (!refresh_token) return res.status(400).json({ error: 'refresh_token is required' });
+
+  const { data, error } = await authClient.auth.refreshSession({ refresh_token });
+  if (error || !data?.session) {
+    return res.status(401).json({ error: 'Session expired, please sign in again.' });
+  }
+
+  res.json({
+    token: data.session.access_token,
+    refreshToken: data.session.refresh_token,
+    expiresAt: data.session.expires_at
   });
 });
 
@@ -470,7 +496,10 @@ router.post('/change-password', requireAuth, async (req, res) => {
   const { data: fresh, error: signInErr } = await authClient.auth.signInWithPassword({ email: req.user.email, password: newPassword });
   if (signInErr || !fresh?.session) return res.status(500).json({ error: 'Password updated, but failed to start a new session. Please sign in again.' });
 
-  res.json({ ok: true, message: 'Password updated successfully.', token: fresh.session.access_token });
+  res.json({
+    ok: true, message: 'Password updated successfully.',
+    token: fresh.session.access_token, refreshToken: fresh.session.refresh_token, expiresAt: fresh.session.expires_at
+  });
 });
 
 /** POST /api/auth/forgot-password  { email } */
