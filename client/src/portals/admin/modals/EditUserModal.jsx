@@ -1,3 +1,4 @@
+import { useState } from 'react';
 import { Modal } from '../../../components/ui.jsx';
 import { filterPhoneInput, formatPhoneDisplay } from '../../../phoneInput.js';
 import { sanitizeNameInput, hasInvalidNameChars, INVALID_NAME_MSG } from '../../../nameInput.js';
@@ -32,10 +33,6 @@ const STATUS_ACCESS = {
   activate: { label: 'Active', pillClass: 'pill status-pill pill-green', style: null },
   suspend: { label: 'Suspended', pillClass: 'pill status-pill pill-red', style: null },
 };
-const STATUS_TOAST = {
-  activate: ['Account activated, user can now log in', 'fa-circle-check'],
-  suspend: ['Account suspended, user can no longer log in', 'fa-pause'],
-};
 
 export default function EditUserModal({ data, closeModal, toast }) {
   const rawName = data.name || 'Maria Santos';
@@ -54,12 +51,22 @@ export default function EditUserModal({ data, closeModal, toast }) {
     : Object.keys(ROLE_DB_MAP).filter(r => r !== 'Guardian/Caretaker');
   const status = data.status || 'Active';
 
-  const accessAction = type => {
+  // data.onAccess is async (a real API call, see Users.jsx), so this waits for
+  // it to actually resolve before closing, closing early would show a
+  // false-positive success (and did, previously) if the request later failed.
+  const [accessBusy, setAccessBusy] = useState(false);
+  const [accessConfirm, setAccessConfirm] = useState(null); // 'activate' | 'suspend' pending confirmation
+  async function accessAction(type) {
     const s = STATUS_ACCESS[type];
-    if (data.onAccess) data.onAccess(s.label, s.pillClass, s.style);
-    closeModal();
-    toast(STATUS_TOAST[type][0], STATUS_TOAST[type][1]);
-  };
+    setAccessBusy(true);
+    try {
+      if (data.onAccess) await data.onAccess(s.label, s.pillClass, s.style);
+      setAccessConfirm(null);
+      closeModal();
+    } finally {
+      setAccessBusy(false);
+    }
+  }
 
   const saveEditUser = () => {
     const firstVal = document.getElementById('ef-first').value.trim();
@@ -107,22 +114,40 @@ export default function EditUserModal({ data, closeModal, toast }) {
       <div style={{ fontSize: 12, color: '#64748B', marginBottom: 14 }}>Control this user's access to the KID Clinic system.</div>
 
       {status !== 'Active' && (
-        <div style={{ border: '1px solid #BBF7D0', borderRadius: 10, padding: '12px 14px', background: '#F0FDF4', marginBottom: 8, display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 10 }}>
+        <div style={{ border: '1px solid #BBF7D0', borderRadius: 10, padding: '12px 14px', background: '#F0FDF4', marginBottom: 8, display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
           <div style={{ display: 'flex', gap: 10, alignItems: 'center' }}>
             <div style={{ width: 34, height: 34, borderRadius: 8, background: 'var(--color-success-bg)', color: 'var(--color-success)', display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}><i className="fa-solid fa-check-circle" style={{ fontSize: 13 }} /></div>
             <div><div style={{ fontSize: 13, fontWeight: 600, color: '#14532D' }}>Activate Account</div><div style={{ fontSize: 11.5, color: '#166534', marginTop: 2 }}>Restore full system access. User can log in immediately.</div></div>
           </div>
-          <button onClick={() => accessAction('activate')} className="btn-edit" style={{ flexShrink: 0, borderColor: '#22C55E', background: 'var(--color-success-bg)', color: 'var(--color-success)', fontSize: 12, fontWeight: 600, padding: '6px 12px', borderRadius: 8 }}><i className="fa-solid fa-check-circle" style={{ marginRight: 4 }} />Activate</button>
+          {accessConfirm === 'activate' ? (
+            <div style={{ display: 'flex', gap: 6, flexShrink: 0 }}>
+              <button disabled={accessBusy} onClick={() => accessAction('activate')} className="btn-edit" style={{ borderColor: '#22C55E', background: 'var(--color-success-bg)', color: 'var(--color-success)', fontSize: 12, fontWeight: 600, padding: '6px 12px', borderRadius: 8 }}>
+                <i className={'fa-solid ' + (accessBusy ? 'fa-spinner fa-spin' : 'fa-check-circle')} style={{ marginRight: 4 }} />{accessBusy ? 'Activating…' : 'Confirm'}
+              </button>
+              <button disabled={accessBusy} onClick={() => setAccessConfirm(null)} className="btn-secondary" style={{ fontSize: 12, padding: '6px 12px' }}>Cancel</button>
+            </div>
+          ) : (
+            <button onClick={() => setAccessConfirm('activate')} className="btn-edit" style={{ flexShrink: 0, borderColor: '#22C55E', background: 'var(--color-success-bg)', color: 'var(--color-success)', fontSize: 12, fontWeight: 600, padding: '6px 12px', borderRadius: 8 }}><i className="fa-solid fa-check-circle" style={{ marginRight: 4 }} />Activate</button>
+          )}
         </div>
       )}
 
       {status === 'Active' && (
-        <div style={{ border: '1px solid #FDE68A', borderRadius: 10, padding: '12px 14px', background: '#FFFBEB', marginBottom: 18, display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 10 }}>
+        <div style={{ border: '1px solid #FDE68A', borderRadius: 10, padding: '12px 14px', background: '#FFFBEB', marginBottom: 18, display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
           <div style={{ display: 'flex', gap: 10, alignItems: 'center' }}>
             <div style={{ width: 34, height: 34, borderRadius: 8, background: 'var(--color-warning-bg)', color: 'var(--color-warning)', display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}><i className="fa-solid fa-pause" style={{ fontSize: 13 }} /></div>
             <div><div style={{ fontSize: 13, fontWeight: 600, color: '#92400E' }}>Suspend Account</div><div style={{ fontSize: 11.5, color: '#78350F', marginTop: 2 }}>Blocks login immediately. Nothing is deleted, an admin can reactivate any time by clicking Activate above.</div></div>
           </div>
-          <button onClick={() => accessAction('suspend')} className="btn-edit" style={{ flexShrink: 0, borderColor: '#F59E0B', background: 'var(--color-warning-bg)', color: 'var(--color-warning)', fontSize: 12, fontWeight: 600, padding: '6px 12px', borderRadius: 8 }}><i className="fa-solid fa-pause" style={{ marginRight: 4 }} />Suspend</button>
+          {accessConfirm === 'suspend' ? (
+            <div style={{ display: 'flex', gap: 6, flexShrink: 0 }}>
+              <button disabled={accessBusy} onClick={() => accessAction('suspend')} className="btn-edit" style={{ borderColor: '#F59E0B', background: 'var(--color-warning-bg)', color: 'var(--color-warning)', fontSize: 12, fontWeight: 600, padding: '6px 12px', borderRadius: 8 }}>
+                <i className={'fa-solid ' + (accessBusy ? 'fa-spinner fa-spin' : 'fa-pause')} style={{ marginRight: 4 }} />{accessBusy ? 'Suspending…' : 'Confirm'}
+              </button>
+              <button disabled={accessBusy} onClick={() => setAccessConfirm(null)} className="btn-secondary" style={{ fontSize: 12, padding: '6px 12px' }}>Cancel</button>
+            </div>
+          ) : (
+            <button onClick={() => setAccessConfirm('suspend')} className="btn-edit" style={{ flexShrink: 0, borderColor: '#F59E0B', background: 'var(--color-warning-bg)', color: 'var(--color-warning)', fontSize: 12, fontWeight: 600, padding: '6px 12px', borderRadius: 8 }}><i className="fa-solid fa-pause" style={{ marginRight: 4 }} />Suspend</button>
+          )}
         </div>
       )}
 

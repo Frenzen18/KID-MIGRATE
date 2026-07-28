@@ -531,6 +531,7 @@ export default function ParentPortal() {
      of the booking data (loadAll), so accepting/declining picks it up right away. ── */
   const [waitlistOffers, setWaitlistOffers] = useState([]);
   const [waitlistBusyId, setWaitlistBusyId] = useState(null);
+  const [declineConfirm, setDeclineConfirm] = useState(null); // waitlist offer pending "are you sure" decline, accepting is the time-sensitive/safe choice so only decline (giving up the slot) gets a confirm step
   function fetchWaitlistOffers() {
     api('/reservations/schedule-waitlist?status=notified').then(list => setWaitlistOffers(list || [])).catch(() => {});
   }
@@ -557,6 +558,7 @@ export default function ParentPortal() {
       if (e.status === 409) fetchWaitlistOffers(); // offer likely expired, refresh to drop it
     } finally {
       setWaitlistBusyId(null);
+      setDeclineConfirm(null);
     }
   }
 
@@ -922,6 +924,7 @@ export default function ParentPortal() {
    * off (see quickBookCandidates), one POST /reservations call per date (same
    * call the single-booking flow makes), looped sequentially.
    */
+  const [quickBookConfirm, setQuickBookConfirm] = useState(null); // { schedule, child, sessionType, dates } pending confirmation
   async function quickBookRecurring(schedule, child, sessionType, dates) {
     if (quickBooking || !schedule || !child || !dates.length) return;
     setQuickBooking(true);
@@ -945,6 +948,7 @@ export default function ParentPortal() {
       } else {
         toast('Could not book the selected sessions right now', 'fa-triangle-exclamation');
       }
+      setQuickBookConfirm(null);
     } finally {
       setQuickBooking(false);
     }
@@ -1464,8 +1468,8 @@ export default function ParentPortal() {
                   <div style={{ fontSize: 11, color: '#64748B', marginTop: 2 }}>First-come, first-served among the waitlist, respond soon.</div>
                 </div>
                 <div style={{ display: 'flex', gap: 8, flexShrink: 0 }}>
-                  <button className="btn-secondary" style={{ fontSize: 12, padding: '8px 14px' }} disabled={waitlistBusyId === offer.id} onClick={() => respondToWaitlistOffer(offer, false)}>
-                    Decline
+                  <button className="btn-secondary" style={{ fontSize: 12, padding: '8px 14px' }} disabled={waitlistBusyId === offer.id} onClick={() => setDeclineConfirm(offer)}>
+                    <i className={'fa-solid ' + (waitlistBusyId === offer.id ? 'fa-spinner fa-spin' : 'fa-xmark')} style={{ marginRight: 5 }} />Decline
                   </button>
                   <button className="btn-primary" style={{ fontSize: 12, padding: '8px 14px' }} disabled={waitlistBusyId === offer.id} onClick={() => respondToWaitlistOffer(offer, true)}>
                     <i className={'fa-solid ' + (waitlistBusyId === offer.id ? 'fa-spinner fa-spin' : 'fa-check')} style={{ marginRight: 5 }} />Accept
@@ -1642,10 +1646,10 @@ export default function ParentPortal() {
                         <button
                           className="btn-primary" style={{ fontSize: 12.5, padding: '8px 16px' }}
                           disabled={quickBooking || quickBookSelected.size === 0 || outstandingBalance}
-                          onClick={() => quickBookRecurring(qbSchedule, bookingChild, bookingSessionType, Array.from(quickBookSelected))}
+                          onClick={() => setQuickBookConfirm({ schedule: qbSchedule, child: bookingChild, sessionType: bookingSessionType, dates: Array.from(quickBookSelected) })}
                         >
-                          <i className={'fa-solid ' + (quickBooking ? 'fa-spinner fa-spin' : 'fa-calendar-check')} style={{ marginRight: 6 }} />
-                          {quickBooking ? 'Booking…' : `Book ${quickBookSelected.size} Selected Session${quickBookSelected.size === 1 ? '' : 's'}`}
+                          <i className="fa-solid fa-calendar-check" style={{ marginRight: 6 }} />
+                          {`Book ${quickBookSelected.size} Selected Session${quickBookSelected.size === 1 ? '' : 's'}`}
                         </button>
                       </div>
                     </div>
@@ -2244,8 +2248,6 @@ export default function ParentPortal() {
           <div className="nav-label">Services</div>
           <a className={'nav-item' + (page === 'booking' ? ' active' : '')} onClick={() => goPage('booking')}><span className="icon"><i className="fa-solid fa-calendar-check" /></span> Book Session</a>
           <a className={'nav-item' + (page === 'payment' ? ' active' : '')} onClick={() => goPage('payment')}><span className="icon"><i className="fa-solid fa-credit-card" /></span> Payments</a>
-          <div className="nav-label">System</div>
-          <a className={'nav-item' + (page === 'notifications' ? ' active' : '')} onClick={() => goPage('notifications')}><span className="icon"><i className="fa-solid fa-bell" /></span> Notifications {unreadCount > 0 && <span className="nav-badge">{unreadCount}</span>}</a>
         </nav>
       </aside>
       <div id="sidebar-backdrop" className={sidebarOpen ? 'open' : ''} onClick={() => setSidebarOpen(false)} />
@@ -2386,6 +2388,53 @@ export default function ParentPortal() {
               <button className="btn-secondary" style={{ flex: 1, padding: 10 }} disabled={cancelBusy} onClick={() => setCancelTarget(null)}>Keep Booking</button>
               <button style={{ flex: 1, padding: 10, borderRadius: 8, border: 'none', background: '#DC2626', color: '#fff', fontSize: 13, fontWeight: 700, cursor: 'pointer', opacity: cancelBusy ? .7 : 1 }} disabled={cancelBusy} onClick={confirmCancelReservation}>
                 {cancelBusy ? <><i className="fa-solid fa-spinner fa-spin" style={{ marginRight: 6 }} />Cancelling…</> : 'Yes, Cancel'}
+              </button>
+            </div>
+          </div>
+        </Modal>
+      )}
+
+      {declineConfirm && (
+        <Modal onClose={() => waitlistBusyId !== declineConfirm.id && setDeclineConfirm(null)} title="Decline this slot?" width={420}>
+          <div style={{ textAlign: 'center', padding: '6px 0 4px' }}>
+            <div style={{ width: 56, height: 56, borderRadius: '50%', background: '#FEF2F2', display: 'flex', alignItems: 'center', justifyContent: 'center', margin: '0 auto 14px' }}>
+              <i className="fa-solid fa-calendar-xmark" style={{ fontSize: 22, color: '#DC2626' }} />
+            </div>
+            <div style={{ fontSize: 12.5, color: '#64748B', marginBottom: 4 }}>
+              {declineConfirm.discipline === 'OT' ? 'Occupational Therapy' : 'Speech Therapy'} · {WEEKDAY_NAMES[declineConfirm.day_of_week]}s at {declineConfirm.time_slot}
+            </div>
+            <div style={{ fontSize: 11.5, color: '#94A3B8', marginBottom: 18 }}>
+              This slot goes to the next guardian on the waitlist. You'll need to be re-added to be considered for it again.
+            </div>
+            <div style={{ display: 'flex', gap: 10 }}>
+              <button className="btn-secondary" style={{ flex: 1, padding: 10 }} disabled={waitlistBusyId === declineConfirm.id} onClick={() => setDeclineConfirm(null)}>Keep Waiting</button>
+              <button style={{ flex: 1, padding: 10, borderRadius: 8, border: 'none', background: '#DC2626', color: '#fff', fontSize: 13, fontWeight: 700, cursor: 'pointer', opacity: waitlistBusyId === declineConfirm.id ? .7 : 1 }} disabled={waitlistBusyId === declineConfirm.id} onClick={() => respondToWaitlistOffer(declineConfirm, false)}>
+                {waitlistBusyId === declineConfirm.id ? <><i className="fa-solid fa-spinner fa-spin" style={{ marginRight: 6 }} />Declining…</> : 'Yes, Decline'}
+              </button>
+            </div>
+          </div>
+        </Modal>
+      )}
+
+      {quickBookConfirm && (
+        <Modal onClose={() => !quickBooking && setQuickBookConfirm(null)} title="Confirm Booking" width={420}>
+          <div style={{ textAlign: 'center', padding: '6px 0 4px' }}>
+            <div style={{ width: 56, height: 56, borderRadius: '50%', background: '#EFF6FF', display: 'flex', alignItems: 'center', justifyContent: 'center', margin: '0 auto 14px' }}>
+              <i className="fa-solid fa-calendar-check" style={{ fontSize: 22, color: '#0EA5E9' }} />
+            </div>
+            <div style={{ fontSize: 14, fontWeight: 700, color: '#0F172A', marginBottom: 6 }}>
+              Book {quickBookConfirm.dates.length} session{quickBookConfirm.dates.length > 1 ? 's' : ''}?
+            </div>
+            <div style={{ fontSize: 12.5, color: '#64748B', marginBottom: 4 }}>
+              {quickBookConfirm.sessionType}{quickBookConfirm.child?.full_name ? ' · ' + quickBookConfirm.child.full_name : ''} · {quickBookConfirm.schedule?.time_slot}
+            </div>
+            <div style={{ fontSize: 11.5, color: '#94A3B8', marginBottom: 18 }}>
+              This creates {quickBookConfirm.dates.length > 1 ? 'an invoice for each session' : 'an invoice for this session'}, payable from the Payments tab.
+            </div>
+            <div style={{ display: 'flex', gap: 10 }}>
+              <button className="btn-secondary" style={{ flex: 1, padding: 10 }} disabled={quickBooking} onClick={() => setQuickBookConfirm(null)}>Cancel</button>
+              <button className="btn-primary" style={{ flex: 1, padding: 10 }} disabled={quickBooking} onClick={() => quickBookRecurring(quickBookConfirm.schedule, quickBookConfirm.child, quickBookConfirm.sessionType, quickBookConfirm.dates)}>
+                {quickBooking ? <><i className="fa-solid fa-spinner fa-spin" style={{ marginRight: 6 }} />Booking…</> : 'Yes, Book'}
               </button>
             </div>
           </div>

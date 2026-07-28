@@ -51,6 +51,7 @@ export default function Cms({ go, toast, openModal, onUnsavedChange }) {
   const [editingPost, setEditingPost] = useState(null); // null = creating new, object = editing existing
   const [editingAnnouncement, setEditingAnnouncement] = useState(null); // null = creating new, object = editing existing
   const [confirmDelete, setConfirmDelete] = useState(null); // { type: 'post'|'announcement', id, title }
+  const [deleteBusy, setDeleteBusy] = useState(false);
   const nextId = useRef(1);
   const titleRef = useRef(null);
   const fileInputRef = useRef(null);
@@ -280,6 +281,7 @@ export default function Cms({ go, toast, openModal, onUnsavedChange }) {
   async function confirmDeleteAction() {
     if (!confirmDelete) return;
     const { type, id } = confirmDelete;
+    setDeleteBusy(true);
     try {
       if (type === 'post') {
         await api('/cms/posts/' + id, { method: 'DELETE' });
@@ -290,10 +292,12 @@ export default function Cms({ go, toast, openModal, onUnsavedChange }) {
         setDbAnnouncements(prev => prev.filter(a => a.id !== id));
         toast('Announcement deleted', 'fa-trash');
       }
+      setConfirmDelete(null);
     } catch (e) {
       toast('Failed: ' + e.message, 'fa-circle-exclamation');
+    } finally {
+      setDeleteBusy(false);
     }
-    setConfirmDelete(null);
   }
 
   async function publishHomepage() {
@@ -910,8 +914,10 @@ export default function Cms({ go, toast, openModal, onUnsavedChange }) {
               Are you sure you want to delete <strong>"{confirmDelete.title}"</strong>? This action cannot be undone.
             </p>
             <div style={{ display: 'flex', gap: 10, justifyContent: 'center' }}>
-              <button onClick={() => setConfirmDelete(null)} style={{ padding: '10px 24px', background: '#F1F5F9', color: '#475569', border: 'none', borderRadius: 8, fontSize: 14, fontWeight: 600, cursor: 'pointer' }}>Cancel</button>
-              <button onClick={confirmDeleteAction} style={{ padding: '10px 24px', background: 'var(--color-danger-strong)', color: '#fff', border: 'none', borderRadius: 8, fontSize: 14, fontWeight: 700, cursor: 'pointer' }}>Yes, Delete</button>
+              <button disabled={deleteBusy} onClick={() => setConfirmDelete(null)} style={{ padding: '10px 24px', background: '#F1F5F9', color: '#475569', border: 'none', borderRadius: 8, fontSize: 14, fontWeight: 600, cursor: deleteBusy ? 'default' : 'pointer', opacity: deleteBusy ? .7 : 1 }}>Cancel</button>
+              <button disabled={deleteBusy} onClick={confirmDeleteAction} style={{ padding: '10px 24px', background: 'var(--color-danger-strong)', color: '#fff', border: 'none', borderRadius: 8, fontSize: 14, fontWeight: 700, cursor: deleteBusy ? 'default' : 'pointer', opacity: deleteBusy ? .7 : 1 }}>
+                <i className={'fa-solid ' + (deleteBusy ? 'fa-spinner fa-spin' : 'fa-trash')} style={{ marginRight: 6 }} />{deleteBusy ? 'Deleting…' : 'Yes, Delete'}
+              </button>
             </div>
           </div>
         </div>

@@ -1,33 +1,40 @@
 import { db } from '../supabase.js';
 
-/**
- * Standard session rates (PHP). No pricing table exists yet in the schema,  * these mirror the figures already used across the app's mock billing UI
- * (OT ₱1,400 / Speech ₱1,200 / combined ₱2,800). Adjust here if rates change.
- */
-const SESSION_RATES = { OT: 1400, Speech: 1200, Both: 2800, Default: 1400 };
-
 /** Flat no-show penalty (PHP), per the clinic's MOA no-show policy, a separate
  *  charge from the session fee itself. Staff can still waive or edit the
  *  amount on the payment record like any other invoice. */
 export const NO_SHOW_FEE = 500;
 
-const isOT = t => /occupational|\bOT\b/i.test(t || '');
 const isSpeech = t => /speech/i.test(t || '');
 
-/** Picks a session's rate from its `session_type` text. */
-export function rateFor(sessionType) {
-  const ot = isOT(sessionType);
-  const sp = isSpeech(sessionType);
-  if (ot && sp) return SESSION_RATES.Both;
-  if (sp) return SESSION_RATES.Speech;
-  if (ot) return SESSION_RATES.OT;
-  return SESSION_RATES.Default;
+/** Admin/staff-editable session rates (PHP), stored on branding_settings
+ *  (id=1) alongside clinic hours, see PUT /api/settings/prices and the
+ *  "Session Prices" panel on the admin Employee Scheduling tab. Reading from
+ *  the DB (instead of a hardcoded constant) means a promo price change takes
+ *  effect on the next booking immediately, no deploy needed. */
+async function currentPrices() {
+  const { data, error } = await db.from('branding_settings')
+    .select('price_ot, price_speech, price_initial_assessment').eq('id', 1).single();
+  if (error) throw new Error('Failed to load session prices: ' + error.message);
+  return data;
+}
+
+/** Picks a session's rate from its `session_type` text. A reservation's
+ *  session_type is always a single discipline ("Occupational Therapy" or
+ *  "Speech Therapy"), even for a Combined-therapy client, their two
+ *  disciplines are booked (and billed) as separate sessions, never one
+ *  dual-discipline session_type, so there's no "combined" rate to pick here. */
+export async function rateFor(sessionType) {
+  const prices = await currentPrices();
+  if (sessionType === 'Initial Assessment') return prices.price_initial_assessment;
+  if (isSpeech(sessionType)) return prices.price_speech;
+  return prices.price_ot; // OT, or any other/unrecognized session type
 }
 
 /** MOA slot-retainment fee: 50% of the regular session rate, charged once
  *  when 3 consecutive excused absences threaten a recurring slot. */
-export function retainerFeeFor(sessionType) {
-  return Math.round(rateFor(sessionType) * 0.5);
+export async function retainerFeeFor(sessionType) {
+  return Math.round((await rateFor(sessionType)) * 0.5);
 }
 
 /**

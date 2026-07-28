@@ -115,7 +115,7 @@ export async function checkConsecutiveAbsences(reservation) {
       .eq('reservation_id', latest.id).eq('fee_type', 'retainer_fee').maybeSingle();
     if (existingRetainer) return;
 
-    const amount = retainerFeeFor(sessionType);
+    const amount = await retainerFeeFor(sessionType);
     const invoice_no = await genInvoiceNo();
     const { error } = await db.from('payments').insert({
       client_id: schedule.client_id, reservation_id: latest.id, fee_type: 'retainer_fee',

@@ -9,6 +9,7 @@ export default function Login() {
       subtitle="Sign in to your parent portal to book sessions and follow your child's progress."
       fallbackHome="/portal"
       showSignupLink
+      phoneFirst
     />
   );
 }

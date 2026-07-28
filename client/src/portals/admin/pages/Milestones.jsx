@@ -399,14 +399,19 @@ export default function Milestones({ go, toast, openModal }) {
     setGasRenamingId(null);
   }
 
+  const [gasSetDeleteConfirm, setGasSetDeleteConfirm] = useState(null); // questionnaire set pending "are you sure" deletion
+  const [gasSetDeleting, setGasSetDeleting] = useState(false);
   async function deleteGasSet(set) {
+    setGasSetDeleting(true);
     try {
       await api('/gas/questionnaires/' + set.id, { method: 'DELETE' });
       setGasSets(prev => ({ ...prev, [gasDiscipline]: (prev[gasDiscipline] || []).filter(s => s.id !== set.id) }));
       if (gasManageSetId === set.id) setGasManageSetId(null);
       if (gasCurrentSetId === set.id) setGasSetId(prev => ({ ...prev, [gasDiscipline]: '' }));
       toast('Questionnaire deleted', 'fa-trash');
+      setGasSetDeleteConfirm(null);
     } catch (e) { toast(e.message || 'Failed to delete set', 'fa-triangle-exclamation'); }
+    finally { setGasSetDeleting(false); }
   }
 
   function startEditGasItem(item) {
@@ -442,12 +447,17 @@ export default function Milestones({ go, toast, openModal }) {
     } catch (e) { toast(e.message || 'Failed to save goal', 'fa-triangle-exclamation'); }
   }
 
+  const [gasItemDeleteConfirm, setGasItemDeleteConfirm] = useState(null); // { setId, itemId, title } pending "are you sure" deletion
+  const [gasItemDeleting, setGasItemDeleting] = useState(false);
   async function deleteGasItem(setId, itemId) {
+    setGasItemDeleting(true);
     try {
       await api('/gas/items/' + itemId, { method: 'DELETE' });
       patchGasSetLocal(setId, { items: (gasManageSet?.items || []).filter(it => it.id !== itemId) });
       toast('Goal removed', 'fa-trash');
+      setGasItemDeleteConfirm(null);
     } catch (e) { toast(e.message || 'Failed to delete goal', 'fa-triangle-exclamation'); }
+    finally { setGasItemDeleting(false); }
   }
 
   async function submitGasEntry() {
@@ -558,7 +568,6 @@ export default function Milestones({ go, toast, openModal }) {
 
   async function doBulkArchiveGasEntries() {
     const ids = [...gasEntrySelected];
-    setGasArchiveConfirm(null);
     if (!ids.length) return;
     setGasBulkArchiving(true);
     try {
@@ -570,6 +579,7 @@ export default function Milestones({ go, toast, openModal }) {
       });
       toast(ids.length + ' GAS entr' + (ids.length === 1 ? 'y' : 'ies') + ' archived', 'fa-box-archive');
       setGasEntrySelected(new Set());
+      setGasArchiveConfirm(null);
     } catch (e) {
       toast(e.message || 'Failed to archive entries', 'fa-triangle-exclamation');
     } finally {
@@ -603,7 +613,6 @@ export default function Milestones({ go, toast, openModal }) {
   }
 
   async function doArchiveGasEntry(entry) {
-    setGasArchiveConfirm(null);
     setGasArchiving(entry.id);
     try {
       await api('/gas/entries/' + entry.id, { method: 'DELETE' });
@@ -613,6 +622,7 @@ export default function Milestones({ go, toast, openModal }) {
       }));
       setGasEntrySelected(prev => { const next = new Set(prev); next.delete(entry.id); return next; });
       toast('GAS entry archived', 'fa-box-archive');
+      setGasArchiveConfirm(null);
     } catch (e) {
       toast(e.message || 'Failed to archive entry', 'fa-triangle-exclamation');
     } finally {
@@ -1143,8 +1153,10 @@ export default function Milestones({ go, toast, openModal }) {
         />
       )}
 
-      {gasArchiveConfirm && (
-        <Modal title={<><i className="fa-solid fa-box-archive" style={{ color: '#B45309', marginRight: 8 }} />Archive GAS {gasArchiveConfirm.type === 'bulk' ? 'Entries' : 'Entry'}?</>} onClose={() => setGasArchiveConfirm(null)} width={440}>
+      {gasArchiveConfirm && (() => {
+        const busy = gasArchiveConfirm.type === 'bulk' ? gasBulkArchiving : gasArchiving === gasArchiveConfirm.entry?.id;
+        return (
+        <Modal title={<><i className="fa-solid fa-box-archive" style={{ color: '#B45309', marginRight: 8 }} />Archive GAS {gasArchiveConfirm.type === 'bulk' ? 'Entries' : 'Entry'}?</>} onClose={busy ? undefined : () => setGasArchiveConfirm(null)} width={440}>
           <div style={{ textAlign: 'center', padding: '10px 0 20px' }}>
             <div style={{ width: 52, height: 52, borderRadius: 14, background: '#FEF9C3', display: 'flex', alignItems: 'center', justifyContent: 'center', margin: '0 auto 14px', fontSize: 22, color: '#B45309' }}><i className="fa-solid fa-box-archive" /></div>
             <div style={{ fontSize: 15, fontWeight: 600, color: '#0F172A', marginBottom: 8 }}>
@@ -1156,14 +1168,44 @@ export default function Milestones({ go, toast, openModal }) {
               {gasArchiveConfirm.type === 'bulk' ? 'Archived entries drop' : 'It drops'} off this list and out of progress charts, but stay{gasArchiveConfirm.type === 'bulk' ? '' : 's'} on record.
             </div>
             <div style={{ display: 'flex', gap: 10, justifyContent: 'center' }}>
-              <button className="btn-secondary" onClick={() => setGasArchiveConfirm(null)}>Cancel</button>
+              <button className="btn-secondary" disabled={busy} onClick={() => setGasArchiveConfirm(null)}>Cancel</button>
               <button
-                style={{ padding: '9px 20px', borderRadius: 9, border: 'none', background: '#F59E0B', fontSize: 13, fontWeight: 600, color: '#fff', cursor: 'pointer' }}
+                style={{ padding: '9px 20px', borderRadius: 9, border: 'none', background: '#F59E0B', fontSize: 13, fontWeight: 600, color: '#fff', cursor: busy ? 'default' : 'pointer', opacity: busy ? .8 : 1 }}
+                disabled={busy}
                 onClick={() => gasArchiveConfirm.type === 'bulk' ? doBulkArchiveGasEntries() : doArchiveGasEntry(gasArchiveConfirm.entry)}
               >
-                Archive
+                <i className={'fa-solid ' + (busy ? 'fa-spinner fa-spin' : 'fa-box-archive')} style={{ marginRight: 6 }} />{busy ? 'Archiving…' : 'Archive'}
               </button>
             </div>
+          </div>
+        </Modal>
+        );
+      })()}
+
+      {gasSetDeleteConfirm && (
+        <Modal title={<><i className="fa-solid fa-triangle-exclamation" style={{ color: 'var(--color-danger-strong)', marginRight: 8 }} />Delete Questionnaire?</>} onClose={gasSetDeleting ? undefined : () => setGasSetDeleteConfirm(null)} width={420}>
+          <p style={{ fontSize: 13.5, color: '#475569', marginBottom: 22, lineHeight: 1.6 }}>
+            Permanently delete "<strong>{gasSetDeleteConfirm.name}</strong>" and all of its goals? This cannot be undone.
+          </p>
+          <div style={{ display: 'flex', gap: 10, justifyContent: 'flex-end' }}>
+            <button className="btn-secondary" disabled={gasSetDeleting} onClick={() => setGasSetDeleteConfirm(null)}>Cancel</button>
+            <button className="btn-danger" disabled={gasSetDeleting} onClick={() => deleteGasSet(gasSetDeleteConfirm)}>
+              <i className={'fa-solid ' + (gasSetDeleting ? 'fa-spinner fa-spin' : 'fa-trash')} style={{ marginRight: 5 }} />{gasSetDeleting ? 'Deleting…' : 'Yes, Delete'}
+            </button>
+          </div>
+        </Modal>
+      )}
+
+      {gasItemDeleteConfirm && (
+        <Modal title={<><i className="fa-solid fa-triangle-exclamation" style={{ color: 'var(--color-danger-strong)', marginRight: 8 }} />Delete Goal?</>} onClose={gasItemDeleting ? undefined : () => setGasItemDeleteConfirm(null)} width={420}>
+          <p style={{ fontSize: 13.5, color: '#475569', marginBottom: 22, lineHeight: 1.6 }}>
+            Permanently remove "<strong>{gasItemDeleteConfirm.title}</strong>" from this questionnaire? This cannot be undone.
+          </p>
+          <div style={{ display: 'flex', gap: 10, justifyContent: 'flex-end' }}>
+            <button className="btn-secondary" disabled={gasItemDeleting} onClick={() => setGasItemDeleteConfirm(null)}>Cancel</button>
+            <button className="btn-danger" disabled={gasItemDeleting} onClick={() => deleteGasItem(gasItemDeleteConfirm.setId, gasItemDeleteConfirm.itemId)}>
+              <i className={'fa-solid ' + (gasItemDeleting ? 'fa-spinner fa-spin' : 'fa-trash')} style={{ marginRight: 5 }} />{gasItemDeleting ? 'Deleting…' : 'Yes, Delete'}
+            </button>
           </div>
         </Modal>
       )}
@@ -1342,7 +1384,7 @@ export default function Milestones({ go, toast, openModal }) {
                             <button className="btn-edit" onClick={() => { setGasRenamingId(s.id); setGasRenameValue(s.name); }}>Rename</button>
                             {s.status !== 'active' && <button className="btn-edit" onClick={() => setGasSetStatus(s, 'active')}>Activate</button>}
                             {s.status !== 'archived' && <button className="btn-edit" onClick={() => setGasSetStatus(s, 'archived')}>Archive</button>}
-                            <button className="btn-danger" onClick={() => deleteGasSet(s)}>Delete</button>
+                            <button className="btn-danger" onClick={() => setGasSetDeleteConfirm(s)}>Delete</button>
                           </div>
                         </td>
                       </tr>
@@ -1370,7 +1412,7 @@ export default function Milestones({ go, toast, openModal }) {
                         <td style={{ textAlign: 'right' }}>
                           <div style={{ display: 'flex', gap: 5, justifyContent: 'flex-end' }}>
                             <button className="btn-edit" onClick={() => startEditGasItem(it)}>Edit</button>
-                            <button className="btn-danger" onClick={() => deleteGasItem(gasManageSet.id, it.id)}>Delete</button>
+                            <button className="btn-danger" onClick={() => setGasItemDeleteConfirm({ setId: gasManageSet.id, itemId: it.id, title: it.title })}>Delete</button>
                           </div>
                         </td>
                       </tr>

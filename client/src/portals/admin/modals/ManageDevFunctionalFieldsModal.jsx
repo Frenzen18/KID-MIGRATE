@@ -55,7 +55,10 @@ export default function ManageDevFunctionalFieldsModal({ data, closeModal, toast
     }
   }
 
+  const [togglingId, setTogglingId] = useState(null);
+  const [removeConfirm, setRemoveConfirm] = useState(null); // field pending "are you sure" removal, restoring is reversible/low-risk so it skips this step
   async function toggleActive(f) {
+    setTogglingId(f.id);
     try {
       if (f.active) {
         await api('/dev-functional-fields/' + f.id, { method: 'DELETE' });
@@ -64,8 +67,11 @@ export default function ManageDevFunctionalFieldsModal({ data, closeModal, toast
       }
       await load();
       if (data.onChanged) data.onChanged();
+      setRemoveConfirm(null);
     } catch (e) {
       setErr(e.message || 'Failed to update field');
+    } finally {
+      setTogglingId(null);
     }
   }
 
@@ -73,6 +79,7 @@ export default function ManageDevFunctionalFieldsModal({ data, closeModal, toast
   (fields || []).forEach(f => { (bySection[f.section] ||= []).push(f); });
 
   return (
+    <>
     <Modal title={<><i className="fa-solid fa-sliders" style={{ color: 'var(--cat-8)', marginRight: 8 }} />Manage Development &amp; Functional Fields</>} onClose={closeModal} width={680}>
       {err && <div style={{ background: 'var(--color-danger-bg-soft)', border: '1px solid #FECACA', borderRadius: 8, padding: '9px 13px', fontSize: 12.5, color: 'var(--color-danger)', marginBottom: 14, fontWeight: 600 }}>{err}</div>}
 
@@ -131,7 +138,9 @@ export default function ManageDevFunctionalFieldsModal({ data, closeModal, toast
                   </div>
                   <div style={{ display: 'flex', gap: 6 }}>
                     <button className="btn-edit" style={{ fontSize: 11 }} onClick={() => startEdit(f)}>Edit</button>
-                    <button className={f.active ? 'btn-danger' : 'btn-edit'} style={{ fontSize: 11 }} onClick={() => toggleActive(f)}>{f.active ? 'Remove' : 'Restore'}</button>
+                    <button className={f.active ? 'btn-danger' : 'btn-edit'} style={{ fontSize: 11 }} disabled={togglingId === f.id} onClick={() => f.active ? setRemoveConfirm(f) : toggleActive(f)}>
+                      {togglingId === f.id && !f.active ? 'Restoring…' : f.active ? 'Remove' : 'Restore'}
+                    </button>
                   </div>
                 </div>
               ))}
@@ -144,5 +153,20 @@ export default function ManageDevFunctionalFieldsModal({ data, closeModal, toast
         <button className="btn-secondary" onClick={closeModal}>Close</button>
       </div>
     </Modal>
+
+      {removeConfirm && (
+        <Modal title="Remove this field?" onClose={togglingId === removeConfirm.id ? undefined : () => setRemoveConfirm(null)} width={400}>
+          <p style={{ fontSize: 13.5, color: '#475569', marginBottom: 22, lineHeight: 1.6 }}>
+            Remove "<strong>{removeConfirm.label}</strong>" from the {removeConfirm.section} section? It'll stop showing up on new forms, but it can be restored any time.
+          </p>
+          <div style={{ display: 'flex', gap: 10, justifyContent: 'flex-end' }}>
+            <button className="btn-secondary" disabled={togglingId === removeConfirm.id} onClick={() => setRemoveConfirm(null)}>Cancel</button>
+            <button className="btn-danger" disabled={togglingId === removeConfirm.id} onClick={() => toggleActive(removeConfirm)}>
+              {togglingId === removeConfirm.id ? 'Removing…' : 'Yes, Remove'}
+            </button>
+          </div>
+        </Modal>
+      )}
+    </>
   );
 }

@@ -3,6 +3,7 @@ import { Link, useNavigate } from 'react-router-dom';
 import { useAuth } from '../auth.jsx';
 import { HOME_FOR_ROLE } from '../App.jsx';
 import AuthLeftPanel from './AuthLeftPanel.jsx';
+import { formatPhoneDisplay } from '../phoneInput.js';
 
 /**
  * Shared sign-in card used by the parent, staff, and therapist login pages,  * they only differ in icon/title/subtitle, which portal to authenticate
@@ -20,21 +21,45 @@ export default function AuthCard({
   portal,             // 3rd arg to login(email, password, portal), undefined for the default parent flow
   fallbackHome = '/portal',
   showSignupLink = false,
-  footerLink          // optional { to, label } for "Staff sign-in instead →" etc.
+  footerLink,         // optional { to, label } for "Staff sign-in instead →" etc.
+  phoneFirst = false  // parent login: most guardians sign in by mobile number
+                      // (some have no email at all, see signup's phoneOnly path),
+                      // so default to a phone-style input with +63 pre-filled
+                      // instead of a generic text field, with a link to switch
+                      // to email for accounts registered with one.
 }) {
   const { login } = useAuth();
   const nav = useNavigate();
-  const [identifier, setIdentifier] = useState('');
+  const [identifier, setIdentifier] = useState(phoneFirst ? '+63' : '');
+  const [useEmail, setUseEmail] = useState(false); // only meaningful when phoneFirst
   const [password, setPassword] = useState('');
   const [showPw, setShowPw] = useState(false);
   const [err, setErr] = useState('');
   const [busy, setBusy] = useState(false);
   const [needsVerification, setNeedsVerification] = useState(false);
+  const phoneMode = phoneFirst && !useEmail;
+
+  function switchToEmail() {
+    setUseEmail(true);
+    setIdentifier('');
+    setErr('');
+  }
+  function switchToPhone() {
+    setUseEmail(false);
+    setIdentifier('+63');
+    setErr('');
+  }
+  function onPhoneChange(e) {
+    const raw = e.target.value.replace(/\s+/g, '');
+    const rest = raw.startsWith('+63') ? raw.slice(3) : raw.replace(/^\+?6?3?/, '');
+    setIdentifier('+63' + rest.replace(/\D/g, '').slice(0, 10));
+  }
 
   async function submit(e) {
     e.preventDefault();
     setErr('');
     setNeedsVerification(false);
+    if (phoneMode && identifier === '+63') return setErr('Please enter your mobile number.');
     setBusy(true);
     try {
       const u = await login(identifier.trim(), password, portal);
@@ -73,8 +98,19 @@ export default function AuthCard({
 
           <form onSubmit={submit}>
             <div style={{ marginBottom: 18 }}>
-              <label style={label}>Email or Mobile Number</label>
-              <input style={input} type="text" value={identifier} onChange={e => setIdentifier(e.target.value)} placeholder="you@kidclinic.ph or +639171234567" autoComplete="username" required />
+              <label style={label}>{phoneMode ? 'Mobile Number' : (phoneFirst ? 'Email Address' : 'Email or Mobile Number')}</label>
+              {phoneMode ? (
+                <input style={input} type="tel" value={formatPhoneDisplay(identifier)} onChange={onPhoneChange} placeholder="+63 000 000 0000" autoComplete="username" required />
+              ) : (
+                <input style={input} type="text" value={identifier} onChange={e => setIdentifier(e.target.value)} placeholder={phoneFirst ? 'you@kidclinic.ph' : 'you@kidclinic.ph or +639171234567'} autoComplete="username" required />
+              )}
+              {phoneFirst && (
+                <div style={{ textAlign: 'right', marginTop: 6 }}>
+                  <button type="button" onClick={phoneMode ? switchToEmail : switchToPhone} style={{ background: 'none', border: 'none', padding: 0, color: 'var(--color-landing-primary)', fontSize: 12, fontWeight: 600, cursor: 'pointer' }}>
+                    {phoneMode ? 'Sign in with email instead' : 'Sign in with mobile number instead'}
+                  </button>
+                </div>
+              )}
             </div>
             <div style={{ marginBottom: 24 }}>
               <label style={label}>Password</label>

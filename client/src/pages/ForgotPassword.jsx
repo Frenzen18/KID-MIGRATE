@@ -3,11 +3,18 @@ import { Link, useNavigate } from 'react-router-dom';
 import { api } from '../api.js';
 import PasswordChecklist, { passwordMeetsPolicy } from '../components/PasswordChecklist.jsx';
 import AuthLeftPanel from '../components/AuthLeftPanel.jsx';
+import { formatPhoneDisplay } from '../phoneInput.js';
+import { useToast } from '../components/ui.jsx';
 
 export default function ForgotPassword() {
   const nav = useNavigate();
+  const toast = useToast();
   const [step, setStep] = useState(1); // 1: identifier, 2: code, 3: new password
-  const [identifier, setIdentifier] = useState('');
+  // Most guardians reset by mobile number (some have no email at all, see
+  // signup's phoneOnly path), so default to a phone-style input with +63
+  // pre-filled, same as Login's AuthCard, with a link to switch to email.
+  const [identifier, setIdentifier] = useState('+63');
+  const [useEmail, setUseEmail] = useState(false);
   const [code, setCode] = useState('');
   const [newPassword, setNewPassword] = useState('');
   const [confirmPassword, setConfirmPassword] = useState('');
@@ -15,12 +22,23 @@ export default function ForgotPassword() {
   const [showConfirm, setShowConfirm] = useState(false);
   const [err, setErr] = useState('');
   const [busy, setBusy] = useState(false);
+  const [resendBusy, setResendBusy] = useState(false);
+  const phoneMode = !useEmail;
   // No "@" only ever means a phone number in this app's two identifier types.
   const isPhone = !identifier.includes('@');
+
+  function switchToEmail() { setUseEmail(true); setIdentifier(''); setErr(''); }
+  function switchToPhone() { setUseEmail(false); setIdentifier('+63'); setErr(''); }
+  function onPhoneChange(e) {
+    const raw = e.target.value.replace(/\s+/g, '');
+    const rest = raw.startsWith('+63') ? raw.slice(3) : raw.replace(/^\+?6?3?/, '');
+    setIdentifier('+63' + rest.replace(/\D/g, '').slice(0, 10));
+  }
 
   async function sendCode(e) {
     e.preventDefault();
     setErr('');
+    if (phoneMode && identifier === '+63') return setErr('Please enter your mobile number.');
     if (!identifier.trim()) return setErr('Please enter your email address or mobile number.');
     setBusy(true);
     try {
@@ -30,6 +48,22 @@ export default function ForgotPassword() {
       setErr(ex.message || 'Something went wrong. Please try again.');
     } finally {
       setBusy(false);
+    }
+  }
+
+  // Separate from sendCode: step is already 2 by the time this is reachable,
+  // so setStep(2) there is a no-op, nothing on screen changes to confirm it
+  // actually went out, this shows an explicit toast instead.
+  async function resendCode() {
+    setErr('');
+    setResendBusy(true);
+    try {
+      await api('/auth/forgot-password', { method: 'POST', body: { identifier: identifier.trim() } });
+      toast('Code resent' + (isPhone ? ' by SMS' : ' by email'), 'fa-paper-plane');
+    } catch (ex) {
+      setErr(ex.message || 'Failed to resend the code. Please try again.');
+    } finally {
+      setResendBusy(false);
     }
   }
 
@@ -102,8 +136,17 @@ export default function ForgotPassword() {
 
               <form onSubmit={sendCode}>
                 <div style={{ marginBottom: 22 }}>
-                  <label style={label}>Email or Mobile Number</label>
-                  <input style={input} type="text" value={identifier} onChange={e => setIdentifier(e.target.value)} placeholder="you@kidclinic.ph or +639171234567" required />
+                  <label style={label}>{phoneMode ? 'Mobile Number' : 'Email Address'}</label>
+                  {phoneMode ? (
+                    <input style={input} type="tel" value={formatPhoneDisplay(identifier)} onChange={onPhoneChange} placeholder="+63 000 000 0000" required />
+                  ) : (
+                    <input style={input} type="text" value={identifier} onChange={e => setIdentifier(e.target.value)} placeholder="you@kidclinic.ph" required />
+                  )}
+                  <div style={{ textAlign: 'right', marginTop: 6 }}>
+                    <button type="button" onClick={phoneMode ? switchToEmail : switchToPhone} style={{ background: 'none', border: 'none', padding: 0, color: 'var(--color-landing-primary)', fontSize: 12, fontWeight: 600, cursor: 'pointer' }}>
+                      {phoneMode ? 'Reset with email instead' : 'Reset with mobile number instead'}
+                    </button>
+                  </div>
                 </div>
                 <button className="auth-submit-btn" disabled={busy} style={{ width: '100%', padding: 13, background: 'var(--color-landing-primary)', color: '#fff', border: 'none', borderRadius: 10, fontFamily: 'Inter,sans-serif', fontSize: 15, fontWeight: 700, cursor: 'pointer', opacity: busy ? .7 : 1 }}>
                   {busy ? 'Sending…' : 'Send Reset Code'}
@@ -146,8 +189,8 @@ export default function ForgotPassword() {
               </form>
 
               <div style={{ textAlign: 'center', marginTop: 16 }}>
-                <button onClick={() => { setErr(''); sendCode({ preventDefault: () => {} }); }} style={{ background: 'none', border: 'none', color: 'var(--color-landing-primary)', fontSize: 13, fontWeight: 600, cursor: 'pointer' }}>
-                  Didn't receive it? Resend code
+                <button onClick={resendCode} disabled={resendBusy} style={{ background: 'none', border: 'none', color: 'var(--color-landing-primary)', fontSize: 13, fontWeight: 600, cursor: resendBusy ? 'default' : 'pointer', opacity: resendBusy ? .7 : 1 }}>
+                  {resendBusy ? <><i className="fa-solid fa-spinner fa-spin" style={{ marginRight: 6 }} />Resending…</> : "Didn't receive it? Resend code"}
                 </button>
               </div>
             </>

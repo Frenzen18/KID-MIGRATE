@@ -92,6 +92,49 @@ router.put('/hours', requireAuth, requireRole('admin', 'staff'), async (req, res
   res.json(data);
 });
 
+const PRICE_FIELDS = ['price_ot', 'price_speech', 'price_initial_assessment'];
+
+/** GET /api/settings/prices, admin+staff (same access level as clinic hours,
+ *  lives on the same Employee Scheduling → Session Prices panel), the
+ *  standard per-session rates guardians get billed. See server/lib/billing.js's
+ *  rateFor(), which reads these same columns for every new invoice. */
+router.get('/prices', requireAuth, requireRole('admin', 'staff'), async (req, res) => {
+  const { data, error } = await db.from('branding_settings').select(PRICE_FIELDS.join(', ')).eq('id', 1).single();
+  if (error) return res.status(500).json({ error: error.message });
+  res.json(data);
+});
+
+/** PUT /api/settings/prices, admin+staff. Effective on the next booking
+ *  immediately, no deploy needed, so staff can drop prices for a promo and
+ *  restore them afterward just as easily. */
+router.put('/prices', requireAuth, requireRole('admin', 'staff'), async (req, res) => {
+  const b = req.body || {};
+  const patch = {};
+  for (const k of PRICE_FIELDS) {
+    if (!(k in b)) continue;
+    const n = Number(b[k]);
+    if (!Number.isInteger(n) || n < 0) {
+      return res.status(400).json({ error: `${k.replace(/_/g, ' ')} must be a whole number of pesos, 0 or more` });
+    }
+    patch[k] = n;
+  }
+  if (!Object.keys(patch).length) return res.status(400).json({ error: 'Nothing to update' });
+
+  patch.updated_at = new Date().toISOString();
+  patch.updated_by = req.user.id;
+
+  const { data, error } = await db.from('branding_settings').update(patch).eq('id', 1).select(PRICE_FIELDS.join(', ')).single();
+  if (error) return res.status(500).json({ error: error.message });
+
+  await logAudit({
+    table_name: 'branding_settings', record_id: 1, action: 'update',
+    description: 'Updated session prices (' + Object.keys(patch).filter(k => k !== 'updated_at' && k !== 'updated_by').map(k => `${k.replace('price_', '')}: ₱${patch[k]}`).join(', ') + ')',
+    updated_by: req.user.id
+  });
+
+  res.json(data);
+});
+
 /** GET /api/settings/holidays?from=&to=, any authenticated role (guardians need this
  * too, to understand why a date can't be booked), upcoming clinic-wide closures
  * (specific one-off dates, e.g. holidays), separate from the weekly weekday/Saturday

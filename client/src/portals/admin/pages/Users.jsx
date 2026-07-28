@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback } from 'react';
 import { api } from '../../../api.js';
-import { LoadingState, TableEmptyRow } from '../../../components/ui.jsx';
+import { LoadingState, TableEmptyRow, Modal } from '../../../components/ui.jsx';
 
 /* == page: users == */
 
@@ -281,6 +281,22 @@ export default function Users({ go, toast, openModal }) {
     fetchUsers();
   }
 
+  // Confirm-before-acting for the bulk Activate/Suspend buttons (bulk delete
+  // already goes through its own DeleteUserModal), set by the two UsersTable
+  // instances below, { ids, active }.
+  const [bulkActionConfirm, setBulkActionConfirm] = useState(null);
+  const [bulkActionBusy, setBulkActionBusy] = useState(false);
+  async function confirmBulkAction() {
+    if (!bulkActionConfirm) return;
+    setBulkActionBusy(true);
+    try {
+      await bulkSetActive(bulkActionConfirm.ids, bulkActionConfirm.active);
+      setBulkActionConfirm(null);
+    } finally {
+      setBulkActionBusy(false);
+    }
+  }
+
   function bulkDelete(ids) {
     openModal('delete-user', {
       name: ids.length + ' selected user' + (ids.length > 1 ? 's' : ''),
@@ -458,8 +474,8 @@ export default function Users({ go, toast, openModal }) {
             onRoleFilterChange={setStaffRoleFilter}
             statusFilter={staffStatusFilter}
             onStatusFilterChange={setStaffStatusFilter}
-            onBulkActivate={ids => bulkSetActive(ids, true)}
-            onBulkSuspend={ids => bulkSetActive(ids, false)}
+            onBulkActivate={ids => setBulkActionConfirm({ ids, active: true })}
+            onBulkSuspend={ids => setBulkActionConfirm({ ids, active: false })}
             onBulkDelete={bulkDelete}
             onClearSelection={clearSelectionIn}
             onAddUser={() => handleAddUser(['Administrator', 'Staff', 'Occupational Therapist', 'Speech-Language Therapist'])}
@@ -481,8 +497,8 @@ export default function Users({ go, toast, openModal }) {
             onSearchChange={setGuardianQuery}
             statusFilter={guardianStatusFilter}
             onStatusFilterChange={setGuardianStatusFilter}
-            onBulkActivate={ids => bulkSetActive(ids, true)}
-            onBulkSuspend={ids => bulkSetActive(ids, false)}
+            onBulkActivate={ids => setBulkActionConfirm({ ids, active: true })}
+            onBulkSuspend={ids => setBulkActionConfirm({ ids, active: false })}
             onBulkDelete={bulkDelete}
             onClearSelection={clearSelectionIn}
             onAddUser={() => handleAddUser(['Guardian/Caretaker'])}
@@ -492,6 +508,23 @@ export default function Users({ go, toast, openModal }) {
       )}
 
       <div className="page-footer"><span style={{ fontSize: 12, color: '#94A3B8' }}>© 2026 KID Clinic Information Management System</span></div>
+
+      {bulkActionConfirm && (
+        <Modal title={<><i className={'fa-solid ' + (bulkActionConfirm.active ? 'fa-user-check' : 'fa-user-slash')} style={{ color: bulkActionConfirm.active ? 'var(--color-success)' : 'var(--color-warning)', marginRight: 8 }} />{bulkActionConfirm.active ? 'Activate' : 'Suspend'} {bulkActionConfirm.ids.length} User{bulkActionConfirm.ids.length > 1 ? 's' : ''}?</>} onClose={bulkActionBusy ? undefined : () => setBulkActionConfirm(null)} width={420}>
+          <p style={{ fontSize: 13.5, color: '#475569', marginBottom: 22, lineHeight: 1.6 }}>
+            {bulkActionConfirm.active
+              ? `These ${bulkActionConfirm.ids.length} account(s) will be able to sign in again immediately.`
+              : `These ${bulkActionConfirm.ids.length} account(s) will be signed out and blocked from signing in until reactivated.`}
+          </p>
+          <div style={{ display: 'flex', gap: 10, justifyContent: 'center' }}>
+            <button className="btn-secondary" disabled={bulkActionBusy} onClick={() => setBulkActionConfirm(null)}>Cancel</button>
+            <button className="btn-primary" disabled={bulkActionBusy} onClick={confirmBulkAction}>
+              <i className={'fa-solid ' + (bulkActionBusy ? 'fa-spinner fa-spin' : (bulkActionConfirm.active ? 'fa-user-check' : 'fa-user-slash'))} style={{ marginRight: 6 }} />
+              {bulkActionBusy ? 'Working…' : (bulkActionConfirm.active ? 'Activate' : 'Suspend')}
+            </button>
+          </div>
+        </Modal>
+      )}
     </div>
   );
 }

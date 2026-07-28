@@ -1,4 +1,5 @@
 /* == shared helpers for the reservations page + its modal components == */
+import { api } from '../../../../api.js';
 
 export function pad(n) { return String(n).padStart(2, '0'); }
 export function fmtYMD(d) { return d.getFullYear() + '-' + pad(d.getMonth() + 1) + '-' + pad(d.getDate()); }
@@ -30,15 +31,31 @@ export function defaultSessionTypeFor(client) {
   const map = { OT: 'Occupational Therapy', Speech: 'Speech Therapy', Both: 'Combined' };
   return map[client?.therapy_type] || 'General Session';
 }
-/** Mirrors server/lib/billing.js rateFor(), used only to prefill the payment
- *  amount field on the booking/approval forms; staff can still edit it. */
+/** Admin/staff-editable session rates, mirrors server/lib/billing.js's
+ *  rateFor() (same branding_settings columns), used only to prefill the
+ *  payment amount field on the booking/approval forms; staff can still edit
+ *  it. Starts from the same defaults the DB column falls back to, then
+ *  fetchSessionPrices() (called once when the Reservations page mounts)
+ *  overwrites this in place with the admin-configured values, including
+ *  whatever promo price is currently active. */
+export const SESSION_PRICES = { price_ot: 1400, price_speech: 1200, price_initial_assessment: 1400 };
+
+export async function fetchSessionPrices() {
+  try {
+    const data = await api('/settings/prices');
+    Object.assign(SESSION_PRICES, data);
+  } catch { /* keep the defaults, staff can still override the amount by hand */ }
+}
+
+// A session's rate is always a single discipline (OT or Speech), even for a
+// Combined-therapy client, their two disciplines are booked as separate
+// sessions, never one dual-discipline session type, so there's no separate
+// "combined" rate to pick here, mirrors server/lib/billing.js's rateFor().
 export function rateForSessionType(sessionType) {
-  const ot = /occupational|\bOT\b/i.test(sessionType || '');
+  if (sessionType === 'Initial Assessment') return SESSION_PRICES.price_initial_assessment;
   const sp = /speech/i.test(sessionType || '');
-  if (ot && sp) return 2800;
-  if (sp) return 1200;
-  if (ot) return 1400;
-  return 1400;
+  if (sp) return SESSION_PRICES.price_speech;
+  return SESSION_PRICES.price_ot;
 }
 export function defaultRateFor(client) {
   return rateForSessionType(defaultSessionTypeFor(client));

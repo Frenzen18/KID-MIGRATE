@@ -57,6 +57,7 @@ export default function SlotActionsModal({ selected, time, reservation, busy, on
   const [rescheduleSlots, setRescheduleSlots] = useState([]);
   const [slotsLoading, setSlotsLoading] = useState(true);
   const [newTime, setNewTime] = useState('');
+  const [confirmingCancel, setConfirmingCancel] = useState(false);
 
   useEffect(() => {
     let cancelled = false;
@@ -170,14 +171,14 @@ export default function SlotActionsModal({ selected, time, reservation, busy, on
               Nobody marked what actually happened while it was ongoing (it's shown as Completed by default, but that was never confirmed). Resolve it now, with the same real consequences as if it were done live.
             </div>
             <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
-              <button style={{ padding: '8px 18px', borderRadius: 8, border: 'none', background: 'var(--color-success)', fontSize: 12.5, fontWeight: 600, color: '#fff', cursor: 'pointer' }} disabled={busy} onClick={() => onEndSession(bk.id)}>
-                <i className="fa-solid fa-circle-check" style={{ marginRight: 5 }} />It Happened Normally
+              <button style={{ padding: '8px 18px', borderRadius: 8, border: 'none', background: 'var(--color-success)', fontSize: 12.5, fontWeight: 600, color: '#fff', cursor: busy ? 'default' : 'pointer', opacity: busy ? .7 : 1 }} disabled={busy} onClick={() => onEndSession(bk.id)}>
+                <i className={'fa-solid ' + (busy ? 'fa-spinner fa-spin' : 'fa-circle-check')} style={{ marginRight: 5 }} />It Happened Normally
               </button>
-              <button style={{ padding: '8px 18px', borderRadius: 8, border: 'none', background: 'var(--color-danger-strong)', fontSize: 12.5, fontWeight: 600, color: '#fff', cursor: 'pointer' }} disabled={busy} onClick={() => onNoShow(bk.id, false)}>
-                <i className="fa-solid fa-user-slash" style={{ marginRight: 5 }} />Unexcused No-Show
+              <button style={{ padding: '8px 18px', borderRadius: 8, border: 'none', background: 'var(--color-danger-strong)', fontSize: 12.5, fontWeight: 600, color: '#fff', cursor: busy ? 'default' : 'pointer', opacity: busy ? .7 : 1 }} disabled={busy} onClick={() => onNoShow(bk.id, false)}>
+                <i className={'fa-solid ' + (busy ? 'fa-spinner fa-spin' : 'fa-user-slash')} style={{ marginRight: 5 }} />Unexcused No-Show
               </button>
-              <button style={{ padding: '8px 18px', borderRadius: 8, border: '1px solid #CBD5E1', background: '#fff', fontSize: 12.5, fontWeight: 600, color: '#334155', cursor: 'pointer' }} disabled={busy} onClick={() => onNoShow(bk.id, true)}>
-                <i className="fa-solid fa-circle-check" style={{ marginRight: 5 }} />Excused No-Show
+              <button style={{ padding: '8px 18px', borderRadius: 8, border: '1px solid #CBD5E1', background: '#fff', fontSize: 12.5, fontWeight: 600, color: '#334155', cursor: busy ? 'default' : 'pointer', opacity: busy ? .7 : 1 }} disabled={busy} onClick={() => onNoShow(bk.id, true)}>
+                <i className={'fa-solid ' + (busy ? 'fa-spinner fa-spin' : 'fa-circle-check')} style={{ marginRight: 5 }} />Excused No-Show
               </button>
             </div>
           </div>
@@ -232,7 +233,7 @@ export default function SlotActionsModal({ selected, time, reservation, busy, on
                 {rescheduleOpts.map(t2 => <option key={t2} value={t2}>{t2}</option>)}
               </select>
               <button className="btn-primary" style={{ padding: '8px 14px', fontSize: 12, whiteSpace: 'nowrap' }} disabled={busy || !newTime} onClick={() => onReschedule(bk.id, rescheduleDate, newTime)}>
-                <i className="fa-solid fa-arrows-rotate" style={{ marginRight: 5 }} />Confirm Reschedule
+                <i className={'fa-solid ' + (busy ? 'fa-spinner fa-spin' : 'fa-arrows-rotate')} style={{ marginRight: 5 }} />{busy ? 'Rescheduling…' : 'Confirm Reschedule'}
               </button>
             </div>
           )}
@@ -242,8 +243,8 @@ export default function SlotActionsModal({ selected, time, reservation, busy, on
           <div style={{ padding: 14, borderRadius: 10, border: '1px solid #DDD6FE', background: '#F5F3FF' }}>
             <div style={{ fontSize: 12.5, fontWeight: 700, color: 'var(--cat-5)', marginBottom: 8 }}><i className="fa-solid fa-hourglass-half" style={{ marginRight: 7 }} />Ongoing</div>
             <div style={{ fontSize: 12, color: '#64748B', marginBottom: 10 }}>This session is ongoing right now. End it once it's finished to mark it complete.</div>
-            <button style={{ padding: '8px 18px', borderRadius: 8, border: 'none', background: 'var(--cat-5)', fontSize: 12.5, fontWeight: 600, color: '#fff', cursor: 'pointer' }} disabled={busy} onClick={() => onEndSession(bk.id)}>
-              <i className="fa-solid fa-flag-checkered" style={{ marginRight: 5 }} />End Session
+            <button style={{ padding: '8px 18px', borderRadius: 8, border: 'none', background: 'var(--cat-5)', fontSize: 12.5, fontWeight: 600, color: '#fff', cursor: busy ? 'default' : 'pointer', opacity: busy ? .7 : 1 }} disabled={busy} onClick={() => onEndSession(bk.id)}>
+              <i className={'fa-solid ' + (busy ? 'fa-spinner fa-spin' : 'fa-flag-checkered')} style={{ marginRight: 5 }} />{busy ? 'Ending…' : 'End Session'}
             </button>
           </div>
         )}
@@ -254,11 +255,11 @@ export default function SlotActionsModal({ selected, time, reservation, busy, on
               Unexcused adds a ₱500 no-show fee. Excused charges nothing, and if this session was already paid, that payment carries forward to their next session.
             </div>
             <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
-              <button style={{ padding: '8px 18px', borderRadius: 8, border: 'none', background: 'var(--color-danger-strong)', fontSize: 12.5, fontWeight: 600, color: '#fff', cursor: 'pointer' }} disabled={busy} onClick={() => onNoShow(bk.id, false)}>
-                <i className="fa-solid fa-user-slash" style={{ marginRight: 5 }} />Unexcused (fee)
+              <button style={{ padding: '8px 18px', borderRadius: 8, border: 'none', background: 'var(--color-danger-strong)', fontSize: 12.5, fontWeight: 600, color: '#fff', cursor: busy ? 'default' : 'pointer', opacity: busy ? .7 : 1 }} disabled={busy} onClick={() => onNoShow(bk.id, false)}>
+                <i className={'fa-solid ' + (busy ? 'fa-spinner fa-spin' : 'fa-user-slash')} style={{ marginRight: 5 }} />Unexcused (fee)
               </button>
-              <button style={{ padding: '8px 18px', borderRadius: 8, border: '1px solid #CBD5E1', background: '#fff', fontSize: 12.5, fontWeight: 600, color: '#334155', cursor: 'pointer' }} disabled={busy} onClick={() => onNoShow(bk.id, true)}>
-                <i className="fa-solid fa-circle-check" style={{ marginRight: 5 }} />Excused (no fee)
+              <button style={{ padding: '8px 18px', borderRadius: 8, border: '1px solid #CBD5E1', background: '#fff', fontSize: 12.5, fontWeight: 600, color: '#334155', cursor: busy ? 'default' : 'pointer', opacity: busy ? .7 : 1 }} disabled={busy} onClick={() => onNoShow(bk.id, true)}>
+                <i className={'fa-solid ' + (busy ? 'fa-spinner fa-spin' : 'fa-circle-check')} style={{ marginRight: 5 }} />Excused (no fee)
               </button>
             </div>
           </div>
@@ -267,9 +268,19 @@ export default function SlotActionsModal({ selected, time, reservation, busy, on
           <div style={{ padding: 14, borderRadius: 10, border: '1px solid #FECACA', background: '#FEF2F2' }}>
             <div style={{ fontSize: 12.5, fontWeight: 700, color: 'var(--color-danger)', marginBottom: 8 }}><i className="fa-solid fa-calendar-xmark" style={{ marginRight: 7 }} />Cancel this booking</div>
             <div style={{ fontSize: 12, color: '#64748B', marginBottom: 10 }}>This will mark the booking as cancelled and free up the slot for a new reservation.</div>
-            <button style={{ padding: '8px 18px', borderRadius: 8, border: 'none', background: 'var(--color-danger-strong)', fontSize: 12.5, fontWeight: 600, color: '#fff', cursor: 'pointer' }} disabled={busy} onClick={() => onCancel(bk.id)}>
-              <i className="fa-solid fa-trash" style={{ marginRight: 5 }} />Cancel Booking
-            </button>
+            {confirmingCancel ? (
+              <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
+                <span style={{ fontSize: 12.5, fontWeight: 600, color: 'var(--color-danger)' }}>Are you sure?</span>
+                <button style={{ padding: '8px 18px', borderRadius: 8, border: 'none', background: 'var(--color-danger-strong)', fontSize: 12.5, fontWeight: 600, color: '#fff', cursor: busy ? 'default' : 'pointer', opacity: busy ? .7 : 1 }} disabled={busy} onClick={() => onCancel(bk.id)}>
+                  <i className={'fa-solid ' + (busy ? 'fa-spinner fa-spin' : 'fa-trash')} style={{ marginRight: 5 }} />{busy ? 'Cancelling…' : 'Yes, Cancel'}
+                </button>
+                <button className="btn-secondary" style={{ padding: '8px 18px', fontSize: 12.5 }} disabled={busy} onClick={() => setConfirmingCancel(false)}>Never Mind</button>
+              </div>
+            ) : (
+              <button style={{ padding: '8px 18px', borderRadius: 8, border: 'none', background: 'var(--color-danger-strong)', fontSize: 12.5, fontWeight: 600, color: '#fff', cursor: 'pointer' }} onClick={() => setConfirmingCancel(true)}>
+                <i className="fa-solid fa-trash" style={{ marginRight: 5 }} />Cancel Booking
+              </button>
+            )}
           </div>
         )}
       </div>

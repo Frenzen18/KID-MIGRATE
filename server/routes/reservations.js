@@ -133,9 +133,10 @@ async function ensurePaymentForReservation(reservation, actorId, opts = {}) {
   // Combined client's OT credit must never silently settle a Speech invoice
   // (or vice versa) at the wrong price, so a credit that doesn't match this
   // session's own rate is left untouched and a fresh invoice is billed instead.
+  const sessionRate = await rateFor(reservation.session_type);
   const { data: credit } = await db.from('payments').select('*')
     .eq('client_id', reservation.client_id).eq('fee_type', 'session').eq('status', 'paid')
-    .eq('amount', rateFor(reservation.session_type))
+    .eq('amount', sessionRate)
     .is('reservation_id', null).order('created_at', { ascending: true }).limit(1).maybeSingle();
   if (credit) {
     const { data: attached, error: attachErr } = await db.from('payments').update({ reservation_id: reservation.id }).eq('id', credit.id).select().single();
@@ -149,7 +150,7 @@ async function ensurePaymentForReservation(reservation, actorId, opts = {}) {
     }
   }
 
-  const amount = Number.isFinite(opts.amount) && opts.amount > 0 ? opts.amount : rateFor(reservation.session_type);
+  const amount = Number.isFinite(opts.amount) && opts.amount > 0 ? opts.amount : sessionRate;
   const method = PAYMENT_METHODS.includes(opts.method) ? opts.method : 'Unpaid';
   // Only Cash/Check are money already in hand at approval time, mark those paid
   // immediately. QRPh (like Unpaid) still needs the actual PayMongo QR checkout

@@ -6,7 +6,7 @@ import SlotActionsModal from './reservations/SlotActionsModal.jsx';
 import {
   pad, fmtYMD, todayPH, nowPH, minBookableDatePH, DAY_NAMES, CAL_MONTH_NAMES, MON_SHORT, SESSION_MIN,
   STATUS_PILL, slotMinutes, toMinutes, effectiveStatusKey, disciplineOfSessionType,
-  computeSelection, fmtShort, ASSESSMENT_TYPES, REQUIRED_ROLE_FOR_TYPE, effectiveSlotAvailable
+  computeSelection, fmtShort, ASSESSMENT_TYPES, REQUIRED_ROLE_FOR_TYPE, effectiveSlotAvailable, fetchSessionPrices
 } from './reservations/reservationsHelpers.js';
 
 /* == page: reservations (real data via /api/reservations + /api/clients) == */
@@ -105,17 +105,22 @@ export default function Reservations({ toast, openModal }) {
   useEffect(() => { if (tab === 'waitlist') fetchWaitlist(); }, [tab, fetchWaitlist]);
 
   async function removeFromWaitlist(id, name) {
+    setWaitlistActionId(id);
     try {
       await api('/reservations/schedule-waitlist/' + id, { method: 'DELETE' });
       toast(`${name} removed from the waitlist`, 'fa-check');
       fetchWaitlist();
     } catch (err) {
       toast(err.message || 'Failed to remove from waitlist', 'fa-triangle-exclamation');
+    } finally {
+      setWaitlistActionId(null);
+      setRemoveWaitlistConfirm(null);
     }
   }
 
-  const [waitlistActionId, setWaitlistActionId] = useState(null); // entry id currently mid-notify/assign, disables its buttons
+  const [waitlistActionId, setWaitlistActionId] = useState(null); // entry id currently mid-notify/assign/remove, disables its buttons
   const [assignConfirm, setAssignConfirm] = useState(null); // waitlist entry pending the "are you sure" assign confirmation
+  const [removeWaitlistConfirm, setRemoveWaitlistConfirm] = useState(null); // waitlist entry pending the "are you sure" remove confirmation
 
   async function notifyWaitlistEntry(id, name) {
     setWaitlistActionId(id);
@@ -196,6 +201,37 @@ export default function Reservations({ toast, openModal }) {
     }
   }
 
+  /* ── Session Prices, editable here since it's the same context as clinic
+     hours/shifts, backed by the same branding_settings row, via its own
+     admin+staff endpoint (see server/routes/settings.js). Doubles as a
+     promo control, staff/admin drop a price here and every new booking
+     bills at the new rate immediately, restore it the same way afterward. ── */
+  const [sessionPrices, setSessionPrices] = useState({
+    price_ot: 1400, price_speech: 1200, price_initial_assessment: 1400
+  });
+  const [pricesSaving, setPricesSaving] = useState(false);
+  useEffect(() => {
+    api('/settings/prices').then(data => setSessionPrices(p => ({ ...p, ...data }))).catch(() => {});
+    fetchSessionPrices(); // keeps reservationsHelpers' booking-form prefill in sync too
+  }, []);
+  async function saveSessionPrices() {
+    if (Object.values(sessionPrices).some(v => !Number.isFinite(v) || v < 0)) {
+      toast('Each price must be a whole number of pesos, 0 or more', 'fa-triangle-exclamation');
+      return;
+    }
+    setPricesSaving(true);
+    try {
+      const data = await api('/settings/prices', { method: 'PUT', body: sessionPrices });
+      setSessionPrices(p => ({ ...p, ...data }));
+      await fetchSessionPrices();
+      toast('Session prices updated', 'fa-tag');
+    } catch (err) {
+      toast(err.message || 'Failed to update session prices', 'fa-triangle-exclamation');
+    } finally {
+      setPricesSaving(false);
+    }
+  }
+
   /* ── Clinic holidays/closures, specific one-off dates (not the weekly
      weekday/Saturday pattern above), no bookings of any kind are allowed on
      one, see server/routes/reservations.js's isClinicHoliday(). ── */
@@ -227,13 +263,19 @@ export default function Reservations({ toast, openModal }) {
       setHolidaySaving(false);
     }
   }
+  const [holidayRemoveConfirm, setHolidayRemoveConfirm] = useState(null); // holiday pending "are you sure" removal
+  const [removingHolidayId, setRemovingHolidayId] = useState(null);
   async function removeHoliday(id) {
+    setRemovingHolidayId(id);
     try {
       await api('/settings/holidays/' + id, { method: 'DELETE' });
       toast('Clinic closure removed', 'fa-calendar-check');
       fetchHolidays();
     } catch (err) {
       toast(err.message || 'Failed to remove closure', 'fa-triangle-exclamation');
+    } finally {
+      setRemovingHolidayId(null);
+      setHolidayRemoveConfirm(null);
     }
   }
 
@@ -1427,8 +1469,8 @@ export default function Reservations({ toast, openModal }) {
                             </button>
                           )}
                           {(e.status === 'waiting' || e.status === 'notified') && (
-                            <button className="btn-edit" style={{ fontSize: 11, color: '#DC2626' }} onClick={() => removeFromWaitlist(e.id, e.clients?.full_name || 'Client')}>
-                              <i className="fa-solid fa-trash" style={{ marginRight: 4 }} />Remove
+                            <button className="btn-edit" style={{ fontSize: 11, color: '#DC2626' }} disabled={waitlistActionId === e.id} onClick={() => setRemoveWaitlistConfirm(e)}>
+                              <i className={'fa-solid ' + (waitlistActionId === e.id ? 'fa-spinner fa-spin' : 'fa-trash')} style={{ marginRight: 4 }} />Remove
                             </button>
                           )}
                         </div>
@@ -1480,15 +1522,45 @@ export default function Reservations({ toast, openModal }) {
 
       {/* Assign confirmation, direct-assigns a waitlisted client without the notify/accept round-trip */}
       {assignConfirm && (
-        <Modal title="Assign this slot?" onClose={() => setAssignConfirm(null)} width={420}>
+        <Modal title="Assign this slot?" onClose={waitlistActionId === assignConfirm.id ? undefined : () => setAssignConfirm(null)} width={420}>
           <p style={{ fontSize: 13.5, color: '#64748B', lineHeight: 1.6, marginBottom: 22 }}>
             Are you sure you want to assign <strong>{assignConfirm.clients?.full_name || 'this client'}</strong> to{' '}
             {DAY_NAMES[assignConfirm.day_of_week]}s at {assignConfirm.time_slot} with {assignConfirm.therapist_name}? This creates their recurring schedule immediately, skipping the guardian notify/accept step.
           </p>
           <div style={{ display: 'flex', gap: 10, justifyContent: 'flex-end' }}>
-            <button className="btn-secondary" onClick={() => setAssignConfirm(null)}>Cancel</button>
-            <button className="btn-primary" onClick={() => assignWaitlistEntry(assignConfirm)}>
-              <i className="fa-solid fa-user-check" style={{ marginRight: 5 }} />Yes, Assign
+            <button className="btn-secondary" disabled={waitlistActionId === assignConfirm.id} onClick={() => setAssignConfirm(null)}>Cancel</button>
+            <button className="btn-primary" disabled={waitlistActionId === assignConfirm.id} onClick={() => assignWaitlistEntry(assignConfirm)}>
+              <i className={'fa-solid ' + (waitlistActionId === assignConfirm.id ? 'fa-spinner fa-spin' : 'fa-user-check')} style={{ marginRight: 5 }} />{waitlistActionId === assignConfirm.id ? 'Assigning…' : 'Yes, Assign'}
+            </button>
+          </div>
+        </Modal>
+      )}
+
+      {/* Remove-from-waitlist confirmation */}
+      {removeWaitlistConfirm && (
+        <Modal title="Remove from waitlist?" onClose={waitlistActionId === removeWaitlistConfirm.id ? undefined : () => setRemoveWaitlistConfirm(null)} width={420}>
+          <p style={{ fontSize: 13.5, color: '#64748B', lineHeight: 1.6, marginBottom: 22 }}>
+            Remove <strong>{removeWaitlistConfirm.clients?.full_name || 'this client'}</strong> from the waitlist for {DAY_NAMES[removeWaitlistConfirm.day_of_week]}s at {removeWaitlistConfirm.time_slot}? They'll need to be re-added to be considered for this slot again.
+          </p>
+          <div style={{ display: 'flex', gap: 10, justifyContent: 'flex-end' }}>
+            <button className="btn-secondary" disabled={waitlistActionId === removeWaitlistConfirm.id} onClick={() => setRemoveWaitlistConfirm(null)}>Cancel</button>
+            <button className="btn-primary" style={{ background: 'var(--color-danger-strong)', borderColor: 'var(--color-danger-strong)' }} disabled={waitlistActionId === removeWaitlistConfirm.id} onClick={() => removeFromWaitlist(removeWaitlistConfirm.id, removeWaitlistConfirm.clients?.full_name || 'Client')}>
+              <i className={'fa-solid ' + (waitlistActionId === removeWaitlistConfirm.id ? 'fa-spinner fa-spin' : 'fa-trash')} style={{ marginRight: 5 }} />{waitlistActionId === removeWaitlistConfirm.id ? 'Removing…' : 'Yes, Remove'}
+            </button>
+          </div>
+        </Modal>
+      )}
+
+      {/* Remove-holiday confirmation */}
+      {holidayRemoveConfirm && (
+        <Modal title="Remove this closure?" onClose={removingHolidayId === holidayRemoveConfirm.id ? undefined : () => setHolidayRemoveConfirm(null)} width={420}>
+          <p style={{ fontSize: 13.5, color: '#64748B', lineHeight: 1.6, marginBottom: 22 }}>
+            Remove <strong>{fmtShort(holidayRemoveConfirm.date)}{holidayRemoveConfirm.label ? ' · ' + holidayRemoveConfirm.label : ''}</strong> as a clinic closure? Bookings will become available on that date again.
+          </p>
+          <div style={{ display: 'flex', gap: 10, justifyContent: 'flex-end' }}>
+            <button className="btn-secondary" disabled={removingHolidayId === holidayRemoveConfirm.id} onClick={() => setHolidayRemoveConfirm(null)}>Cancel</button>
+            <button className="btn-primary" style={{ background: 'var(--color-danger-strong)', borderColor: 'var(--color-danger-strong)' }} disabled={removingHolidayId === holidayRemoveConfirm.id} onClick={() => removeHoliday(holidayRemoveConfirm.id)}>
+              <i className={'fa-solid ' + (removingHolidayId === holidayRemoveConfirm.id ? 'fa-spinner fa-spin' : 'fa-trash')} style={{ marginRight: 5 }} />{removingHolidayId === holidayRemoveConfirm.id ? 'Removing…' : 'Yes, Remove'}
             </button>
           </div>
         </Modal>
@@ -1551,11 +1623,48 @@ export default function Reservations({ toast, openModal }) {
                       <span style={{ fontWeight: 700, color: '#0F172A' }}>{fmtShort(h.date)}</span>
                       {h.label && <span style={{ color: '#64748B' }}> · {h.label}</span>}
                     </div>
-                    <button className="btn-edit" style={{ fontSize: 11, color: '#DC2626' }} onClick={() => removeHoliday(h.id)}><i className="fa-solid fa-trash" style={{ marginRight: 4 }} />Remove</button>
+                    <button className="btn-edit" style={{ fontSize: 11, color: '#DC2626' }} disabled={removingHolidayId === h.id} onClick={() => setHolidayRemoveConfirm(h)}><i className={'fa-solid ' + (removingHolidayId === h.id ? 'fa-spinner fa-spin' : 'fa-trash')} style={{ marginRight: 4 }} />Remove</button>
                   </div>
                 ))}
               </div>
             )}
+          </div>
+        </div>
+
+        {/* Session Prices, promo control: drop a price here and every new
+            booking bills at the new rate immediately, no deploy needed. */}
+        <div className="card" style={{ padding: '22px 24px', marginBottom: 16 }}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 6, flexWrap: 'wrap', gap: 10 }}>
+            <div><div className="section-title">Session Prices</div></div>
+            <button className="btn-primary" onClick={saveSessionPrices} disabled={pricesSaving}>
+              <i className={'fa-solid ' + (pricesSaving ? 'fa-spinner fa-spin' : 'fa-floppy-disk')} style={{ marginRight: 4 }} />{pricesSaving ? 'Saving…' : 'Save'}
+            </button>
+          </div>
+          <div style={{ fontSize: 12.5, color: '#94A3B8', marginBottom: 16 }}>
+            Standard rates guardians get billed on every new booking. Lower a price here for a promo, then restore it the same way once it ends.
+          </div>
+          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 12 }}>
+            <div>
+              <label className="form-label">Occupational Therapy</label>
+              <div style={{ position: 'relative' }}>
+                <span style={{ position: 'absolute', left: 12, top: '50%', transform: 'translateY(-50%)', color: '#94A3B8', fontSize: 13 }}>₱</span>
+                <input type="number" min={0} step={1} className="form-input" style={{ paddingLeft: 26 }} value={sessionPrices.price_ot} onChange={e => setSessionPrices(p => ({ ...p, price_ot: parseInt(e.target.value, 10) || 0 }))} />
+              </div>
+            </div>
+            <div>
+              <label className="form-label">Speech Therapy</label>
+              <div style={{ position: 'relative' }}>
+                <span style={{ position: 'absolute', left: 12, top: '50%', transform: 'translateY(-50%)', color: '#94A3B8', fontSize: 13 }}>₱</span>
+                <input type="number" min={0} step={1} className="form-input" style={{ paddingLeft: 26 }} value={sessionPrices.price_speech} onChange={e => setSessionPrices(p => ({ ...p, price_speech: parseInt(e.target.value, 10) || 0 }))} />
+              </div>
+            </div>
+            <div>
+              <label className="form-label">Initial Assessment</label>
+              <div style={{ position: 'relative' }}>
+                <span style={{ position: 'absolute', left: 12, top: '50%', transform: 'translateY(-50%)', color: '#94A3B8', fontSize: 13 }}>₱</span>
+                <input type="number" min={0} step={1} className="form-input" style={{ paddingLeft: 26 }} value={sessionPrices.price_initial_assessment} onChange={e => setSessionPrices(p => ({ ...p, price_initial_assessment: parseInt(e.target.value, 10) || 0 }))} />
+              </div>
+            </div>
           </div>
         </div>
 

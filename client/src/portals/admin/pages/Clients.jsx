@@ -379,7 +379,9 @@ export default function Clients({ go, toast, openModal, role = 'admin', scopeToT
     setProfileVisible(false);
   }
 
+  const [restoringId, setRestoringId] = useState(null);
   async function restoreClient(id, name) {
+    setRestoringId(id);
     try {
       await api('/clients/' + id + '/restore', { method: 'PUT' });
       toast('Client profile restored: ' + name, 'fa-box-open');
@@ -387,6 +389,8 @@ export default function Clients({ go, toast, openModal, role = 'admin', scopeToT
       fetchClients();
     } catch (err) {
       toast('Error: ' + err.message, 'fa-triangle-exclamation');
+    } finally {
+      setRestoringId(null);
     }
   }
 
@@ -614,7 +618,7 @@ export default function Clients({ go, toast, openModal, role = 'admin', scopeToT
                       {showArchived ? (
                         <>
                           <button className="btn-edit" onClick={() => downloadArchiveSnapshot(c.id)} title="Download backup"><i className="fa-solid fa-download" /></button>
-                          <button className="btn-edit" onClick={() => restoreClient(c.id, c.name)} title="Restore"><i className="fa-solid fa-box-open" /></button>
+                          <button className="btn-edit" disabled={restoringId === c.id} onClick={() => restoreClient(c.id, c.name)} title="Restore"><i className={'fa-solid ' + (restoringId === c.id ? 'fa-spinner fa-spin' : 'fa-box-open')} /></button>
                         </>
                       ) : (
                         <>
@@ -702,7 +706,7 @@ export default function Clients({ go, toast, openModal, role = 'admin', scopeToT
                 {profile.archived ? (
                   <>
                     <button className="btn-edit" onClick={() => downloadArchiveSnapshot(profile.id)}><i className="fa-solid fa-download" style={{ marginRight: 4 }} />Download Backup</button>
-                    {role === 'admin' && <button className="btn-primary" onClick={() => restoreClient(profile.id, profile.name)}><i className="fa-solid fa-box-open" style={{ marginRight: 4 }} />Restore</button>}
+                    {role === 'admin' && <button className="btn-primary" disabled={restoringId === profile.id} onClick={() => restoreClient(profile.id, profile.name)}><i className={'fa-solid ' + (restoringId === profile.id ? 'fa-spinner fa-spin' : 'fa-box-open')} style={{ marginRight: 4 }} />{restoringId === profile.id ? 'Restoring…' : 'Restore'}</button>}
                   </>
                 ) : (
                   <>
