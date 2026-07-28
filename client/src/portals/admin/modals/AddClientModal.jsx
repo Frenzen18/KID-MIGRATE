@@ -39,7 +39,7 @@ export default function AddClientModal({ data, closeModal, toast }) {
         <div><label className="form-label">Guardian Name *</label><input id="ac-guardian" type="text" className="form-input" placeholder="e.g. Maria Lim" onInput={onNameInput('ac-guardian-note')} /><div id="ac-guardian-note" style={{ display: 'none', fontSize: 11, color: '#DC2626', marginTop: 4 }}>{INVALID_NAME_MSG}</div></div>
         <div><label className="form-label">Guardian Contact *</label><input id="ac-contact" type="tel" className="form-input" defaultValue="+63" placeholder="+63 000 000 0000" maxLength={16} onInput={e => { e.target.value = formatPhoneDisplay(filterPhoneInput(e.target.value)); }} /></div>
       </div>
-      <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 10, marginTop: 20 }}><button className="btn-secondary" onClick={closeModal}>Cancel</button><button className="btn-primary" onClick={submitAddClient}><i className="fa-solid fa-plus" style={{ marginRight: 5 }} />Create Profile</button></div>
+      <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 10, marginTop: 20 }}><button className="btn-primary" onClick={submitAddClient}><i className="fa-solid fa-plus" style={{ marginRight: 5 }} />Create Profile</button></div>
     </Modal>
   );
 }

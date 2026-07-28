@@ -156,7 +156,7 @@ router.get('/:id', async (req, res) => {
  * contract as POST /gas/ai-summary, the child's name/code is never sent, the
  * model only ever sees T-scores, goal titles, and score levels.
  */
-router.post('/:id/generate-report', reportSummaryLimiter, requireRole('admin', 'staff', 'ot', 'speech'), async (req, res) => {
+router.post('/:id/generate-report', reportSummaryLimiter, requireRole('ot', 'speech'), async (req, res) => {
   const { from, to } = req.body || {};
   if (!from || !to) return res.status(400).json({ error: 'from and to dates are required' });
   if (from > to) return res.status(400).json({ error: '"From" date must be before "To" date.' });
@@ -566,7 +566,10 @@ router.post('/:id/request-progress-report', async (req, res) => {
   if (!client) return res.status(404).json({ error: 'Client not found' });
   if (client.parent_id !== req.user.id) return res.status(403).json({ error: 'Not your child record' });
 
-  const body = `${req.user.name || 'A guardian'} requested a written progress report for ${client.full_name}. Fees and delivery are arranged directly with the family.`;
+  // req.user.name reflects Supabase Auth's user_metadata (see middleware/auth.js),
+  // which mirrors profiles.full_name but can lag behind it, prefer the fresh column.
+  const { data: requesterProfile } = await db.from('profiles').select('full_name').eq('id', req.user.id).maybeSingle();
+  const body = `${requesterProfile?.full_name || req.user.name || 'A guardian'} requested a written progress report for ${client.full_name}. Fees and delivery are arranged directly with the family.`;
   await notifyEvent(null, { title: 'Progress report requested', body, icon: 'fa-file-medical', target_role: 'admin' });
   await notifyEvent(null, { title: 'Progress report requested', body, icon: 'fa-file-medical', target_role: 'staff' });
 
@@ -678,9 +681,19 @@ router.get('/:id/archive-file', requireRole('admin'), async (req, res) => {
 router.post('/:id/notes', requireRole('admin', 'staff', 'ot', 'speech'), async (req, res) => {
   const b = req.body || {};
   if (!b.domain || b.score == null) return res.status(400).json({ error: 'domain and score are required' });
+  // A therapist logging their own note without an explicit therapist_name gets
+  // stamped with their own name here, permanently, this must be the fresh
+  // profiles.full_name, not req.user.name (Auth's user_metadata mirror, which
+  // can lag behind it) or a stale name gets baked into this row forever and
+  // vanishes from that therapist's own Milestone Scoreboard/GAS history.
+  let authorName = b.therapist_name;
+  if (!authorName) {
+    const { data: authorProfile } = await db.from('profiles').select('full_name').eq('id', req.user.id).maybeSingle();
+    authorName = authorProfile?.full_name || req.user.name;
+  }
   const { data, error } = await db.from('session_notes').insert({
     client_id: req.params.id,
-    therapist_name: b.therapist_name || req.user.name,
+    therapist_name: authorName,
     domain: b.domain,
     session_date: b.session_date || new Date().toISOString().slice(0, 10),
     score: b.score,

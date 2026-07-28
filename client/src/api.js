@@ -1,6 +1,8 @@
 const BASE = '/api';
 
-export const getToken = () => localStorage.getItem('kid_token');
+// sessionStorage, not localStorage: scoped to this one tab/window, so a login
+// in one tab never silently carries over into another tab of the same browser.
+export const getToken = () => sessionStorage.getItem('kid_token');
 
 const sleep = (ms) => new Promise(r => setTimeout(r, ms));
 
@@ -12,7 +14,7 @@ const sleep = (ms) => new Promise(r => setTimeout(r, ms));
 // /auth/refresh separately and racing to rotate the same refresh token).
 let refreshPromise = null;
 export async function refreshAccessToken() {
-  const refreshToken = localStorage.getItem('kid_refresh_token');
+  const refreshToken = sessionStorage.getItem('kid_refresh_token');
   if (!refreshToken) return false;
   if (!refreshPromise) {
     refreshPromise = fetch(BASE + '/auth/refresh', {
@@ -22,9 +24,9 @@ export async function refreshAccessToken() {
     }).then(async res => {
       const data = await res.json().catch(() => ({}));
       if (!res.ok) return false;
-      localStorage.setItem('kid_token', data.token);
-      localStorage.setItem('kid_refresh_token', data.refreshToken);
-      localStorage.setItem('kid_token_expires_at', String(data.expiresAt));
+      sessionStorage.setItem('kid_token', data.token);
+      sessionStorage.setItem('kid_refresh_token', data.refreshToken);
+      sessionStorage.setItem('kid_token_expires_at', String(data.expiresAt));
       return true;
     }).catch(() => false).finally(() => { refreshPromise = null; });
   }
@@ -89,7 +91,7 @@ export async function api(path, { method = 'GET', body } = {}) {
     // through the whole refresh window). If the refresh itself fails, falls
     // through to the normal error below, whatever called this sees the 401
     // and (for auth.jsx's own checks) logs out cleanly, same as before this existed.
-    if (res.status === 401 && reachedApp && !refreshedOnce && localStorage.getItem('kid_refresh_token')) {
+    if (res.status === 401 && reachedApp && !refreshedOnce && sessionStorage.getItem('kid_refresh_token')) {
       refreshedOnce = true;
       if (await refreshAccessToken()) continue;
     }

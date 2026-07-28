@@ -5,25 +5,29 @@ const AuthCtx = createContext(null);
 
 export function AuthProvider({ children }) {
   const [user, setUser] = useState(() => {
-    try { return JSON.parse(localStorage.getItem('kid_user')) || null; } catch { return null; }
+    try { return JSON.parse(sessionStorage.getItem('kid_user')) || null; } catch { return null; }
   });
 
   // On app load, verify the stored session with the server. A deleted or
   // deactivated account (or an expired token) gets logged out immediately
-  // instead of living on in localStorage.
+  // instead of living on in sessionStorage. sessionStorage (not localStorage)
+  // is deliberate: it's scoped to this one tab/window, so a login in one tab
+  // never silently "appears" in another tab of the same browser sharing the
+  // same origin, someone else on a shared computer stays confined to their
+  // own tab.
   useEffect(() => {
     if (!getToken()) return;
     api('/auth/me')
       .then(data => {
         setUser(data.user);
-        localStorage.setItem('kid_user', JSON.stringify(data.user));
+        sessionStorage.setItem('kid_user', JSON.stringify(data.user));
       })
       .catch(err => {
         // Only log out when the server actually rejected the session (401/403).
         // A network hiccup (server not running) shouldn't wipe the session.
         if (err.data) {
-          localStorage.removeItem('kid_token');
-          localStorage.removeItem('kid_user');
+          sessionStorage.removeItem('kid_token');
+          sessionStorage.removeItem('kid_user');
           setUser(null);
         }
       });
@@ -49,12 +53,12 @@ export function AuthProvider({ children }) {
       api('/auth/me')
         .then(data => {
           setUser(data.user);
-          localStorage.setItem('kid_user', JSON.stringify(data.user));
+          sessionStorage.setItem('kid_user', JSON.stringify(data.user));
         })
         .catch(err => {
           if (err.data) {
-            localStorage.removeItem('kid_token');
-            localStorage.removeItem('kid_user');
+            sessionStorage.removeItem('kid_token');
+            sessionStorage.removeItem('kid_user');
             setUser(null);
           }
         });
@@ -72,13 +76,20 @@ export function AuthProvider({ children }) {
 
   async function login(email, password, portal) {
     const data = await api('/auth/login', { method: 'POST', body: { email, password, ...(portal ? { portal } : {}) } });
-    localStorage.setItem('kid_token', data.token);
-    localStorage.setItem('kid_refresh_token', data.refreshToken);
-    localStorage.setItem('kid_token_expires_at', String(data.expiresAt));
-    localStorage.setItem('kid_user', JSON.stringify(data.user));
+    sessionStorage.setItem('kid_token', data.token);
+    sessionStorage.setItem('kid_refresh_token', data.refreshToken);
+    sessionStorage.setItem('kid_token_expires_at', String(data.expiresAt));
+    sessionStorage.setItem('kid_user', JSON.stringify(data.user));
     // Stamped once, right here, so SessionWatcher can tell "a login happened
     // more recently than the one I'm using" apart from this login itself.
-    localStorage.setItem('kid_login_at', new Date().toISOString());
+    const loginAt = new Date().toISOString();
+    sessionStorage.setItem('kid_login_at', loginAt);
+    // Also mirrored into localStorage (shared across every tab of this same
+    // browser, unlike the sessionStorage stamp above), purely so another
+    // already-open tab's SessionWatcher can recognize "that newer login was
+    // just me, in a different tab" and not raise a false "signed in
+    // elsewhere" security alarm over normal multi-tab use.
+    try { localStorage.setItem('kid_last_login_marker', JSON.stringify({ userId: data.user.id, at: loginAt })); } catch { /* ignore (e.g. storage disabled) */ }
     setUser(data.user);
     return data.user;
   }
@@ -102,12 +113,23 @@ export function AuthProvider({ children }) {
   }
 
   function logout() {
-    localStorage.removeItem('kid_token');
-    localStorage.removeItem('kid_refresh_token');
-    localStorage.removeItem('kid_token_expires_at');
-    localStorage.removeItem('kid_user');
+    sessionStorage.removeItem('kid_token');
+    sessionStorage.removeItem('kid_refresh_token');
+    sessionStorage.removeItem('kid_token_expires_at');
+    sessionStorage.removeItem('kid_user');
     localStorage.removeItem('kid_admin_page');
-    localStorage.removeItem('kid_login_at');
+    sessionStorage.removeItem('kid_login_at');
+    // GAS scorecard drafts hold real clinical notes (parent observations,
+    // remarks) about a specific child, autosaved to localStorage (one key per
+    // client+discipline, see ScorecardWizardModal.jsx) so an interrupted
+    // session isn't lost. localStorage outlives logout though, so on a shared
+    // clinic computer the next person signing in could otherwise open that
+    // same child's scorecard and see the previous therapist's unsubmitted
+    // notes. Swept here so no draft survives past the session it was written in.
+    for (let i = localStorage.length - 1; i >= 0; i--) {
+      const key = localStorage.key(i);
+      if (key && key.startsWith('kid_gas_draft_')) localStorage.removeItem(key);
+    }
     setUser(null);
   }
 
@@ -116,7 +138,7 @@ export function AuthProvider({ children }) {
     setUser(u => {
       if (!u) return u;
       const next = { ...u, ...patch };
-      localStorage.setItem('kid_user', JSON.stringify(next));
+      sessionStorage.setItem('kid_user', JSON.stringify(next));
       return next;
     });
   }
@@ -127,9 +149,9 @@ export function AuthProvider({ children }) {
     // Changing the password server-side revokes the token this request was
     // just authenticated with, every subsequent call would 401 until a fresh
     // login otherwise, so swap in the new one the server hands back here.
-    if (data.token) localStorage.setItem('kid_token', data.token);
-    if (data.refreshToken) localStorage.setItem('kid_refresh_token', data.refreshToken);
-    if (data.expiresAt) localStorage.setItem('kid_token_expires_at', String(data.expiresAt));
+    if (data.token) sessionStorage.setItem('kid_token', data.token);
+    if (data.refreshToken) sessionStorage.setItem('kid_refresh_token', data.refreshToken);
+    if (data.expiresAt) sessionStorage.setItem('kid_token_expires_at', String(data.expiresAt));
     updateUser({ must_change_password: false });
   }
 

@@ -231,6 +231,10 @@ export default function ParentPortal() {
     return saved === 'checkout' || saved === 'receipts' ? saved : 'checkout';
   });
   useEffect(() => { localStorage.setItem('kid_parent_pay_tab', payTab); }, [payTab]);
+  // 'all' or a specific child id, lets a guardian with more than one linked
+  // child narrow both tabs down to just one child's invoices instead of
+  // everyone's mixed together with no way to tell them apart.
+  const [paymentChildFilter, setPaymentChildFilter] = useState('all');
 
   /* ── Notifications page state ── */
   const [notifTab, setNotifTab] = useState('reminders');
@@ -389,6 +393,42 @@ export default function ParentPortal() {
       .catch(() => { if (!cancelled) setChildSchedules([]); });
     return () => { cancelled = true; };
   }, [activeChild?.id]);
+
+  /* ── Waitlist offers: any of this guardian's children who've been notified
+     a waitlisted slot opened up (see notifyWaitlistForFreedSlot), shown as an
+     accept/decline banner on the Booking page instead of only ever surfacing
+     through the in-app/SMS/email notification. Refreshed alongside the rest
+     of the booking data (loadAll), so accepting/declining picks it up right away. ── */
+  const [waitlistOffers, setWaitlistOffers] = useState([]);
+  const [waitlistBusyId, setWaitlistBusyId] = useState(null);
+  function fetchWaitlistOffers() {
+    api('/reservations/schedule-waitlist?status=notified').then(list => setWaitlistOffers(list || [])).catch(() => {});
+  }
+  useEffect(fetchWaitlistOffers, []);
+
+  async function respondToWaitlistOffer(offer, accept) {
+    setWaitlistBusyId(offer.id);
+    try {
+      const res = await api(`/reservations/schedule-waitlist/${offer.id}/${accept ? 'accept' : 'decline'}`, { method: 'POST' });
+      if (accept) {
+        toast('Slot accepted, it\'s now part of your fixed schedule', 'fa-calendar-check');
+      } else {
+        toast('Offer declined' + (res?.notifiedWaitlistClient ? `, ${res.notifiedWaitlistClient} was notified next` : ''), 'fa-check');
+      }
+      fetchWaitlistOffers();
+      const fresh = await api('/reservations').catch(() => null);
+      if (fresh) setReservations(fresh);
+      if (activeChild?.id) {
+        const schedules = await api('/reservations/' + activeChild.id + '/schedules').catch(() => null);
+        if (schedules) setChildSchedules(schedules);
+      }
+    } catch (e) {
+      toast(e.message || `Failed to ${accept ? 'accept' : 'decline'} the offer`, 'fa-triangle-exclamation');
+      if (e.status === 409) fetchWaitlistOffers(); // offer likely expired, refresh to drop it
+    } finally {
+      setWaitlistBusyId(null);
+    }
+  }
 
   /* ── Fetch slot availability when booking date (or the active child) changes ──
      client_id lets the server narrow slots to the child's own Assigned Therapist,
@@ -551,7 +591,11 @@ export default function ParentPortal() {
   const unreadCount = unreadNotifs.length;
 
   /* ── Derived data ── */
-  const pendingPayments = (payments || []).filter(p => p.status === 'pending' || p.status === 'overdue');
+  // Narrows every payment list/total below down to one child at a time when
+  // the guardian picks one from the filter, instead of every linked child's
+  // invoices mixed together with no way to tell them apart.
+  const visiblePayments = paymentChildFilter === 'all' ? payments : (payments || []).filter(p => p.client_id === paymentChildFilter);
+  const pendingPayments = (visiblePayments || []).filter(p => p.status === 'pending' || p.status === 'overdue');
   // Sessions must be paid in date order, "advance payment" means paying an
   // upcoming session early, not skipping ahead of a still-unpaid earlier one
   // (see server/routes/payments.js's own matching check on /qrph). Only the
@@ -577,8 +621,9 @@ export default function ParentPortal() {
   // Flat pay-in-order queue for Fast Checkout, e.g. "Pay First 3" takes the
   // first 3 ids off this list, always respecting each child's own sequence.
   const fastCheckoutOrder = Object.values(sessionInvoiceQueuesByClient).flat().map(x => x.id);
-  const paidPayments = (payments || []).filter(p => p.status === 'paid');
-  const refundedPayments = (payments || []).filter(p => p.status === 'refunded');
+  const paidPayments = (visiblePayments || []).filter(p => p.status === 'paid');
+  const refundedPayments = (visiblePayments || []).filter(p => p.status === 'refunded');
+  const waivedPayments = (visiblePayments || []).filter(p => p.status === 'waived');
   // A booking only still "blocks" a new one while it hasn't happened yet, once its own
   // slot time has passed (even earlier today) it's finished, same as any other past date.
   // This spans every linked child, callers that gate on "does THIS child already
@@ -1177,6 +1222,13 @@ export default function ParentPortal() {
     const hasChildren = children && children.length > 0;
     const myReservations = (reservations || []).slice().sort((a, b) => (b.date || '').localeCompare(a.date || ''));
     const bookingChild = activeChild || (hasChildren ? children[0] : null);
+    // A no-show or retainer fee blocks any NEW booking for this child (see
+    // the same rule enforced server-side in POST /reservations) until it's
+    // settled - shown up front here so the block is obvious before spending
+    // time picking a date/time, not just as an error after clicking Book.
+    // A regular session invoice sitting Unpaid never triggers this.
+    const outstandingBalance = (payments || []).find(p => p.client_id === bookingChild?.id
+      && ['no_show_fee', 'retainer_fee'].includes(p.fee_type) && ['pending', 'overdue'].includes(p.status));
     const sessionOptions = sessionTypesFor(bookingChild);
     const activeSchedules = childSchedules.filter(s => s.status === 'active');
     // A Combined child may hold one OT and one Speech upcoming booking at once,
@@ -1207,6 +1259,18 @@ export default function ParentPortal() {
     const visibleSlots = lockedSchedules.length
       ? slotsForDate.filter(s => lockedSchedules.some(sch => sch.time_slot === s.time_slot && reservationDate && new Date(reservationDate + 'T00:00:00Z').getUTCDay() === sch.day_of_week))
       : slotsForDate;
+    // upcomingReservations deliberately excludes schedule-locked bookings (a
+    // locked discipline is meant to stack several future weeks at once, so
+    // "already have an upcoming booking" doesn't apply there), but that also
+    // means a specific date/time this child already has a schedule-locked
+    // session on wasn't showing as taken here, still clickable, only failing
+    // AFTER hitting Book. Check the child's own bookings directly instead, so
+    // an already-booked exact date/time greys out up front like any other.
+    const childBookedSlots = new Set(
+      (reservations || [])
+        .filter(r => r.client_id === bookingChild?.id && ['awaiting_payment', 'pending', 'confirmed', 'rescheduled'].includes(r.status))
+        .map(r => r.date + '|' + r.time_slot)
+    );
 
     return (
       <div className="spa-page" id="spa-booking">
@@ -1220,6 +1284,44 @@ export default function ParentPortal() {
           </div>
         ) : (
           <>
+            {outstandingBalance && (
+              <div className="card" style={{ padding: '16px 20px', marginBottom: 16, border: '1px solid #FECACA', background: '#FEF2F2', display: 'flex', alignItems: 'center', gap: 14 }}>
+                <div style={{ width: 38, height: 38, borderRadius: 9, background: '#FEE2E2', display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}>
+                  <i className="fa-solid fa-lock" style={{ color: '#DC2626', fontSize: 16 }} />
+                </div>
+                <div style={{ flex: 1, minWidth: 220 }}>
+                  <div style={{ fontSize: 13.5, fontWeight: 700, color: '#991B1B' }}>Booking blocked, unpaid balance</div>
+                  <div style={{ fontSize: 12, color: '#7F1D1D' }}>
+                    {bookingChild?.full_name} has an unpaid {outstandingBalance.fee_type === 'retainer_fee' ? 'retainer fee' : 'no-show fee'} of ₱{Number(outstandingBalance.amount).toLocaleString()}. New sessions can't be booked until it's settled.
+                  </div>
+                </div>
+                <button className="btn-primary" style={{ fontSize: 12, padding: '8px 14px', flexShrink: 0 }} onClick={() => goPage('payment')}>
+                  <i className="fa-solid fa-credit-card" style={{ marginRight: 5 }} />Pay Now
+                </button>
+              </div>
+            )}
+            {waitlistOffers.map(offer => (
+              <div key={offer.id} className="card" style={{ padding: '16px 20px', marginBottom: 16, border: '1px solid #BAE6FD', background: '#F0F9FF', display: 'flex', alignItems: 'center', gap: 14, flexWrap: 'wrap' }}>
+                <div style={{ width: 38, height: 38, borderRadius: 9, background: '#DBEAFE', display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}>
+                  <i className="fa-solid fa-calendar-check" style={{ color: '#0EA5E9', fontSize: 16 }} />
+                </div>
+                <div style={{ flex: 1, minWidth: 220 }}>
+                  <div style={{ fontSize: 13.5, fontWeight: 700, color: '#0C4A6E' }}>A therapy slot opened up for {offer.clients?.full_name}</div>
+                  <div style={{ fontSize: 12, color: '#0C4A6E' }}>
+                    {offer.discipline === 'OT' ? 'Occupational Therapy' : 'Speech Therapy'} · {WEEKDAY_NAMES[offer.day_of_week]}s at {offer.time_slot} with {offer.therapist_name}
+                  </div>
+                  <div style={{ fontSize: 11, color: '#64748B', marginTop: 2 }}>First-come, first-served among the waitlist, respond soon.</div>
+                </div>
+                <div style={{ display: 'flex', gap: 8, flexShrink: 0 }}>
+                  <button className="btn-secondary" style={{ fontSize: 12, padding: '8px 14px' }} disabled={waitlistBusyId === offer.id} onClick={() => respondToWaitlistOffer(offer, false)}>
+                    Decline
+                  </button>
+                  <button className="btn-primary" style={{ fontSize: 12, padding: '8px 14px' }} disabled={waitlistBusyId === offer.id} onClick={() => respondToWaitlistOffer(offer, true)}>
+                    <i className={'fa-solid ' + (waitlistBusyId === offer.id ? 'fa-spinner fa-spin' : 'fa-check')} style={{ marginRight: 5 }} />Accept
+                  </button>
+                </div>
+              </div>
+            ))}
             {activeSchedules.length > 0 && (
               <div className="card" style={{ padding: '18px 22px', marginBottom: 16 }}>
                 <div className="section-title" style={{ marginBottom: 10 }}>{bookingChild?.full_name}'s Fixed Therapy Schedule</div>
@@ -1303,55 +1405,80 @@ export default function ParentPortal() {
                       next.has(ds) ? next.delete(ds) : next.add(ds);
                       return next;
                     });
+                    const shortWeekday = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'][qbSchedule.day_of_week];
                     return (
-                      <div style={{ background: '#F0F9FF', border: '1px solid #BAE6FD', borderRadius: 9, padding: '10px 12px', marginTop: 10 }}>
-                        <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap', marginBottom: 8 }}>
-                          <i className="fa-solid fa-calendar-week" style={{ color: '#0EA5E9' }} />
-                          <span style={{ fontSize: 12, color: '#0C4A6E', fontWeight: 600 }}>Quick Book</span>
-                          {lockedSchedules.length > 1 && (
-                            <select className="form-select" style={{ background: '#fff', width: 'auto', fontSize: 12, padding: '5px 8px' }} value={qbSchedule.id} onChange={e => { setQuickBookScheduleId(e.target.value); setQuickBookSelected(new Set()); }}>
-                              {lockedSchedules.map(s => <option key={s.id} value={s.id}>{WEEKDAY_NAMES[s.day_of_week]}s {s.time_slot} ({s.therapist_name})</option>)}
-                            </select>
-                          )}
-                          <span style={{ fontSize: 12, color: '#0C4A6E' }}>How many?</span>
-                          <input
-                            type="number" min={1} max={26} className="form-input" style={{ width: 60, fontSize: 12, padding: '5px 8px' }}
-                            value={quickBookCount}
-                            onChange={e => {
-                              // Typing a new count re-syncs the checked dates to
-                              // exactly the first N candidates, so lowering it
-                              // actually un-checks the extras instead of leaving
-                              // a stale, larger selection sitting there checked.
-                              // Individual boxes can still be toggled by hand
-                              // afterward, this only resets on the count itself changing.
-                              const n = Math.max(1, Math.min(26, Number(e.target.value) || 1));
-                              setQuickBookCount(n);
-                              const fresh = quickBookCandidates(qbSchedule, bookingChild, Math.max(n * 2, 10));
-                              setQuickBookSelected(new Set(fresh.slice(0, n)));
-                            }}
-                          />
+                      <div style={{ background: '#F0F9FF', border: '1px solid #BAE6FD', borderRadius: 12, padding: 16, marginTop: 12, opacity: outstandingBalance ? .55 : 1, pointerEvents: outstandingBalance ? 'none' : 'auto' }}>
+                        <div style={{ display: 'flex', alignItems: 'flex-start', gap: 10, marginBottom: 14 }}>
+                          <div style={{ width: 32, height: 32, borderRadius: 8, background: '#DBEAFE', display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}>
+                            <i className="fa-solid fa-bolt" style={{ color: '#0EA5E9', fontSize: 14 }} />
+                          </div>
+                          <div>
+                            <div style={{ fontSize: 13.5, fontWeight: 700, color: '#0C4A6E' }}>Quick Book</div>
+                            <div style={{ fontSize: 11.5, color: '#64748B' }}>Book several {shortWeekday} {qbSchedule.time_slot} sessions at once, each confirmed right away. Pay for them anytime from the Payments tab.</div>
+                          </div>
                         </div>
-                        <div style={{ fontSize: 10.5, color: '#0C4A6E', marginBottom: 6 }}>Pick exactly which {WEEKDAY_NAMES[qbSchedule.day_of_week]}s at {qbSchedule.time_slot} you want to book, each confirmed right away, pay for each from the Payments tab whenever you're ready.</div>
-                        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(110px, 1fr))', gap: 6, maxHeight: 140, overflowY: 'auto', marginBottom: 8 }}>
-                          {qbCandidates.length === 0 && <span style={{ fontSize: 11.5, color: '#0C4A6E' }}>No open upcoming dates found for this slot.</span>}
+
+                        <div style={{ display: 'flex', gap: 14, flexWrap: 'wrap', marginBottom: 14 }}>
+                          {lockedSchedules.length > 1 && (
+                            <div style={{ flex: '1 1 200px' }}>
+                              <label className="form-label" style={{ fontSize: 11 }}>Schedule</label>
+                              <select className="form-select" style={{ background: '#fff', fontSize: 12.5 }} value={qbSchedule.id} onChange={e => { setQuickBookScheduleId(e.target.value); setQuickBookSelected(new Set()); }}>
+                                {lockedSchedules.map(s => <option key={s.id} value={s.id}>{WEEKDAY_NAMES[s.day_of_week]}s {s.time_slot} ({s.therapist_name})</option>)}
+                              </select>
+                            </div>
+                          )}
+                          <div style={{ flex: '0 1 120px', minWidth: 100 }}>
+                            <label className="form-label" style={{ fontSize: 11 }}>How many sessions?</label>
+                            <input
+                              type="number" min={1} max={26} className="form-input" style={{ fontSize: 12.5 }}
+                              value={quickBookCount}
+                              onChange={e => {
+                                // Typing a new count re-syncs the checked dates to
+                                // exactly the first N candidates, so lowering it
+                                // actually un-checks the extras instead of leaving
+                                // a stale, larger selection sitting there checked.
+                                // Individual boxes can still be toggled by hand
+                                // afterward, this only resets on the count itself changing.
+                                const n = Math.max(1, Math.min(26, Number(e.target.value) || 1));
+                                setQuickBookCount(n);
+                                const fresh = quickBookCandidates(qbSchedule, bookingChild, Math.max(n * 2, 10));
+                                setQuickBookSelected(new Set(fresh.slice(0, n)));
+                              }}
+                            />
+                          </div>
+                        </div>
+
+                        <label className="form-label" style={{ fontSize: 11, marginBottom: 6, display: 'block' }}>Pick the exact dates you want ({quickBookSelected.size} selected)</label>
+                        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(130px, 1fr))', gap: 8, maxHeight: 180, overflowY: 'auto', padding: 2, marginBottom: 14 }}>
+                          {qbCandidates.length === 0 && <span style={{ fontSize: 12, color: '#64748B' }}>No open upcoming dates found for this slot.</span>}
                           {qbCandidates.map(ds => {
                             const checked = quickBookSelected.has(ds);
                             return (
-                              <label key={ds} style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 11.5, color: '#0C4A6E', background: checked ? '#DBEAFE' : '#fff', border: '1px solid ' + (checked ? '#93C5FD' : '#E2E8F0'), borderRadius: 7, padding: '5px 8px', cursor: 'pointer' }}>
-                                <input type="checkbox" checked={checked} onChange={() => toggleDate(ds)} style={{ margin: 0 }} />
-                                {fmtDate(ds)}
+                              <label
+                                key={ds}
+                                style={{
+                                  display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 6, fontSize: 12.5, fontWeight: checked ? 600 : 500,
+                                  color: checked ? '#0C4A6E' : '#475569', background: checked ? '#DBEAFE' : '#fff',
+                                  border: '1.5px solid ' + (checked ? '#60A5FA' : '#E2E8F0'), borderRadius: 9, padding: '9px 10px', cursor: 'pointer', transition: 'all .1s'
+                                }}
+                              >
+                                <span>{fmtDate(ds)}</span>
+                                <input type="checkbox" checked={checked} onChange={() => toggleDate(ds)} style={{ margin: 0, width: 15, height: 15, flexShrink: 0, accentColor: '#0EA5E9' }} />
                               </label>
                             );
                           })}
                         </div>
-                        <button
-                          className="btn-primary" style={{ fontSize: 11.5, padding: '6px 12px' }}
-                          disabled={quickBooking || quickBookSelected.size === 0}
-                          onClick={() => quickBookRecurring(qbSchedule, bookingChild, bookingSessionType, Array.from(quickBookSelected))}
-                        >
-                          <i className={'fa-solid ' + (quickBooking ? 'fa-spinner fa-spin' : 'fa-bolt')} style={{ marginRight: 5 }} />
-                          {quickBooking ? 'Booking…' : `Book Selected (${quickBookSelected.size})`}
-                        </button>
+
+                        <div style={{ display: 'flex', justifyContent: 'flex-end', paddingTop: 12, borderTop: '1px solid #BAE6FD' }}>
+                          <button
+                            className="btn-primary" style={{ fontSize: 12.5, padding: '8px 16px' }}
+                            disabled={quickBooking || quickBookSelected.size === 0 || outstandingBalance}
+                            onClick={() => quickBookRecurring(qbSchedule, bookingChild, bookingSessionType, Array.from(quickBookSelected))}
+                          >
+                            <i className={'fa-solid ' + (quickBooking ? 'fa-spinner fa-spin' : 'fa-calendar-check')} style={{ marginRight: 6 }} />
+                            {quickBooking ? 'Booking…' : `Book ${quickBookSelected.size} Selected Session${quickBookSelected.size === 1 ? '' : 's'}`}
+                          </button>
+                        </div>
                       </div>
                     );
                   })()}
@@ -1359,7 +1486,7 @@ export default function ParentPortal() {
                     <div style={{ fontSize: 11.5, color: '#64748B', marginTop: 5 }}><i className="fa-solid fa-circle-info" style={{ marginRight: 5 }} />{bookingChild?.full_name} doesn't have a fixed {bookingSessionType} schedule assigned yet. Please contact the clinic to get one set up before booking.</div>
                   )}
                 </div>
-                <div style={{ marginBottom: 14, opacity: (hasActiveBooking || needsSchedule) ? .55 : 1, pointerEvents: (hasActiveBooking || needsSchedule) ? 'none' : 'auto' }}>
+                <div style={{ marginBottom: 14, opacity: (hasActiveBooking || needsSchedule || outstandingBalance) ? .55 : 1, pointerEvents: (hasActiveBooking || needsSchedule || outstandingBalance) ? 'none' : 'auto' }}>
                   <label className="form-label">Requested Date &amp; Time</label>
                   <div className="booking-cal-grid">
                     <div>
@@ -1424,17 +1551,27 @@ export default function ParentPortal() {
                           const effAvailable = effectiveSlotAvailable(s, bookingSessionType);
                           const full = effAvailable <= 0;
                           const past = isSlotPast(reservationDate, t);
-                          const blocked = full || past || hasActiveBooking;
+                          const alreadyBooked = reservationDate && childBookedSlots.has(reservationDate + '|' + t);
+                          const blocked = full || past || hasActiveBooking || alreadyBooked;
                           const isSelected = t === selectedSlot;
                           const cls = 'slot-btn' + (blocked ? '' : (isSelected ? ' active' : ''));
                           const style = blocked ? { opacity: .45, cursor: 'not-allowed', background: '#F1F5F9', borderColor: '#E2E8F0', color: '#94A3B8' } : undefined;
+                          // A discipline can have more than one fixed schedule (e.g. 2x/week
+                          // with two different therapists), each landing on its own time, so
+                          // the therapist is shown right on the button, not just in the "Fixed
+                          // to..." text above, otherwise there's no way to tell them apart.
+                          const matchedSchedule = lockedSchedules.find(sch => sch.time_slot === t
+                            && reservationDate && new Date(reservationDate + 'T00:00:00Z').getUTCDay() === sch.day_of_week);
                           return (
                             <button key={t} className={cls} style={style} disabled={blocked} onClick={blocked ? undefined : () => pickSlot(t)}>
                               {t}
+                              {matchedSchedule && <span style={{ fontSize: 10, fontWeight: 400 }}> · {matchedSchedule.therapist_name}</span>}
                               {s.lunch_break && <span style={{ fontSize: 10, fontWeight: 400 }}> (Lunch Break)</span>}
-                              {!s.lunch_break && full && <span style={{ fontSize: 10, fontWeight: 400 }}> (Full)</span>}
-                              {!s.lunch_break && !full && past && <span style={{ fontSize: 10, fontWeight: 400 }}> (Past)</span>}
-                              {!s.lunch_break && !full && !past && bookingSessionType !== 'Initial Assessment' && s.capacity > 1 && <span style={{ fontSize: 10, fontWeight: 400 }}> · {s.available} left</span>}
+                              {!s.lunch_break && bookingSessionType === 'Initial Assessment' && s.no_admin_available && <span style={{ fontSize: 10, fontWeight: 400 }}> (No Front Desk Coverage)</span>}
+                              {!s.lunch_break && !(bookingSessionType === 'Initial Assessment' && s.no_admin_available) && alreadyBooked && <span style={{ fontSize: 10, fontWeight: 400 }}> (Already booked)</span>}
+                              {!s.lunch_break && !(bookingSessionType === 'Initial Assessment' && s.no_admin_available) && !alreadyBooked && full && <span style={{ fontSize: 10, fontWeight: 400 }}> (Full)</span>}
+                              {!s.lunch_break && !alreadyBooked && !full && past && <span style={{ fontSize: 10, fontWeight: 400 }}> (Past)</span>}
+                              {!s.lunch_break && !alreadyBooked && !full && !past && !matchedSchedule && bookingSessionType !== 'Initial Assessment' && s.capacity > 1 && <span style={{ fontSize: 10, fontWeight: 400 }}> · {s.available} left</span>}
                             </button>
                           );
                         })}
@@ -1443,7 +1580,7 @@ export default function ParentPortal() {
                   </div>
                 </div>
                 <div style={{ display: 'flex', justifyContent: 'flex-end', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
-                  <button className="btn-primary" disabled={bookingBusy || hasActiveBooking || needsSchedule} onClick={openBookingConfirm}>Book</button>
+                  <button className="btn-primary" disabled={bookingBusy || hasActiveBooking || needsSchedule || outstandingBalance} onClick={openBookingConfirm}>Book</button>
                 </div>
               </div>
             </div>
@@ -1581,13 +1718,24 @@ export default function ParentPortal() {
     return (
       <div className="spa-page" id="spa-payment">
         <div style={{ marginBottom: 24 }}>
-          <h1 style={{ fontSize: 22, fontWeight: 700, color: '#0F172A', margin: '0 0 4px' }}>Secure Payment Checkout</h1>
+          <h1 style={{ fontSize: 22, fontWeight: 700, color: '#0F172A', margin: '0 0 4px' }}>Payment Checkout</h1>
         </div>
 
         {/* Tabs */}
-        <div style={{ display: 'flex', gap: 6, marginBottom: 22, flexWrap: 'wrap' }}>
-          <button className={'pay-tab' + (payTab === 'checkout' ? ' active' : '')} onClick={() => setPayTab('checkout')}><i className="fa-solid fa-credit-card" style={{ marginRight: 6 }} />Pay Now</button>
-          <button className={'pay-tab' + (payTab === 'receipts' ? ' active' : '')} onClick={() => setPayTab('receipts')}><i className="fa-solid fa-file-invoice" style={{ marginRight: 6 }} />Invoice</button>
+        <div style={{ display: 'flex', gap: 6, marginBottom: 22, flexWrap: 'wrap', alignItems: 'center', justifyContent: 'space-between' }}>
+          <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+            <button className={'pay-tab' + (payTab === 'checkout' ? ' active' : '')} onClick={() => setPayTab('checkout')}><i className="fa-solid fa-credit-card" style={{ marginRight: 6 }} />Pay Now</button>
+            <button className={'pay-tab' + (payTab === 'receipts' ? ' active' : '')} onClick={() => setPayTab('receipts')}><i className="fa-solid fa-file-invoice" style={{ marginRight: 6 }} />Invoice</button>
+          </div>
+          {children.length > 1 && (
+            <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+              <label className="form-label" style={{ margin: 0, fontSize: 11.5 }}>Viewing:</label>
+              <select className="form-select" style={{ width: 'auto', height: 32, fontSize: 12.5 }} value={paymentChildFilter} onChange={e => setPaymentChildFilter(e.target.value)}>
+                <option value="all">All Children</option>
+                {children.map(c => <option key={c.id} value={c.id}>{c.full_name}</option>)}
+              </select>
+            </div>
+          )}
         </div>
 
         {/* Checkout tab, real, self-serve QRPh via PayMongo, one invoice at a time */}
@@ -1652,9 +1800,18 @@ export default function ParentPortal() {
                             {p.fee_type === 'retainer_fee' && <span className="pill pill-amber" style={{ fontSize: 9, marginLeft: 6 }}>Retainer Fee</span>}
                             {!isStandaloneFee && !locked && pendingPayments.length > 1 && <span className="pill pill-green" style={{ fontSize: 9, marginLeft: 6 }}>Pay This First</span>}
                           </div>
+                          {children.length > 1 && p.clients?.full_name && (
+                            <div style={{ fontSize: 10.5, color: '#0F766E', fontWeight: 600, marginTop: 2 }}>
+                              <i className="fa-solid fa-child" style={{ marginRight: 4 }} />
+                              {p.clients.full_name}
+                            </div>
+                          )}
                           <div style={{ fontSize: 11.5, color: '#94A3B8' }}>
-                            {linkedRes?.date ? fmtDate(linkedRes.date) + ' session' : fmtDate((p.created_at || '').slice(0, 10))} · <span className="pill pill-amber" style={{ fontSize: 9 }}>{p.status}</span>
+                            {linkedRes?.date
+                              ? `${linkedRes.session_type ? linkedRes.session_type + ', ' : ''}${fmtDate(linkedRes.date)}${linkedRes.time_slot ? ' · ' + linkedRes.time_slot : ''} session`
+                              : fmtDate((p.created_at || '').slice(0, 10))} · <span className={'pill ' + (p.status === 'overdue' ? 'pill-red' : 'pill-amber')} style={{ fontSize: 9 }}>{p.status}</span>
                           </div>
+                          {linkedRes?.date && <div style={{ fontSize: 11, color: '#94A3B8', marginTop: 2 }}>Due {fmtDate(linkedRes.date)}, 11:59 PM</div>}
                           {locked && <div style={{ fontSize: 11, color: '#94A3B8', marginTop: 3 }}><i className="fa-solid fa-lock" style={{ marginRight: 4 }} />Settle the earlier invoice above first</div>}
                         </div>
                         <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
@@ -1682,7 +1839,7 @@ export default function ParentPortal() {
 
         {/* Invoice tab */}
         <div style={{ display: payTab === 'receipts' ? 'block' : 'none' }}>
-          {paidPayments.length === 0 && refundedPayments.length === 0 ? (
+          {paidPayments.length === 0 && refundedPayments.length === 0 && waivedPayments.length === 0 ? (
             <div className="card" style={{ padding: '40px 20px' }}>
               <EmptyState icon="fa-file-invoice" title="No Invoices Yet" description="Invoices will appear here once you've made payments for therapy sessions." />
             </div>
@@ -1694,7 +1851,7 @@ export default function ParentPortal() {
               </div>
               <div style={{ overflowX: 'auto' }}>
                 <table className="data-table">
-                  <thead><tr><th style={{ paddingLeft: 24 }}>Invoice</th><th>Date</th><th>Amount</th><th>Method</th><th>Reference</th><th>Status</th><th style={{ textAlign: 'right', paddingRight: 24 }}>Actions</th></tr></thead>
+                  <thead><tr><th style={{ paddingLeft: 24 }}>Invoice / Session Date</th><th>Invoiced On</th><th>Amount</th><th>Method</th><th>Reference</th><th>Status</th><th style={{ textAlign: 'right', paddingRight: 24 }}>Actions</th></tr></thead>
                   <tbody>
                     {paidPayments.map(p => (
                       <tr key={p.id}>
@@ -1703,6 +1860,18 @@ export default function ParentPortal() {
                             {p.invoice_no || '-'}
                             {!p.reservation_id && p.fee_type === 'session' && <span className="pill pill-green" style={{ fontSize: 9, marginLeft: 6 }}>Unallocated Credit</span>}
                           </div>
+                          {children.length > 1 && p.clients?.full_name && (
+                            <div style={{ fontSize: 10.5, color: '#0F766E', fontWeight: 600, marginTop: 2 }}>
+                              <i className="fa-solid fa-child" style={{ marginRight: 4 }} />
+                              {p.clients.full_name}
+                            </div>
+                          )}
+                          {p.reservations?.date && (
+                            <div style={{ fontSize: 10.5, color: '#64748B', fontWeight: 500, marginTop: 2 }}>
+                              <i className="fa-solid fa-calendar-day" style={{ marginRight: 4 }} />
+                              {p.reservations.session_type ? p.reservations.session_type + ' · ' : ''}{fmtDate(p.reservations.date)}{p.reservations.time_slot ? ' · ' + p.reservations.time_slot : ''}
+                            </div>
+                          )}
                         </td>
                         <td style={{ fontSize: 12.5 }}>{p.paid_at ? fmtDate(p.paid_at.slice(0, 10)) : '-'}</td>
                         <td style={{ fontWeight: 700, color: '#10B981' }}>₱{Number(p.amount).toLocaleString()}</td>
@@ -1714,7 +1883,21 @@ export default function ParentPortal() {
                     ))}
                     {refundedPayments.map(p => (
                       <tr key={p.id}>
-                        <td style={{ paddingLeft: 24 }}><div style={{ fontSize: 12, fontWeight: 600, color: '#0F172A' }}>{p.invoice_no || '-'}</div></td>
+                        <td style={{ paddingLeft: 24 }}>
+                          <div style={{ fontSize: 12, fontWeight: 600, color: '#0F172A' }}>{p.invoice_no || '-'}</div>
+                          {children.length > 1 && p.clients?.full_name && (
+                            <div style={{ fontSize: 10.5, color: '#0F766E', fontWeight: 600, marginTop: 2 }}>
+                              <i className="fa-solid fa-child" style={{ marginRight: 4 }} />
+                              {p.clients.full_name}
+                            </div>
+                          )}
+                          {p.reservations?.date && (
+                            <div style={{ fontSize: 10.5, color: '#64748B', fontWeight: 500, marginTop: 2 }}>
+                              <i className="fa-solid fa-calendar-day" style={{ marginRight: 4 }} />
+                              {p.reservations.session_type ? p.reservations.session_type + ' · ' : ''}{fmtDate(p.reservations.date)}{p.reservations.time_slot ? ' · ' + p.reservations.time_slot : ''}
+                            </div>
+                          )}
+                        </td>
                         <td style={{ fontSize: 12.5 }}>{p.paid_at ? fmtDate(p.paid_at.slice(0, 10)) : '-'}</td>
                         <td style={{ fontWeight: 700, color: '#B45309' }}>₱{Number(p.amount).toLocaleString()}</td>
                         <td><span className="pill pill-gray" style={{ fontSize: 10 }}>{p.method}</span></td>
@@ -1722,6 +1905,38 @@ export default function ParentPortal() {
                         <td>
                           <span className="pill pill-red" style={{ fontSize: 10 }}>Refunded</span>
                           {p.refund_reason && <div style={{ fontSize: 10.5, color: '#94A3B8', marginTop: 3 }}>{p.refund_reason}</div>}
+                        </td>
+                        <td style={{ textAlign: 'right', paddingRight: 24 }}><button className="btn-edit" style={{ fontSize: 11 }} onClick={() => setInvoice(p)}><i className="fa-solid fa-file-invoice" /> View</button></td>
+                      </tr>
+                    ))}
+                    {waivedPayments.map(p => (
+                      <tr key={p.id}>
+                        <td style={{ paddingLeft: 24 }}>
+                          <div style={{ fontSize: 12, fontWeight: 600, color: '#0F172A' }}>
+                            {p.invoice_no || '-'}
+                            {p.fee_type === 'no_show_fee' && <span className="pill pill-red" style={{ fontSize: 9, marginLeft: 6 }}>No-Show Fee</span>}
+                            {p.fee_type === 'retainer_fee' && <span className="pill pill-amber" style={{ fontSize: 9, marginLeft: 6 }}>Retainer Fee</span>}
+                          </div>
+                          {children.length > 1 && p.clients?.full_name && (
+                            <div style={{ fontSize: 10.5, color: '#0F766E', fontWeight: 600, marginTop: 2 }}>
+                              <i className="fa-solid fa-child" style={{ marginRight: 4 }} />
+                              {p.clients.full_name}
+                            </div>
+                          )}
+                          {p.reservations?.date && (
+                            <div style={{ fontSize: 10.5, color: '#64748B', fontWeight: 500, marginTop: 2 }}>
+                              <i className="fa-solid fa-calendar-day" style={{ marginRight: 4 }} />
+                              {p.reservations.session_type ? p.reservations.session_type + ' · ' : ''}{fmtDate(p.reservations.date)}{p.reservations.time_slot ? ' · ' + p.reservations.time_slot : ''}
+                            </div>
+                          )}
+                        </td>
+                        <td style={{ fontSize: 12.5 }}>{fmtDate((p.created_at || '').slice(0, 10))}</td>
+                        <td style={{ fontWeight: 700, color: '#94A3B8', textDecoration: 'line-through' }}>₱{Number(p.amount).toLocaleString()}</td>
+                        <td><span className="pill pill-gray" style={{ fontSize: 10 }}>-</span></td>
+                        <td>-</td>
+                        <td>
+                          <span className="pill pill-teal" style={{ fontSize: 10 }}>Waived</span>
+                          {p.waive_reason && <div style={{ fontSize: 10.5, color: '#94A3B8', marginTop: 3 }}>{p.waive_reason}</div>}
                         </td>
                         <td style={{ textAlign: 'right', paddingRight: 24 }}><button className="btn-edit" style={{ fontSize: 11 }} onClick={() => setInvoice(p)}><i className="fa-solid fa-file-invoice" /> View</button></td>
                       </tr>

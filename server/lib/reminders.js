@@ -1,6 +1,12 @@
 import { db } from '../supabase.js';
 import { notifyEvent, channelEnabled, therapistUserId } from './notify.js';
 import { sendSms } from '../sms.js';
+import { sendMail } from '../mailer.js';
+
+/** Today's date (YYYY-MM-DD) in Philippine time (UTC+8), independent of server timezone. */
+function todayPH() {
+  return new Date(Date.now() + 8 * 60 * 60 * 1000).toISOString().slice(0, 10);
+}
 
 /** "h:mm AM/PM" + a date -> epoch ms, treating the pair as Philippine local time (UTC+8, no DST). */
 export function sessionStartMs(dateStr, timeLabel) {
@@ -36,27 +42,79 @@ async function notifySessionReminderRow(r, settings) {
   }
 }
 
-/** Notifies (in-app + SMS, per the current channel settings) the guardian of one already-fetched payment row. */
-async function notifyBalanceReminderRow(p, settings) {
+/** Notifies (in-app + SMS, per the current channel settings) the guardian of one already-fetched payment row.
+ *  A session invoice whose own session already happened, tied to a fixed
+ *  recurring schedule, and still unpaid gets stronger wording (this is the
+ *  one kind of unpaid balance that can put an actual reserved slot at risk,
+ *  a one-off session or assessment has no "slot" to lose) - staff/admin are
+ *  also notified so they're aware and can decide whether to follow up or
+ *  eventually discharge, same "flag it, a human decides" pattern as the
+ *  3-consecutive-unexcused-absence flag, never automatic. */
+async function notifyBalanceReminderRow(p, settings, opts = {}) {
+  // The 3-consecutive-unexcused-absence flag (see noShow.js) already gives staff
+  // a one-time report the moment that pattern is detected. Without this, the
+  // automated sweep below would also re-notify staff every single reminder
+  // cycle for as long as the same invoice stays unpaid, potentially forever,
+  // duplicating/contradicting that one-shot flag with recurring noise. A manual
+  // "Notify" click (opts left default) is a deliberate one-off staff action, so
+  // it always includes the staff copy.
+  const notifyStaff = opts.notifyStaff !== false;
   const parentId = p.clients?.parent_id;
   if (!parentId) return;
   const childName = p.clients?.full_name || 'Your child';
   const amountLabel = '₱' + Number(p.amount).toLocaleString();
+  const res = p.reservations;
+  const isOverdueScheduledSession = p.fee_type === 'session' && res?.recurring_schedule_id && res?.date < todayPH();
+  const sessionWhen = res ? `${res.date} at ${res.time_slot}${res.therapist_name ? ' with ' + res.therapist_name : ''}` : null;
+
+  const title = isOverdueScheduledSession ? 'Unpaid session, your slot is at risk' : 'Outstanding balance reminder';
+  const body = isOverdueScheduledSession
+    ? `${childName}'s session on ${sessionWhen} is still unpaid (${amountLabel}). Please settle it soon, an unpaid fixed-schedule session can put that reserved slot at risk of being discharged.`
+    : `${childName} has an unpaid balance of ${amountLabel}.`;
+
   if (settings.channel_in_app !== false) {
-    await notifyEvent('notify_balance_reminder', {
-      title: 'Outstanding balance reminder',
-      body: `${childName} has an unpaid balance of ${amountLabel}.`,
-      icon: 'fa-peso-sign',
-      target_user: parentId
-    });
+    await notifyEvent('notify_balance_reminder', { title, body, icon: 'fa-peso-sign', target_user: parentId });
   }
   const guardian = p.clients?.guardian;
   if (settings.channel_sms !== false && guardian?.contact) {
     const greeting = guardian.full_name ? `Hi ${guardian.full_name}! ` : 'Hi! ';
-    sendSms({
-      to: guardian.contact,
-      message: `${greeting}${childName} has an unpaid balance of ${amountLabel}. Please settle at your earliest convenience. KID Clinic`
-    }).catch(e => console.error('Balance reminder SMS failed:', e.message));
+    const smsBody = isOverdueScheduledSession
+      ? `${childName}'s session on ${sessionWhen} is still unpaid (${amountLabel}). Please settle soon, your reserved slot may be at risk. KID Clinic`
+      : `${childName} has an unpaid balance of ${amountLabel}. Please settle at your earliest convenience. KID Clinic`;
+    sendSms({ to: guardian.contact, message: `${greeting}${smsBody}` }).catch(e => console.error('Balance reminder SMS failed:', e.message));
+  }
+  if (settings.channel_email !== false && guardian?.email) {
+    const warningBlock = isOverdueScheduledSession
+      ? `<p style="color:#991B1B; font-size:13px; margin:0 0 16px; line-height:1.7; background:#FEF2F2; border:1px solid #FECACA; border-radius:8px; padding:12px 14px;">
+           <strong>Your reserved slot is at risk.</strong> An unpaid fixed-schedule session can put that slot up for discharge, please settle it soon to keep it.
+         </p>`
+      : '';
+    sendMail({
+      to: guardian.email,
+      subject: title,
+      html: `
+        <div style="font-family: 'Inter', Arial, sans-serif; max-width: 480px; margin: 0 auto; padding: 32px 24px;">
+          <div style="text-align: center; margin-bottom: 24px;">
+            <h2 style="color: #1F4E9E; margin: 0;">KID Clinic</h2>
+            <p style="color: #64748B; font-size: 13px;">Pediatric Speech &amp; Occupational Therapy</p>
+          </div>
+          <div style="background: #F8FAFC; border: 1px solid #E2E8F0; border-radius: 12px; padding: 24px;">
+            <p style="color: #334155; font-size: 14px; margin: 0 0 16px;">Hi ${guardian.full_name || 'there'},</p>
+            <p style="color: #64748B; font-size: 13px; margin: 0 0 16px; line-height: 1.7;">${body}</p>
+            ${warningBlock}
+            <p style="color: #64748B; font-size: 13px; margin: 0; line-height: 1.7;">
+              Please log in to your Guardian Portal and go to the Payments tab to settle this balance.
+            </p>
+          </div>
+        </div>
+      `
+    }).catch(e => console.error('Balance reminder email failed:', e.message));
+  }
+
+  if (isOverdueScheduledSession && notifyStaff) {
+    const staffBody = `${childName}'s ${res.session_type} slot (${sessionWhen}) has an unpaid session invoice (${amountLabel}). Review it in Payments and decide whether to follow up or discharge the slot if this continues.`;
+    await notifyEvent(null, { title: 'Unpaid fixed-schedule session', body: staffBody, icon: 'fa-peso-sign', target_role: 'admin' });
+    await notifyEvent(null, { title: 'Unpaid fixed-schedule session', body: staffBody, icon: 'fa-peso-sign', target_role: 'staff' });
   }
 }
 
@@ -139,24 +197,50 @@ async function sendMilestoneReminders(settings) {
 }
 
 /**
+ * Marks a still-pending invoice 'overdue' once its due date (the linked
+ * reservation's own date, same "Due {date}, 11:59 PM" shown to the guardian
+ * in both portals) has fully passed. A pure status-accuracy fix, not a new
+ * consequence of its own: every reminder/no-show/discharge-warning check
+ * already treats 'pending' and 'overdue' identically, this just makes the
+ * label reflect what's actually true instead of staying "pending" forever
+ * even years past due. A payment with no linked reservation (a floating
+ * credit, or one entered by hand with no reservation_id) has no due date to
+ * judge by, so it's left alone.
+ */
+async function markOverduePayments() {
+  const today = todayPH();
+  const { data: candidates, error } = await db.from('payments')
+    .select('id, reservations(date)')
+    .eq('status', 'pending')
+    .not('reservation_id', 'is', null);
+  if (error) { console.error('markOverduePayments: query failed:', error.message); return; }
+
+  for (const p of candidates || []) {
+    if (p.reservations?.date && p.reservations.date < today) {
+      await db.from('payments').update({ status: 'overdue' }).eq('id', p.id);
+    }
+  }
+}
+
+/**
  * Re-reminds guardians about an unpaid invoice every `balance_reminder_frequency_days`,
  * measured from the last reminder (or the invoice date, for the first one).
  */
 async function sendBalanceReminders(settings) {
   if (settings.notify_balance_reminder === false) return;
-  if (settings.channel_in_app === false && settings.channel_sms === false) return;
+  if (settings.channel_in_app === false && settings.channel_sms === false && settings.channel_email === false) return;
   const frequencyMs = (settings.balance_reminder_frequency_days || 3) * 24 * 60 * 60 * 1000;
   const now = Date.now();
 
   const { data: payments, error } = await db.from('payments')
-    .select('id, amount, created_at, last_reminder_at, clients(full_name, parent_id, guardian:profiles!parent_id(full_name, contact))')
+    .select('id, amount, fee_type, created_at, last_reminder_at, clients(full_name, parent_id, guardian:profiles!parent_id(full_name, contact, email)), reservations(date, time_slot, session_type, therapist_name, recurring_schedule_id)')
     .in('status', ['pending', 'overdue']);
   if (error) { console.error('reminders: payments query failed:', error.message); return; }
 
   for (const p of payments || []) {
     const lastSent = p.last_reminder_at ? Date.parse(p.last_reminder_at) : Date.parse(p.created_at);
     if (now - lastSent < frequencyMs) continue;
-    await notifyBalanceReminderRow(p, settings);
+    await notifyBalanceReminderRow(p, settings, { notifyStaff: !p.last_reminder_at });
     await db.from('payments').update({ last_reminder_at: new Date().toISOString() }).eq('id', p.id);
   }
 }
@@ -168,12 +252,16 @@ async function sendBalanceReminders(settings) {
  */
 export async function notifyBalanceReminderNow(paymentId) {
   const { data: p, error } = await db.from('payments')
-    .select('id, amount, clients(full_name, parent_id, guardian:profiles!parent_id(full_name, contact))')
+    .select('id, amount, fee_type, clients(full_name, parent_id, guardian:profiles!parent_id(full_name, contact, email)), reservations(date, time_slot, session_type, therapist_name, recurring_schedule_id)')
     .eq('id', paymentId).maybeSingle();
   if (error) throw new Error(error.message);
   if (!p) throw new Error('Payment not found');
   if (!p.clients?.parent_id) throw new Error('This client has no linked guardian account to notify.');
-  const settings = { channel_in_app: await channelEnabled('channel_in_app'), channel_sms: await channelEnabled('channel_sms') };
+  const settings = {
+    channel_in_app: await channelEnabled('channel_in_app'),
+    channel_sms: await channelEnabled('channel_sms'),
+    channel_email: await channelEnabled('channel_email')
+  };
   await notifyBalanceReminderRow(p, settings);
 }
 
@@ -194,6 +282,7 @@ export async function runReminderSweep() {
   try {
     const { data: settings } = await db.from('notification_settings').select('*').eq('id', 1).maybeSingle();
     if (!settings) return;
+    await markOverduePayments();
     await sendSessionReminders(settings);
     await sendBalanceReminders(settings);
     await sendMilestoneReminders(settings);

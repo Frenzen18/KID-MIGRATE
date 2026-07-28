@@ -94,6 +94,7 @@ export function effectiveSlotAvailable(slot, serviceType) {
   if (!slot) return 0;
   if (slot.lunch_break) return 0;
   if (serviceType === 'Initial Assessment') {
+    if (slot.no_admin_available) return 0; // nobody from admin/staff on shift to run intake
     const alreadyBooked = (slot.reservations || []).some(r => r.session_type === 'Initial Assessment');
     return alreadyBooked ? 0 : 1;
   }

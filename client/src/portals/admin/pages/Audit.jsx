@@ -14,6 +14,7 @@ const ACTION_PILL = {
   update: 'pill pill-teal',
   approve: 'pill pill-green',
   archive: 'pill pill-amber',
+  restore: 'pill pill-teal',
   delete: 'pill pill-red',
   login: 'pill pill-gray'
 };
@@ -36,6 +37,24 @@ const TABLE_LABEL = {
 };
 
 const ROLE_LABEL = { admin: 'Administrator', staff: 'Staff', ot: 'Occupational Therapist', speech: 'Speech-Language Therapist', parent: 'Guardian/Caretaker' };
+
+// Which actions actually ever get logged against each record type (see the
+// logAudit() call sites across server/routes and server/lib), e.g. only
+// profiles ever logs 'login', only clients logs 'restore', gas_entries never
+// deletes (only archives). Keeps the Action filter from offering options
+// that can never match anything for the selected Record.
+const ACTIONS_BY_TABLE = {
+  profiles: ['login', 'create', 'update', 'delete'],
+  clients: ['create', 'update', 'archive', 'restore'],
+  reservations: ['create', 'approve', 'update', 'delete'],
+  payments: ['create', 'approve', 'update'],
+  cms_posts: ['create', 'update', 'delete'],
+  announcements: ['create', 'update', 'delete'],
+  notifications: ['create'],
+  gas_entries: ['create', 'update', 'archive']
+};
+const ALL_ACTIONS = [...new Set(Object.values(ACTIONS_BY_TABLE).flat())];
+const ACTION_LABEL = { create: 'Create', update: 'Update', approve: 'Approve', archive: 'Archive', restore: 'Restore', delete: 'Delete', login: 'Login' };
 
 // Which stat boxes make sense for a role, e.g. a therapist or guardian/caretaker
 // can never approve or delete a record, so those stay hidden for them instead
@@ -178,7 +197,19 @@ export default function Audit({ toast }) {
                 {users.map(u => <option key={u.id} value={u.user_code || u.id}>{u.full_name} ({ROLE_LABEL[u.role] || u.role})</option>)}
               </datalist>
             </div>
-            <select className="form-select" style={{ width: 'auto', height: 34, fontSize: 12.5 }} value={tableFilter} onChange={e => setTableFilter(e.target.value)}>
+            <select
+              className="form-select"
+              style={{ width: 'auto', height: 34, fontSize: 12.5 }}
+              value={tableFilter}
+              onChange={e => {
+                const table = e.target.value;
+                setTableFilter(table);
+                // Reset the Action filter if it no longer applies to the newly
+                // selected record type (e.g. was "Login", switched to GAS Entries).
+                const allowed = table ? ACTIONS_BY_TABLE[table] || [] : ALL_ACTIONS;
+                if (actionFilter && !allowed.includes(actionFilter)) setActionFilter('');
+              }}
+            >
               <option value="">All Records</option>
               <option value="profiles">User Accounts</option>
               <option value="clients">Client Records</option>
@@ -191,12 +222,9 @@ export default function Audit({ toast }) {
             </select>
             <select className="form-select" style={{ width: 'auto', height: 34, fontSize: 12.5 }} value={actionFilter} onChange={e => setActionFilter(e.target.value)}>
               <option value="">All Actions</option>
-              <option value="create">Create</option>
-              <option value="update">Update</option>
-              <option value="approve">Approve</option>
-              <option value="archive">Archive</option>
-              <option value="delete">Delete</option>
-              <option value="login">Login</option>
+              {(tableFilter ? ACTIONS_BY_TABLE[tableFilter] || [] : ALL_ACTIONS).map(a => (
+                <option key={a} value={a}>{ACTION_LABEL[a] || a}</option>
+              ))}
             </select>
             <button className="pill pill-blue" style={{ cursor: 'pointer', border: 'none', padding: '6px 12px', fontSize: 12 }} onClick={() => fetchLogs()}>
               <i className="fa-solid fa-filter" style={{ marginRight: 4 }} />Apply

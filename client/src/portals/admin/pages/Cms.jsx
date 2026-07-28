@@ -166,7 +166,7 @@ export default function Cms({ go, toast, openModal, onUnsavedChange }) {
     try {
       const formData = new FormData();
       formData.append('file', file);
-      const token = localStorage.getItem('kid_token');
+      const token = sessionStorage.getItem('kid_token');
       const res = await fetch('/api/cms/upload', {
         method: 'POST',
         headers: { Authorization: 'Bearer ' + token },

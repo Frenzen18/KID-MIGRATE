@@ -123,7 +123,11 @@ router.post('/login', loginRateLimit, async (req, res) => {
       email: data.user.email,
       role,
       specialty: profile.specialty || null,
-      name: meta.full_name || data.user.email,
+      // profiles.full_name is the authoritative, always-current name (the
+      // Edit User form writes here first), user_metadata is only a mirror of
+      // it kept for other Supabase-side uses and can drift stale if it was
+      // ever set before that sync existed, prefer the fresh column.
+      name: profile.full_name || meta.full_name || data.user.email,
       contact: profile.contact || null,
       privacy_consent_at: profile.privacy_consent_at || null,
       must_change_password: profile.must_change_password === true
@@ -416,6 +420,12 @@ router.get('/me', requireAuth, async (req, res) => {
   res.json({
     user: {
       ...req.user,
+      // Same reasoning as /login: profiles.full_name is authoritative,
+      // req.user.name (from middleware/auth.js) reflects Supabase Auth's
+      // user_metadata, which can lag behind if it was set before that sync
+      // existed. This is the path an app refresh/session-restore actually
+      // hits far more often than a fresh login, so it matters more here.
+      name: profile.full_name || req.user.name,
       specialty: profile.specialty || null,
       contact: profile.contact || null,
       privacy_consent_at: profile.privacy_consent_at || null,

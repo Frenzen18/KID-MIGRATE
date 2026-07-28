@@ -21,8 +21,9 @@ const qrphStatusLimiter = makeLimiter(isProd ? MIN : 10 * 1000, 60, 'Too many st
 
 /** GET /api/payments, staff/admin all; parents see their children's */
 router.get('/', async (req, res) => {
-  let q = db.from('payments').select('*, clients(full_name, client_code, parent_id, guardian_name, therapy_type), reservations(session_type, date, time_slot, duration_min, therapist_name)').order('created_at', { ascending: false });
+  let q = db.from('payments').select('*, clients(full_name, client_code, parent_id, guardian_name, therapy_type), reservations(session_type, date, time_slot, duration_min, therapist_name, is_makeup)').order('created_at', { ascending: false });
   if (req.query.status) q = q.eq('status', req.query.status);
+  if (req.query.client_id) q = q.eq('client_id', req.query.client_id);
   const { data, error } = await q;
   if (error) return res.status(500).json({ error: error.message });
   const rows = req.user.role === 'parent'
@@ -138,6 +139,17 @@ router.post('/checkout/combined', qrphLimiter, async (req, res) => {
 
 /** PUT /api/payments/:id, update status / seal / amount */
 router.put('/:id', requireRole('admin', 'staff'), async (req, res) => {
+  // A waived fee is a deliberate, dedicated action (see POST /:id/waive) meant
+  // to be final - this generic endpoint has no waived-specific checks of its
+  // own, so without this it could silently flip a waived fee back to 'paid'
+  // (even stamping paid_at) or change its amount. Once waived, it can only be
+  // un-waived by deleting/recreating it, never edited in place.
+  const { data: current } = await db.from('payments').select('status').eq('id', req.params.id).maybeSingle();
+  if (!current) return res.status(404).json({ error: 'Payment not found' });
+  if (current.status === 'waived') {
+    return res.status(400).json({ error: 'This fee was waived and can\'t be edited.' });
+  }
+
   const patch = {};
   for (const k of ['status','method','reference','sealed','amount']) if (k in req.body) patch[k] = req.body[k];
   if ('amount' in patch) {
@@ -265,6 +277,55 @@ router.post('/:id/refund', requireRole('admin', 'staff'), async (req, res) => {
   res.json(updated);
 });
 
+/**
+ * POST /api/payments/:id/waive { reason }, admin/staff only.
+ * Forgives a still-unpaid no-show or retainer fee, no payment is ever
+ * collected for it. Purely a financial decision: it does NOT touch the
+ * underlying reservation's excused/unexcused status or the 3-consecutive-
+ * absence policy count, both stay exactly as already determined (see
+ * checkConsecutiveAbsences in server/lib/noShow.js), waiving the money owed
+ * is a separate call from whether the absence itself counted as a strike.
+ */
+router.post('/:id/waive', requireRole('admin', 'staff'), async (req, res) => {
+  const reason = (req.body?.reason || '').trim();
+  if (!reason) return res.status(400).json({ error: 'A reason is required to waive a fee.' });
+
+  const { data: payment, error } = await db.from('payments')
+    .select('*, clients(full_name, parent_id)')
+    .eq('id', req.params.id).single();
+  if (error || !payment) return res.status(404).json({ error: 'Payment not found' });
+  if (!['no_show_fee', 'retainer_fee'].includes(payment.fee_type)) {
+    return res.status(400).json({ error: 'Only no-show and retainer fees can be waived, not a regular session invoice.' });
+  }
+  if (!['pending', 'overdue'].includes(payment.status)) {
+    return res.status(400).json({ error: `Only a pending or overdue fee can be waived (this one is currently "${payment.status}").` });
+  }
+
+  const { data: updated, error: upErr } = await db.from('payments')
+    .update({ status: 'waived', waive_reason: reason })
+    .eq('id', payment.id).select().single();
+  if (upErr) return res.status(500).json({ error: upErr.message });
+
+  const feeLabel = payment.fee_type === 'no_show_fee' ? 'no-show fee' : 'retainer fee';
+  const parentId = payment.clients?.parent_id;
+  if (parentId) {
+    await db.from('notifications').insert({
+      title: 'Fee waived',
+      body: `Your ₱${Number(payment.amount).toLocaleString()} ${feeLabel} (${payment.invoice_no || payment.id}) has been waived, no payment is needed. Reason: ${reason}.`,
+      icon: 'fa-hand-holding-heart',
+      target_user: parentId
+    });
+  }
+
+  await logAudit({
+    table_name: 'payments', record_id: payment.id, action: 'update',
+    description: `Waived ${feeLabel} ₱${payment.amount} (${payment.invoice_no || payment.id}), ${reason}`,
+    updated_by: req.user.id
+  });
+
+  res.json(updated);
+});
+
 /** POST /api/payments/:id/qrph, generate (or reuse) a PayMongo QRPh code for this invoice */
 router.post('/:id/qrph', qrphLimiter, async (req, res) => {
   const { data: payment, error } = await db.from('payments').select('*, clients(full_name, parent_id)').eq('id', req.params.id).single();
@@ -276,6 +337,7 @@ router.post('/:id/qrph', qrphLimiter, async (req, res) => {
     || (req.user.role === 'parent' && payment.clients?.parent_id === req.user.id);
   if (!canAccess) return res.status(403).json({ error: 'Not your invoice' });
   if (payment.status === 'paid') return res.status(400).json({ error: 'This invoice is already paid' });
+  if (payment.status === 'waived') return res.status(400).json({ error: 'This fee was waived, no payment is needed.' });
 
   // Guardians must settle a client's session invoices in date order, "advance
   // payment" means paying an upcoming session early, not skipping ahead of an

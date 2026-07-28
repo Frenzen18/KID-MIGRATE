@@ -97,6 +97,15 @@ export async function getTherapistShifts() {
   return getShiftsForRoles(['ot', 'speech']);
 }
 
+/** All active admin/staff accounts with their shift. Unlike therapist shifts,
+ *  these don't drive regular booking capacity, but DO gate Initial Assessment
+ *  availability (see slotInfoForDate in reservations.js): intake needs an
+ *  admin/staff on hand to walk the family through the facility, so an hour
+ *  with nobody from admin/staff on shift isn't offered for booking. */
+export async function getAdminStaffShifts() {
+  return getShiftsForRoles(['admin', 'staff']);
+}
+
 /**
  * GET /api/shifts, therapist shift schedule (staff-side), drives real booking
  * capacity. ?scope=admin instead returns Admin/Staff accounts' own shift +

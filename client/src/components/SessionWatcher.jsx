@@ -28,7 +28,7 @@ export default function SessionWatcher() {
 
     let cancelled = false;
     async function check() {
-      const myLoginAt = localStorage.getItem('kid_login_at');
+      const myLoginAt = sessionStorage.getItem('kid_login_at');
       // No stamp yet (a session that started before this feature existed),
       // nothing to compare against, skip rather than false-alarm on ourselves.
       if (!myLoginAt) return;
@@ -36,7 +36,18 @@ export default function SessionWatcher() {
         const { last_login_at } = await api('/auth/session-check');
         if (cancelled || !last_login_at) return;
         const isNewer = new Date(last_login_at).getTime() > new Date(myLoginAt).getTime() + NEWER_LOGIN_SLACK_MS;
-        if (isNewer && dismissedRef.current !== last_login_at) setAlertAt(last_login_at);
+        if (!isNewer || dismissedRef.current === last_login_at) return;
+        // That newer login might just be this same browser, logged into this
+        // same account in a different tab (sessionStorage isolates the token
+        // per tab, so that's now a completely normal way to use the app, not
+        // a sign anything's wrong). login() mirrors its own stamp into this
+        // localStorage marker, shared across every tab of this browser, so
+        // it's how another tab recognizes "that was me" and skips the alarm.
+        try {
+          const marker = JSON.parse(localStorage.getItem('kid_last_login_marker') || 'null');
+          if (marker?.userId === user.id && Math.abs(new Date(last_login_at).getTime() - new Date(marker.at).getTime()) <= NEWER_LOGIN_SLACK_MS) return;
+        } catch { /* malformed marker, fall through and warn as usual */ }
+        setAlertAt(last_login_at);
       } catch {
         // A failed check (offline, token mid-refresh, ...) just tries again next tick.
       }

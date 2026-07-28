@@ -64,15 +64,29 @@ const AUDIT_TABLE_OPTIONS = [
   { value: 'notifications', label: 'Notification Pushes' },
   { value: 'gas_entries', label: 'GAS Entries' }
 ];
-const AUDIT_ACTION_OPTIONS = [
-  { value: '', label: 'All Actions' },
-  { value: 'create', label: 'Create' },
-  { value: 'update', label: 'Update' },
-  { value: 'approve', label: 'Approve' },
-  { value: 'archive', label: 'Archive' },
-  { value: 'delete', label: 'Delete' },
-  { value: 'login', label: 'Login' }
-];
+// Which actions actually ever get logged against each record type (see the
+// logAudit() call sites across server/routes and server/lib) — e.g. only
+// profiles ever logs 'login', shifts only ever logs 'update', gas_entries
+// never deletes (only archives). Mirrors ACTIONS_BY_TABLE in Audit.jsx, keeps
+// this report's Action filter from offering options that can't match anything
+// for the selected Record.
+const ACTIONS_BY_TABLE = {
+  profiles: ['login', 'create', 'update', 'delete'],
+  clients: ['create', 'update', 'archive', 'restore'],
+  reservations: ['create', 'approve', 'update', 'delete'],
+  payments: ['create', 'approve', 'update'],
+  cms_posts: ['create', 'update', 'delete'],
+  announcements: ['create', 'update', 'delete'],
+  shifts: ['update'],
+  notifications: ['create'],
+  gas_entries: ['create', 'update', 'archive']
+};
+const ACTION_LABEL = { create: 'Create', update: 'Update', approve: 'Approve', archive: 'Archive', restore: 'Restore', delete: 'Delete', login: 'Login' };
+const ALL_AUDIT_ACTIONS = [...new Set(Object.values(ACTIONS_BY_TABLE).flat())];
+function auditActionOptionsFor(table) {
+  const allowed = table ? ACTIONS_BY_TABLE[table] || [] : ALL_AUDIT_ACTIONS;
+  return [{ value: '', label: 'All Actions' }, ...allowed.map(a => ({ value: a, label: ACTION_LABEL[a] }))];
+}
 
 // Same Status/Method options as the live Payments page (Payments.jsx), "Method" here is
 // really the payment channel (Online/Offline/Unpaid), same grouping Payments.jsx uses.
@@ -376,14 +390,23 @@ export default function Reports({ toast, role = 'admin' }) {
             <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12, marginBottom: 14 }}>
               <div>
                 <label className="form-label">Record</label>
-                <select className="form-select" value={auditTable} onChange={e => setAuditTable(e.target.value)}>
+                <select
+                  className="form-select"
+                  value={auditTable}
+                  onChange={e => {
+                    const table = e.target.value;
+                    setAuditTable(table);
+                    const allowed = table ? ACTIONS_BY_TABLE[table] || [] : ALL_AUDIT_ACTIONS;
+                    if (auditAction && !allowed.includes(auditAction)) setAuditAction('');
+                  }}
+                >
                   {AUDIT_TABLE_OPTIONS.map(o => <option key={o.value} value={o.value}>{o.label}</option>)}
                 </select>
               </div>
               <div>
                 <label className="form-label">Action</label>
                 <select className="form-select" value={auditAction} onChange={e => setAuditAction(e.target.value)}>
-                  {AUDIT_ACTION_OPTIONS.map(o => <option key={o.value} value={o.value}>{o.label}</option>)}
+                  {auditActionOptionsFor(auditTable).map(o => <option key={o.value} value={o.value}>{o.label}</option>)}
                 </select>
               </div>
             </div>

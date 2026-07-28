@@ -60,8 +60,23 @@ export async function sweepMonthlyAttendance() {
         const expected = effectiveStart > end ? 0 : countWeekdayOccurrences(schedule.day_of_week, effectiveStart, end);
         if (expected === 0) { await db.from('recurring_schedules').update({ last_monthly_attendance_check: end }).eq('id', schedule.id); continue; }
 
+        // Counts a raw 'completed' status, but also a 'confirmed'/'rescheduled'
+        // one nobody ever explicitly resolved - this sweep only ever looks at
+        // a fully-finished previous month, so any such row is guaranteed to
+        // already be in the past, i.e. effectively completed, exactly like
+        // the admin calendar's own display already treats it (isEffectivelyCompleted).
+        // Without this, a schedule staff simply forgot to click "End Session"
+        // on for a whole month would score a false 0% and trigger the
+        // guardian-facing "below the minimum" email.
+        // A make-up is an extra session outside the fixed weekly slot, not one
+        // of its `expected` occurrences (see the same exclusion in
+        // checkConsecutiveAbsences, noShow.js), counting it here could push
+        // `actual` past `expected` for a client who's actually skipping their
+        // regular slot but catching make-ups elsewhere.
         const { data: completed } = await db.from('reservations')
-          .select('id').eq('recurring_schedule_id', schedule.id).eq('status', 'completed')
+          .select('id').eq('recurring_schedule_id', schedule.id)
+          .eq('is_makeup', false)
+          .in('status', ['completed', 'confirmed', 'rescheduled'])
           .gte('date', start).lte('date', end);
         const actual = (completed || []).length;
         const rate = actual / expected;

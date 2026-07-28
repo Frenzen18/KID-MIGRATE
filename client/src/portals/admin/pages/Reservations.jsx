@@ -53,6 +53,13 @@ function weekOffsetForDate(dateStr) {
   const today = new Date(); today.setHours(0, 0, 0, 0);
   return Math.round((mondayOf(target) - mondayOf(today)) / (7 * 24 * 60 * 60 * 1000));
 }
+/** Monday of the Master Calendar's currently-viewed week (see masterWeekOffset). */
+function masterWeekStart(offset) {
+  const today = new Date(); today.setHours(0, 0, 0, 0);
+  const start = mondayOf(today);
+  start.setDate(start.getDate() + offset * 7);
+  return start;
+}
 function mapShift(s, idx) {
   const initials = (s.name || '').split(' ').map(w => w[0]).join('').toUpperCase().slice(0, 2);
   const av = SCHED_AVATAR_COLORS[idx % SCHED_AVATAR_COLORS.length];
@@ -68,7 +75,7 @@ function mapShift(s, idx) {
   };
 }
 
-const RESERVATIONS_TAB_KEYS = ['calendar', 'queue', 'mastercal', 'scheduling'];
+const RESERVATIONS_TAB_KEYS = ['calendar', 'queue', 'mastercal', 'waitlist', 'scheduling'];
 
 export default function Reservations({ toast, openModal }) {
   /* ── Section tabs ── */
@@ -77,6 +84,65 @@ export default function Reservations({ toast, openModal }) {
     return RESERVATIONS_TAB_KEYS.includes(saved) ? saved : 'calendar';
   });
   useEffect(() => { localStorage.setItem('kid_admin_reservations_tab', tab); }, [tab]);
+
+  /* ── Waitlist tab state, every client waiting for a taken recurring slot,
+     grouped by exact (day/time/therapist) with live FIFO position, see
+     GET /reservations/schedule-waitlist. ── */
+  const [waitlistEntries, setWaitlistEntries] = useState([]);
+  const [waitlistLoading, setWaitlistLoading] = useState(false);
+  const [showRemovedWaitlist, setShowRemovedWaitlist] = useState(false);
+  const fetchWaitlist = useCallback(async () => {
+    setWaitlistLoading(true);
+    try {
+      const data = await api('/reservations/schedule-waitlist');
+      setWaitlistEntries(data || []);
+    } catch (err) {
+      toast('Failed to load the waitlist: ' + err.message, 'fa-triangle-exclamation');
+    } finally {
+      setWaitlistLoading(false);
+    }
+  }, [toast]);
+  useEffect(() => { if (tab === 'waitlist') fetchWaitlist(); }, [tab, fetchWaitlist]);
+
+  async function removeFromWaitlist(id, name) {
+    try {
+      await api('/reservations/schedule-waitlist/' + id, { method: 'DELETE' });
+      toast(`${name} removed from the waitlist`, 'fa-check');
+      fetchWaitlist();
+    } catch (err) {
+      toast(err.message || 'Failed to remove from waitlist', 'fa-triangle-exclamation');
+    }
+  }
+
+  const [waitlistActionId, setWaitlistActionId] = useState(null); // entry id currently mid-notify/assign, disables its buttons
+  const [assignConfirm, setAssignConfirm] = useState(null); // waitlist entry pending the "are you sure" assign confirmation
+
+  async function notifyWaitlistEntry(id, name) {
+    setWaitlistActionId(id);
+    try {
+      await api('/reservations/schedule-waitlist/' + id + '/notify', { method: 'POST' });
+      toast(`${name} notified by SMS, email, and in-app`, 'fa-paper-plane');
+      fetchWaitlist();
+    } catch (err) {
+      toast(err.message || 'Failed to notify guardian', 'fa-triangle-exclamation');
+    } finally {
+      setWaitlistActionId(null);
+    }
+  }
+
+  async function assignWaitlistEntry(entry) {
+    setAssignConfirm(null);
+    setWaitlistActionId(entry.id);
+    try {
+      await api('/reservations/schedule-waitlist/' + entry.id + '/assign', { method: 'POST' });
+      toast(`${entry.clients?.full_name || 'Client'} assigned to the slot`, 'fa-check');
+      fetchWaitlist();
+    } catch (err) {
+      toast(err.message || 'Failed to assign client', 'fa-triangle-exclamation');
+    } finally {
+      setWaitlistActionId(null);
+    }
+  }
 
   /* ── Employee Scheduling tab state ── */
   const [shifts, setShifts] = useState([]);
@@ -317,10 +383,22 @@ export default function Reservations({ toast, openModal }) {
      Persisted in sessionStorage so a refresh mid-booking doesn't bounce staff
      back to the service-type picker and lose their place. ── */
   const BOOKING_SERVICE_TYPE_KEY = 'kc_booking_service_type';
+  // Every type the picker below actually offers, not just ASSESSMENT_TYPES
+  // (which shrank to just Initial Assessment once the discipline-specific
+  // assessments were retired), or restoring a saved Occupational/Speech
+  // Therapy selection would always fail and silently bounce staff back to
+  // this picker on every refresh.
+  const BOOKABLE_SERVICE_TYPES = [...ASSESSMENT_TYPES, 'Occupational Therapy', 'Speech Therapy'];
+  // A view-only option alongside the real, bookable types: shows every
+  // discipline's bookings together in one day view instead of forcing staff
+  // to pick one type just to see what's on the calendar. Not a real
+  // session_type, a NEW booking still requires picking an actual type first
+  // (see the emptyBlock/lockedEmpty branch in renderDaySlots below).
+  const ALL_TYPES = 'All Types';
   const [bookingServiceType, setBookingServiceType] = useState(() => {
     try {
       const saved = sessionStorage.getItem(BOOKING_SERVICE_TYPE_KEY);
-      return ASSESSMENT_TYPES.includes(saved) ? saved : '';
+      return BOOKABLE_SERVICE_TYPES.includes(saved) || saved === ALL_TYPES ? saved : '';
     } catch { return ''; }
   });
   useEffect(() => {
@@ -411,16 +489,22 @@ export default function Reservations({ toast, openModal }) {
   const roleOfTherapist = name => shifts.find(s => s.name === name)?.role;
   /** How many more bookings a slot can actually take for `serviceType`: Initial
    *  Assessment stays clinic-wide (effectiveSlotAvailable's own 1-per-hour cap),
-   *  Occupational/Speech-Language Assessment are scoped to just that discipline's
-   *  on-shift therapists (not the clinic's combined capacity across both
-   *  disciplines), everything else falls back to the slot's raw capacity. This is
-   *  the single source of truth for both the "X of Y free" label (renderDaySlots)
+   *  everything discipline-bound (Occupational/Speech Therapy, and the retired
+   *  Occupational/Speech-Language Assessment types) is scoped to just that
+   *  discipline's on-shift therapists, not the clinic's combined capacity
+   *  across both. Deliberately uses disciplineOfSessionType, not
+   *  REQUIRED_ROLE_FOR_TYPE, that constant only flags types needing an
+   *  upfront therapist picker in the booking modal (assessments only, none of
+   *  which are bookable anymore), a different concern than capacity scoping,
+   *  Occupational/Speech Therapy need the latter without the former, or the
+   *  booking modal's schedule/make-up/Quick Book UI breaks. This is the
+   *  single source of truth for both the "X of Y free" label (renderDaySlots)
    *  and whether a slot is actually clickable (slotAvailable/openBookingModal),
    *  they must never disagree, or a slot can look bookable but silently no-op. */
   function disciplineOpenCount(slot, serviceType) {
     if (!slot) return 0;
     if (slot.lunch_break) return 0;
-    const role = REQUIRED_ROLE_FOR_TYPE[serviceType];
+    const role = disciplineOfSessionType(serviceType);
     if (!role) return effectiveSlotAvailable(slot, serviceType);
     const disciplineTherapists = (slot.therapists || []).filter(n => roleOfTherapist(n) === role);
     const disciplineBookings = (slot.reservations || []).filter(r => disciplineOfSessionType(r.session_type) === role);
@@ -430,11 +514,20 @@ export default function Reservations({ toast, openModal }) {
 
   /* Fetch a wide window of reservations (covers the visible month + a buffer)
      so the mini-calendar dots, master calendar, and Adjust/Cancel table all
-     have real data without a separate request per view. */
+     have real data without a separate request per view. Widened to also
+     always cover the Master Calendar's own currently-viewed week
+     (masterWeekOffset), which navigates completely independently of the Book
+     Client tab's month picker below, staff can jump it (or a Quick Book can
+     book) many months out, and that week must never fall outside the loaded
+     range or its real, already-booked sessions just silently don't show up. */
   const reservationsReqRef = useRef(0);
   async function refetchReservations(silent) {
-    const from = fmtYMD(new Date(calView.y, calView.m - 1, 1));
-    const to = fmtYMD(new Date(calView.y, calView.m + 2, 0));
+    const calFrom = new Date(calView.y, calView.m - 1, 1);
+    const calTo = new Date(calView.y, calView.m + 2, 0);
+    const mStart = masterWeekStart(masterWeekOffset);
+    const mEnd = new Date(mStart); mEnd.setDate(mStart.getDate() + 6);
+    const from = fmtYMD(new Date(Math.min(calFrom.getTime(), mStart.getTime())));
+    const to = fmtYMD(new Date(Math.max(calTo.getTime(), mEnd.getTime())));
     const reqId = ++reservationsReqRef.current;
     try {
       const data = await api('/reservations?from=' + from + '&to=' + to);
@@ -454,19 +547,26 @@ export default function Reservations({ toast, openModal }) {
     setLoading(true);
     refetchReservations().finally(() => setLoading(false));
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [calView.y, calView.m]);
+  }, [calView.y, calView.m, masterWeekOffset]);
 
   /* Live ticker: re-check "ended/ongoing/future" slot states as the clock moves,
      and periodically refresh from the server so multi-user changes show up. */
   const [, setTick] = useState(0);
+  // refetchReservations closes over calView/masterWeekOffset/etc, so it's a new
+  // function every render. Route the poll through a ref updated on every render
+  // (instead of depending on it directly) so a stale interval never fetches with
+  // an outdated window (e.g. navigating the Master Calendar's week without
+  // calView.y/m changing) and overwrites fresh data with a narrower stale set,
+  // this was the "data disappears after staying on the page" bug.
+  const refetchReservationsRef = useRef(refetchReservations);
+  refetchReservationsRef.current = refetchReservations;
   useEffect(() => {
     const iv = setInterval(() => {
       setTick(t => t + 1);
-      refetchReservations(true);
+      refetchReservationsRef.current(true);
     }, 30000);
     return () => clearInterval(iv);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [calView.y, calView.m]);
+  }, []);
 
   const todayISO = todayPH();
   // Bookings must be made at least a day ahead, same-day booking isn't allowed
@@ -529,6 +629,9 @@ export default function Reservations({ toast, openModal }) {
 
   /* ══════════ Booking modal ══════════ */
   function openBookingModal(time) {
+    // "All Types" is a view-only overview, not a real session_type, a new
+    // booking always needs one of the actual bookable types picked first.
+    if (bookingServiceType === ALL_TYPES) { toast('Switch to a specific service type first to book a new session', 'fa-circle-info'); return; }
     if (sameDayLocked) { toast('Bookings must be made at least a day in advance', 'fa-lock'); return; }
     if (time && !slotAvailable(time)) return; // fully booked
     if (time && slotState(time) !== 'future') {
@@ -573,6 +676,14 @@ export default function Reservations({ toast, openModal }) {
     const amountVal = Number(amountEl?.value);
     if (!Number.isFinite(amountVal) || amountVal <= 0) { bkErr('Enter a valid payment amount.'); if (amountEl) { amountEl.style.borderColor = '#EF4444'; amountEl.focus(); } return; }
 
+    const isMakeup = document.getElementById('modal-is-makeup')?.checked === true;
+    // Only asked when the client has 2+ assigned therapists for this discipline
+    // (2x/week), see BookingModal's own hidden mirror of that selection.
+    const makeupTherapistVal = document.getElementById('modal-makeup-therapist-value')?.value || '';
+    if (isMakeup && !therapistVal && !makeupTherapistVal && document.getElementById('modal-makeup-therapist')) {
+      bkErr('Select which assigned therapist this make-up session is with.');
+      return;
+    }
     setBusy(true);
     try {
       await api('/reservations', {
@@ -582,9 +693,10 @@ export default function Reservations({ toast, openModal }) {
           date: selected.date,
           time_slot: bookedTime,
           session_type: bookingServiceType,
-          therapist_name: therapistVal || undefined,
+          therapist_name: therapistVal || makeupTherapistVal || undefined,
           notes: notesVal,
-          payment_amount: amountVal
+          payment_amount: amountVal,
+          is_makeup: isMakeup
         }
       });
       closeModal();
@@ -691,8 +803,9 @@ export default function Reservations({ toast, openModal }) {
   }
 
   /** Opens the slot-actions modal for a row from the Adjust & Cancel table, first points
-   *  `selected` at that booking's own date, since the modal's reschedule options are computed
-   *  from `daySlots`, which is fetched for whatever day is currently selected on the Calendar tab. */
+   *  `selected` at that booking's own date so the header/date context matches; the modal
+   *  fetches its own reschedule options scoped to this booking's `session_type`, so it's
+   *  correct regardless of what type the Calendar tab currently has selected. */
   function manageBookingFromQueue(r) {
     setSelected(computeSelection(r.date));
     openSlotActions(r.time_slot, r);
@@ -768,11 +881,6 @@ export default function Reservations({ toast, openModal }) {
       // a slot is actually clickable, the label shown here must never claim
       // more room than a click will actually honor.
       const openCount = disciplineOpenCount(slot, bookingServiceType);
-      const effCapacity = isInitialAssessment
-        ? 1
-        : requiredTherapistRole
-          ? (slot.therapists || []).filter(n => roleOfTherapist(n) === requiredTherapistRole).length
-          : slot.capacity;
       // Only show bookings for the same discipline currently being booked
       // (Initial Assessment stays clinic-wide/type-only), so the slot view
       // isn't cluttered with unrelated bookings while picking a time for one.
@@ -782,17 +890,33 @@ export default function Reservations({ toast, openModal }) {
       // therapist's schedule as an Occupational/Speech-Language Assessment
       // would. Capacity above still accounts for every booking either way.
       const bookingDiscipline = disciplineOfSessionType(bookingServiceType);
+      // The "X of Y free" label's denominator must be scoped the same way
+      // disciplineOpenCount scopes its numerator, or a Speech Therapy slot
+      // would show "of 3" (every on-shift therapist, OT included) against a
+      // numerator that only ever counts the real Speech-Language therapists.
+      const effCapacity = isInitialAssessment
+        ? 1
+        : bookingDiscipline
+          ? (slot.therapists || []).filter(n => roleOfTherapist(n) === bookingDiscipline).length
+          : slot.capacity;
       const bks = isInitialAssessment
         ? allBks.filter(r => r.session_type === 'Initial Assessment')
         : bookingDiscipline
           ? allBks.filter(r => disciplineOfSessionType(r.session_type) === bookingDiscipline)
           : allBks;
 
+      const isAllTypes = bookingServiceType === ALL_TYPES;
       const bookedBlock = (bk, extra) => {
         const client = bk.clients?.full_name || '-';
         const statusInfo = extra?.ongoing ? STATUS_PILL.ongoing : (STATUS_PILL[bk.status] || STATUS_PILL.pending);
         const showBadge = extra?.ongoing || bk.status !== 'confirmed';
         const pendingPayment = !extra?.ongoing && (bk.status === 'pending' || bk.status === 'awaiting_payment');
+        // A recurring-schedule booking (or any staff booking marked Unpaid) is
+        // confirmed the instant it's booked, payment is tracked completely
+        // separately and can lag behind, still show that unpaid state here
+        // instead of it only surfacing once someone opens the Payments tab.
+        const unpaidSession = !extra?.ongoing && bk.status === 'confirmed'
+          && (bk.payments || []).some(p => p.fee_type === 'session' && p.status !== 'paid');
         const blockColors = pendingPayment
           ? { background: '#FEF9C3', color: '#B45309', borderLeft: '3px solid #F59E0B' }
           : { background: '#DCFCE7', color: '#166534', borderLeft: '3px solid #16A34A' };
@@ -800,18 +924,29 @@ export default function Reservations({ toast, openModal }) {
           <div key={bk.id} className="slot-block" style={{ ...blockColors, cursor: extra?.locked ? 'not-allowed' : 'pointer', ...(extra?.dim ? { opacity: 0.55, pointerEvents: 'none' } : {}) }} onClick={extra?.locked ? undefined : () => openSlotActions(time, bk)}>
             <i className="fa-solid fa-calendar-check" style={{ marginRight: 6, fontSize: 10 }} />
             <strong>{client}</strong>
+            {/* The type isn't otherwise shown per-block, only relevant once
+                bookings from every discipline are mixed together in one view. */}
+            {isAllTypes && bk.session_type ? ' · ' + bk.session_type : ''}
             {bk.duration_min ? ' · ' + bk.duration_min + ' minutes' : ''}
             {bk.therapist_name ? ' · ' + bk.therapist_name : ''}
             {bk.room ? ' · ' + bk.room : ''}
             {showBadge && <span style={{ fontSize: 10, background: '#FEF9C3', color: '#B45309', borderRadius: 5, padding: '1px 7px', marginLeft: 6, fontWeight: 700 }}>{statusInfo.label.toUpperCase()}</span>}
+            {unpaidSession && <span style={{ fontSize: 10, background: '#FEE2E2', color: '#B91C1C', borderRadius: 5, padding: '1px 7px', marginLeft: 6, fontWeight: 700 }}>UNPAID</span>}
+            {bk.is_makeup && <span style={{ fontSize: 10, background: '#EDE9FE', color: '#6D28D9', borderRadius: 5, padding: '1px 7px', marginLeft: 6, fontWeight: 700 }}>MAKE-UP</span>}
             <span style={{ fontSize: 10, opacity: 0.6, marginLeft: 8 }}>click to reschedule / cancel</span>
           </div>
         );
       };
       const emptyBlock = () => (
-        <div className="slot-block empty" key="empty" onClick={() => openBookingModal(time)}>
-          + Click to book this slot{isInitialAssessment ? ' · 1 Initial Assessment slot per hour' : ` · ${openCount} of ${effCapacity} therapist${effCapacity === 1 ? '' : 's'} free`}
-        </div>
+        isAllTypes ? (
+          <div className="slot-block empty" key="empty" style={{ opacity: 0.6, cursor: 'not-allowed' }}>
+            Switch to a specific service type to book here
+          </div>
+        ) : (
+          <div className="slot-block empty" key="empty" onClick={() => openBookingModal(time)}>
+            + Click to book this slot{isInitialAssessment ? ' · 1 Initial Assessment slot per hour' : ` · ${openCount} of ${effCapacity} therapist${effCapacity === 1 ? '' : 's'} free`}
+          </div>
+        )
       );
       const lockedEmpty = (label) => (
         <div className="slot-block empty" key="locked" style={{ opacity: 0.5, pointerEvents: 'none', cursor: 'not-allowed' }}>
@@ -829,23 +964,39 @@ export default function Reservations({ toast, openModal }) {
         bks.forEach(bk => blocks.push(bookedBlock(bk, { locked: true, dim: true })));
         if (!bks.length) blocks.push(lockedEmpty('Session ended'));
       } else if (selected.date === todayISO) {
+        // The slot's own generic ended/ongoing/future state (a fixed 60-minute
+        // assumption per hour) only governs whether a NEW booking can still go
+        // into this hour. An EXISTING booking's own displayed state is instead
+        // resolved per-booking via effectiveStatusKey, which uses that
+        // reservation's real duration_min (see isOngoingReservation/
+        // isEffectivelyCompleted in reservationsHelpers.js) - otherwise a
+        // longer-than-60-minute session (e.g. Combined OT+Speech) would
+        // wrongly flip to "session completed" right at the hour mark while
+        // it's still actually in progress.
         const st = slotState(time);
+        bks.forEach(bk => {
+          const key = effectiveStatusKey(bk);
+          if (key === 'completed') {
+            blocks.push(
+              <div key={bk.id} className="slot-block" style={{ background: '#DCFCE7', color: '#166534', borderLeft: '3px solid #16A34A', cursor: 'not-allowed', opacity: 0.55, pointerEvents: 'none' }}>
+                <i className="fa-solid fa-circle-check" style={{ marginRight: 6, fontSize: 10 }} />{bk.clients?.full_name || '-'} · {time} <span style={{ fontSize: 10, opacity: 0.65, marginLeft: 8 }}>session completed</span>
+              </div>
+            );
+          } else if (key === 'ongoing') {
+            blocks.push(bookedBlock(bk, { ongoing: true }));
+          } else {
+            blocks.push(bookedBlock(bk));
+          }
+        });
         if (st === 'ended') {
-          bks.forEach(bk => blocks.push(
-            <div key={bk.id} className="slot-block" style={{ background: '#DCFCE7', color: '#166534', borderLeft: '3px solid #16A34A', cursor: 'not-allowed', opacity: 0.55, pointerEvents: 'none' }}>
-              <i className="fa-solid fa-circle-check" style={{ marginRight: 6, fontSize: 10 }} />{bk.clients?.full_name || '-'} · {time} <span style={{ fontSize: 10, opacity: 0.65, marginLeft: 8 }}>session completed</span>
-            </div>
-          ));
           if (!bks.length) blocks.push(lockedEmpty('Session ended, ' + time + ' has passed'));
         } else if (st === 'ongoing') {
-          bks.forEach(bk => blocks.push(bookedBlock(bk, { ongoing: true })));
-          if (!bks.length) blocks.push(
-            <div key="ongoing" className="slot-block empty" style={{ cursor: 'not-allowed', pointerEvents: 'none', background: '#FEF9C3', color: '#B45309', border: 'none', borderLeft: '3px solid #F59E0B', fontWeight: 600 }}>
-              <i className="fa-solid fa-hourglass-half" style={{ marginRight: 6, fontSize: 10 }} />Ongoing, this slot started at {time}
-            </div>
-          );
+          // No one is actually booked this hour, "Ongoing" (with the same
+          // amber/hourglass styling as a real in-progress session) would
+          // wrongly read as if a session were happening here, it's just too
+          // late to book anyone into it now, same as "Session ended" above.
+          if (!bks.length) blocks.push(lockedEmpty('Too late to book, ' + time + ' already started'));
         } else {
-          bks.forEach(bk => blocks.push(bookedBlock(bk)));
           if (slot.lunch_break) blocks.push(lunchBlock());
           else if (openCount > 0) blocks.push(lockedEmpty('Book at least a day in advance'));
         }
@@ -982,14 +1133,19 @@ export default function Reservations({ toast, openModal }) {
                   const isOT = /occupational|OT/i.test(type);
                   const isSpeech = /speech/i.test(type);
                   const pending = bk.status === 'pending' || bk.status === 'awaiting_payment';
-                  const blockBg = pending ? '#FEF9C3' : (isSpeech ? '#CFFAFE' : '#CCFBF1');
-                  const blockColor = pending ? '#B45309' : (isSpeech ? 'var(--cat-6)' : 'var(--cat-3)');
+                  // Confirmed but still unpaid, same recurring-schedule reasoning
+                  // as the day view above, payment lags behind confirmation.
+                  const unpaid = bk.status === 'confirmed' && (bk.payments || []).some(p => p.fee_type === 'session' && p.status !== 'paid');
+                  const makeup = !!bk.is_makeup;
+                  const blockBg = pending ? '#FEF9C3' : unpaid ? '#FEE2E2' : makeup ? '#EDE9FE' : (isSpeech ? '#CFFAFE' : '#CCFBF1');
+                  const blockColor = pending ? '#B45309' : unpaid ? '#B91C1C' : makeup ? '#6D28D9' : (isSpeech ? 'var(--cat-6)' : 'var(--cat-3)');
                   const therapistShort = bk.therapist_name ? bk.therapist_name.split(' ').map((w, idx) => idx === 0 ? w[0] + '.' : w).join(' ') : '';
-                  const meta = pending ? 'Pending' : [therapistShort, bk.room].filter(Boolean).join('·');
+                  const baseMeta = [therapistShort, bk.room].filter(Boolean).join('·');
+                  const meta = pending ? 'Pending' : unpaid ? `${baseMeta} · Unpaid` : makeup ? `${baseMeta} · Make-up` : baseMeta;
                   const typeAbbr = isSpeech ? 'Sp' : (isOT ? 'OT' : (type ? type.substring(0, 4) : ''));
                   return (
                     <div key={bk.id} style={{ background: blockBg, color: blockColor, borderRadius: 6, padding: '4px 6px', fontSize: 11, fontWeight: 600, marginBottom: 3 }}>
-                      {pending ? '⏳ ' : ''}{client.split(' ')[0]}, {typeAbbr}<br /><span style={{ fontWeight: 400 }}>{meta}</span>
+                      {pending ? '⏳ ' : unpaid ? '⚠ ' : makeup ? '🔄 ' : ''}{client.split(' ')[0]}, {typeAbbr}<br /><span style={{ fontWeight: 400 }}>{meta}</span>
                     </div>
                   );
                 })}
@@ -1024,6 +1180,7 @@ export default function Reservations({ toast, openModal }) {
         <button className={'res-tab' + (tab === 'calendar' ? ' active' : '')} onClick={() => setTab('calendar')}><i className="fa-solid fa-calendar-days" style={{ marginRight: 6 }} />Book Client</button>
         <button className={'res-tab' + (tab === 'queue' ? ' active' : '')} onClick={() => setTab('queue')}><i className="fa-solid fa-list-check" style={{ marginRight: 6 }} />Adjust &amp; Cancel Schedules</button>
         <button className={'res-tab' + (tab === 'mastercal' ? ' active' : '')} onClick={() => setTab('mastercal')}><i className="fa-solid fa-table-cells-large" style={{ marginRight: 6 }} />Master Calendar</button>
+        <button className={'res-tab' + (tab === 'waitlist' ? ' active' : '')} onClick={() => setTab('waitlist')}><i className="fa-solid fa-user-clock" style={{ marginRight: 6 }} />Waitlist</button>
         <button className={'res-tab' + (tab === 'scheduling' ? ' active' : '')} onClick={() => setTab('scheduling')}><i className="fa-solid fa-calendar-alt" style={{ marginRight: 6 }} />Employee Scheduling</button>
       </div>
 
@@ -1048,13 +1205,16 @@ export default function Reservations({ toast, openModal }) {
                   <i className="fa-solid fa-calendar-week" style={{ marginRight: 8, color: '#0D9488' }} />{t}
                 </button>
               ))}
+              <button className="btn-secondary" style={{ padding: '16px 14px', textAlign: 'left', fontWeight: 600 }} onClick={() => setBookingServiceType(ALL_TYPES)}>
+                <i className="fa-solid fa-layer-group" style={{ marginRight: 8, color: '#6366F1' }} />All Types (overview)
+              </button>
             </div>
           </div>
         ) : (
         <>
         <div style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '10px 14px', borderRadius: 9, background: '#F0F9FF', border: '1px solid #BAE6FD', marginBottom: 16 }}>
           <i className="fa-solid fa-clipboard-check" style={{ color: '#0EA5E9', fontSize: 16 }} />
-          <div style={{ fontSize: 13, fontWeight: 700, color: '#0F172A', flex: 1 }}>Booking: {bookingServiceType}</div>
+          <div style={{ fontSize: 13, fontWeight: 700, color: '#0F172A', flex: 1 }}>{bookingServiceType === ALL_TYPES ? 'Overview: All Service Types' : 'Booking: ' + bookingServiceType}</div>
           <button className="btn-secondary" style={{ fontSize: 11.5, padding: '5px 10px' }} onClick={resetBooking}>Change</button>
         </div>
         <div style={{ display: 'grid', gridTemplateColumns: '300px 1fr', gap: 16, marginBottom: 24 }}>
@@ -1092,11 +1252,13 @@ export default function Reservations({ toast, openModal }) {
               <div>
                 <div className="section-title">{selected.label + ', ' + selected.year}</div>
                 <div className="section-sub">
-                  {bookingServiceType === 'Initial Assessment'
-                    ? 'Click a time slot to book · 1 Initial Assessment per hour clinic-wide'
-                    : requiredTherapistRole
-                      ? `Click a time slot to book · Pick the ${requiredTherapistRole === 'speech' ? 'Speech-Language' : 'Occupational'} therapist in the booking modal`
-                      : 'Click a time slot to book · Showing all therapists and room allocations'}
+                  {bookingServiceType === ALL_TYPES
+                    ? 'Read-only overview of every service type together · Switch to a specific type to book a new session'
+                    : bookingServiceType === 'Initial Assessment'
+                      ? 'Click a time slot to book · 1 Initial Assessment per hour clinic-wide'
+                      : requiredTherapistRole
+                        ? `Click a time slot to book · Pick the ${requiredTherapistRole === 'speech' ? 'Speech-Language' : 'Occupational'} therapist in the booking modal`
+                        : 'Click a time slot to book · Showing all therapists and room allocations'}
                 </div>
               </div>
               <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
@@ -1164,7 +1326,7 @@ export default function Reservations({ toast, openModal }) {
       <div style={{ display: tab === 'mastercal' ? '' : 'none' }}>
         <div className="card" style={{ padding: '22px 0 0', marginBottom: 24 }}>
           <div style={{ padding: '0 24px 16px', borderBottom: '1px solid #F1F5F9', display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: 10 }}>
-            <div><div className="section-title">Master Calendar: Therapist Assignments, Rooms &amp; Parent-Booked Slots</div><div className="section-sub">Comprehensive weekly view of all confirmed sessions, room allocations, and pending parent bookings</div></div>
+            <div><div className="section-title">Master Calendar: Therapist Assignments, Rooms &amp; Parent-Booked Slots</div></div>
             <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
               <select className="form-select" style={{ width: 'auto', height: 34, fontSize: 12.5 }} value={masterTherapistFilter} onChange={e => setMasterTherapistFilter(e.target.value)} title="View one therapist's own schedule only">
                 <option value="">All Therapists</option>
@@ -1188,19 +1350,156 @@ export default function Reservations({ toast, openModal }) {
             <div style={{ display: 'flex', gap: 16, marginTop: 14, paddingTop: 12, borderTop: '1px solid #F1F5F9', flexWrap: 'wrap' }}>
               <div style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 12, color: '#475569' }}><span style={{ width: 14, height: 14, background: '#CCFBF1', borderRadius: 3, display: 'inline-block' }} />OT Session</div>
               <div style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 12, color: '#475569' }}><span style={{ width: 14, height: 14, background: '#CFFAFE', borderRadius: 3, display: 'inline-block' }} />Speech Session</div>
-              <div style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 12, color: '#475569' }}><span style={{ width: 14, height: 14, background: '#FEF9C3', borderRadius: 3, display: 'inline-block' }} />Pending Parent Booking</div>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 12, color: '#475569' }}><span style={{ width: 14, height: 14, background: '#FEE2E2', borderRadius: 3, display: 'inline-block' }} />Confirmed, Not Yet Paid</div>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 12, color: '#475569' }}><span style={{ width: 14, height: 14, background: '#EDE9FE', borderRadius: 3, display: 'inline-block' }} />Make-up Session</div>
               <div style={{ fontSize: 12, color: '#94A3B8', marginLeft: 'auto' }}><i className="fa-solid fa-calendar-week" style={{ marginRight: 5 }} />Week of {master.weekLabel}</div>
             </div>
           </div>
         </div>
       </div>
 
+      {/* ═══════ WAITLIST ═══════ */}
+      <div style={{ display: tab === 'waitlist' ? '' : 'none' }}>
+        <div className="card" style={{ padding: '22px 0 0', marginBottom: 24 }}>
+          <div style={{ padding: '0 24px 16px', borderBottom: '1px solid #F1F5F9', display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: 10 }}>
+            <div><div className="section-title">Client Waitlist</div></div>
+            <button className="btn-secondary" style={{ fontSize: 11.5, padding: '6px 12px' }} onClick={fetchWaitlist} disabled={waitlistLoading}>
+              <i className={'fa-solid ' + (waitlistLoading ? 'fa-spinner fa-spin' : 'fa-rotate')} style={{ marginRight: 5 }} />Refresh
+            </button>
+          </div>
+          <div style={{ padding: '16px 24px' }}>
+            {waitlistLoading ? (
+              <div style={{ textAlign: 'center', padding: '28px 0', color: '#94A3B8', fontSize: 13 }}><i className="fa-solid fa-spinner fa-spin" style={{ marginRight: 6 }} />Loading waitlist…</div>
+            ) : waitlistEntries.length === 0 ? (
+              <div style={{ textAlign: 'center', padding: '28px 0', color: '#94A3B8', fontSize: 13 }}>No one is currently on a waitlist.</div>
+            ) : (() => {
+              const activeEntries = waitlistEntries.filter(e => e.status !== 'declined' && e.status !== 'cancelled');
+              const groups = {};
+              for (const entry of activeEntries) {
+                const key = entry.day_of_week + '|' + entry.time_slot + '|' + entry.therapist_name;
+                (groups[key] ||= { day_of_week: entry.day_of_week, time_slot: entry.time_slot, therapist_name: entry.therapist_name, discipline: entry.discipline, entries: [] }).entries.push(entry);
+              }
+              const STATUS_STYLE = {
+                waiting: { label: 'Waiting', pill: 'pill pill-amber' },
+                notified: { label: 'Offered, Awaiting Response', pill: 'pill pill-blue' },
+                accepted: { label: 'Accepted', pill: 'pill pill-green' },
+                declined: { label: 'Declined', pill: 'pill pill-gray' },
+                cancelled: { label: 'Cancelled', pill: 'pill pill-gray' }
+              };
+              if (activeEntries.length === 0) {
+                return <div style={{ textAlign: 'center', padding: '28px 0', color: '#94A3B8', fontSize: 13 }}>No one is currently active on a waitlist.</div>;
+              }
+              return Object.values(groups).sort((a, b) => a.day_of_week - b.day_of_week || a.time_slot.localeCompare(b.time_slot)).map(g => (
+                <div key={g.day_of_week + g.time_slot + g.therapist_name} style={{ border: '1px solid #E2E8F0', borderRadius: 10, marginBottom: 14, overflow: 'hidden' }}>
+                  <div style={{ padding: '10px 16px', background: '#F8FAFC', borderBottom: '1px solid #E2E8F0', fontSize: 12.5, fontWeight: 700, color: '#0F172A' }}>
+                    {DAY_NAMES[g.day_of_week]}s at {g.time_slot} with {g.therapist_name}
+                    <span style={{ fontWeight: 400, color: '#64748B' }}> · {g.discipline === 'OT' ? 'Occupational Therapy' : 'Speech Therapy'} · {g.entries.length} waiting</span>
+                  </div>
+                  <div>
+                    {g.entries.map(e => {
+                      const st = STATUS_STYLE[e.status] || STATUS_STYLE.waiting;
+                      return (
+                        <div key={e.id} style={{ display: 'flex', alignItems: 'center', gap: 12, padding: '10px 16px', borderBottom: '1px solid #F1F5F9' }}>
+                          {e.status === 'waiting' && (
+                            <span style={{ width: 24, height: 24, borderRadius: '50%', background: e.queue_position === 1 ? '#0EA5E9' : '#E2E8F0', color: e.queue_position === 1 ? '#fff' : '#64748B', fontSize: 11, fontWeight: 700, display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}>
+                              {e.queue_position}
+                            </span>
+                          )}
+                          <div style={{ flex: 1, minWidth: 0 }}>
+                            <div style={{ fontSize: 13, fontWeight: 600, color: '#0F172A' }}>{e.clients?.full_name || 'Unknown client'}</div>
+                            <div style={{ fontSize: 11, color: '#94A3B8' }}>{e.clients?.client_code} · Added {new Date(e.created_at).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })}</div>
+                          </div>
+                          <span className={st.pill} style={{ fontSize: 10 }}>{st.label}</span>
+                          {e.status === 'waiting' && (
+                            <button className="btn-edit" style={{ fontSize: 11 }} disabled={waitlistActionId === e.id} onClick={() => notifyWaitlistEntry(e.id, e.clients?.full_name || 'Client')}>
+                              <i className={'fa-solid ' + (waitlistActionId === e.id ? 'fa-spinner fa-spin' : 'fa-paper-plane')} style={{ marginRight: 4 }} />Notify
+                            </button>
+                          )}
+                          {(e.status === 'waiting' || e.status === 'notified') && (
+                            <button
+                              className="btn-edit"
+                              style={{ fontSize: 11, color: e.slot_taken ? '#94A3B8' : '#0D9488', cursor: e.slot_taken ? 'not-allowed' : 'pointer' }}
+                              disabled={waitlistActionId === e.id || e.slot_taken}
+                              title={e.slot_taken ? 'Someone still holds this slot, discharge them first' : 'Assign this client to the slot now'}
+                              onClick={() => setAssignConfirm(e)}
+                            >
+                              <i className="fa-solid fa-user-check" style={{ marginRight: 4 }} />Assign
+                            </button>
+                          )}
+                          {(e.status === 'waiting' || e.status === 'notified') && (
+                            <button className="btn-edit" style={{ fontSize: 11, color: '#DC2626' }} onClick={() => removeFromWaitlist(e.id, e.clients?.full_name || 'Client')}>
+                              <i className="fa-solid fa-trash" style={{ marginRight: 4 }} />Remove
+                            </button>
+                          )}
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
+              ));
+            })()}
+          </div>
+        </div>
+
+        {/* Removed/declined, kept visually separate from the active waitlist above so it
+            doesn't get confused with clients who are still actually in line for a slot. */}
+        {(() => {
+          const inactiveEntries = waitlistEntries.filter(e => e.status === 'declined' || e.status === 'cancelled');
+          if (inactiveEntries.length === 0) return null;
+          const sorted = [...inactiveEntries].sort((a, b) => new Date(b.created_at) - new Date(a.created_at));
+          return (
+            <div className="card" style={{ padding: '22px 0 0', marginBottom: 24 }}>
+              <div
+                style={{ padding: '0 24px 16px', borderBottom: showRemovedWaitlist ? '1px solid #F1F5F9' : 'none', display: 'flex', justifyContent: 'space-between', alignItems: 'center', cursor: 'pointer', userSelect: 'none' }}
+                onClick={() => setShowRemovedWaitlist(v => !v)}
+              >
+                <div>
+                  <div className="section-title" style={{ color: '#64748B' }}>Cancelled / Declined <span style={{ fontWeight: 400, color: '#94A3B8' }}>({sorted.length})</span></div>
+                </div>
+                <i className={'fa-solid ' + (showRemovedWaitlist ? 'fa-chevron-up' : 'fa-chevron-down')} style={{ color: '#94A3B8', fontSize: 13 }} />
+              </div>
+              {showRemovedWaitlist && (
+                <div style={{ padding: '4px 24px 16px' }}>
+                  {sorted.map(e => (
+                    <div key={e.id} style={{ display: 'flex', alignItems: 'center', gap: 12, padding: '10px 0', borderBottom: '1px solid #F1F5F9', opacity: 0.7 }}>
+                      <div style={{ flex: 1, minWidth: 0 }}>
+                        <div style={{ fontSize: 13, fontWeight: 600, color: '#475569' }}>{e.clients?.full_name || 'Unknown client'}</div>
+                        <div style={{ fontSize: 11, color: '#94A3B8' }}>
+                          {DAY_NAMES[e.day_of_week]}s at {e.time_slot} with {e.therapist_name} · {e.discipline === 'OT' ? 'Occupational Therapy' : 'Speech Therapy'}
+                        </div>
+                      </div>
+                      <span className="pill pill-gray" style={{ fontSize: 10 }}>{e.status === 'declined' ? 'Declined' : 'Cancelled'}</span>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          );
+        })()}
+      </div>
+
+      {/* Assign confirmation, direct-assigns a waitlisted client without the notify/accept round-trip */}
+      {assignConfirm && (
+        <Modal title="Assign this slot?" onClose={() => setAssignConfirm(null)} width={420}>
+          <p style={{ fontSize: 13.5, color: '#64748B', lineHeight: 1.6, marginBottom: 22 }}>
+            Are you sure you want to assign <strong>{assignConfirm.clients?.full_name || 'this client'}</strong> to{' '}
+            {DAY_NAMES[assignConfirm.day_of_week]}s at {assignConfirm.time_slot} with {assignConfirm.therapist_name}? This creates their recurring schedule immediately, skipping the guardian notify/accept step.
+          </p>
+          <div style={{ display: 'flex', gap: 10, justifyContent: 'flex-end' }}>
+            <button className="btn-secondary" onClick={() => setAssignConfirm(null)}>Cancel</button>
+            <button className="btn-primary" onClick={() => assignWaitlistEntry(assignConfirm)}>
+              <i className="fa-solid fa-user-check" style={{ marginRight: 5 }} />Yes, Assign
+            </button>
+          </div>
+        </Modal>
+      )}
+
       {/* ═══════════════ EMPLOYEE SCHEDULING ═══════════════ */}
       <div style={{ display: tab === 'scheduling' ? '' : 'none' }}>
         {/* Clinic operating hours, editable here since it's the same context as shift scheduling */}
         <div className="card" style={{ padding: '22px 24px', marginBottom: 16 }}>
           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16, flexWrap: 'wrap', gap: 10 }}>
-            <div><div className="section-title">Clinic Operating Hours</div><div className="section-sub">Drives Initial Assessment availability, independent of any single therapist's shift</div></div>
+            <div><div className="section-title">Clinic Operating Hours</div></div>
             <button className="btn-primary" onClick={saveOperatingHours} disabled={hoursSaving}>
               <i className={'fa-solid ' + (hoursSaving ? 'fa-spinner fa-spin' : 'fa-floppy-disk')} style={{ marginRight: 4 }} />{hoursSaving ? 'Saving…' : 'Save'}
             </button>
@@ -1231,14 +1530,10 @@ export default function Reservations({ toast, openModal }) {
               </select>
             </div>
           </div>
-          <div style={{ fontSize: 11.5, color: '#94A3B8', marginTop: 10, marginBottom: 18 }}>
-            <i className="fa-solid fa-circle-info" style={{ marginRight: 5 }} />Initial Assessment slots are generated straight from these hours, clinic-wide, capped at 1 per hour, since intake doesn't have a dedicated therapist yet. Every other session type still follows each therapist's own shift below. Sunday is always closed clinic-wide.
-          </div>
 
           {/* Holidays/closures, specific one-off dates, blocks ALL booking types that day */}
           <div style={{ paddingTop: 16, borderTop: '1px solid #F1F5F9' }}>
-            <div style={{ fontSize: 13, fontWeight: 700, color: '#0F172A', marginBottom: 4 }}>Holidays &amp; Closures</div>
-            <div className="section-sub" style={{ marginBottom: 12 }}>Specific dates the clinic is entirely closed, no bookings of any kind are allowed that day</div>
+            <div style={{ fontSize: 13, fontWeight: 700, color: '#0F172A', marginBottom: 12 }}>Holidays &amp; Closures</div>
             <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginBottom: 14 }}>
               <input type="date" className="form-input" style={{ width: 'auto' }} min={todayPH()} value={newHolidayDate} onChange={e => setNewHolidayDate(e.target.value)} />
               <input className="form-input" style={{ flex: 1, minWidth: 160 }} placeholder="Reason (optional), e.g. Christmas Day" value={newHolidayLabel} onChange={e => setNewHolidayLabel(e.target.value)} />
@@ -1268,7 +1563,7 @@ export default function Reservations({ toast, openModal }) {
           {/* View intricate therapist shift schedules */}
           <div className="card" style={{ padding: '22px 0 0' }}>
             <div style={{ padding: '0 24px 16px', borderBottom: '1px solid #F1F5F9', display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: 10 }}>
-              <div><div className="section-title">Therapist Shift Schedules</div><div className="section-sub">View intricate therapist shift schedules</div></div>
+              <div><div className="section-title">Therapist Shift Schedules</div></div>
               <div style={{ display: 'flex', gap: 6 }}>
                 <select className="form-select" style={{ width: 'auto', height: 34, fontSize: 12.5 }} defaultValue="All Departments"><option>All Departments</option><option>Occupational Therapy</option><option>Speech Therapy</option></select>
                 <button className="qa-btn" style={{ width: 'auto', padding: '0 14px', height: 34, fontSize: 12.5 }} onClick={exportShiftsCsv}>
@@ -1288,15 +1583,12 @@ export default function Reservations({ toast, openModal }) {
                 </tbody>
               </table>
             </div>
-            <div style={{ padding: '10px 24px 16px', fontSize: 11.5, color: '#94A3B8' }}>
-              <i className="fa-solid fa-circle-info" style={{ marginRight: 5 }} />Shifts control booking availability: each hour offers as many reservation slots as there are therapists on shift, and sessions are auto-assigned to whoever is free.
-            </div>
           </div>
 
           {/* Manage therapist availability matrices */}
           <div className="card" style={{ padding: '22px 20px' }}>
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16 }}>
-              <div><div className="section-title">Availability Matrix</div><div className="section-sub">Manage therapist availability</div></div>
+              <div><div className="section-title">Therapist Availability Matrix</div></div>
               <button className="btn-primary" onClick={saveMatrix} disabled={matrixSaving}><i className={'fa-solid ' + (matrixSaving ? 'fa-spinner fa-spin' : 'fa-floppy-disk')} style={{ marginRight: 4 }} />{matrixSaving ? 'Saving…' : 'Save'}</button>
             </div>
             {/* Weekly grid */}
@@ -1331,7 +1623,6 @@ export default function Reservations({ toast, openModal }) {
             <div style={{ display: 'flex', gap: 14, alignItems: 'center', flexWrap: 'wrap' }}>
               <div style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 11.5, color: '#64748B' }}><span className="avail-dot" style={{ background: '#22C55E', pointerEvents: 'none', width: 12, height: 12 }} /> Available</div>
               <div style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 11.5, color: '#64748B' }}><span className="avail-dot" style={{ background: '#E2E8F0', pointerEvents: 'none', width: 12, height: 12 }} /> Day off</div>
-              <span style={{ fontSize: 11, color: '#94A3B8', marginLeft: 4 }}>· Click a dot to toggle, then Save. Day-off therapists add no booking slots that day; affected bookings are flagged and parents notified.</span>
             </div>
           </div>
         </div>
@@ -1342,7 +1633,6 @@ export default function Reservations({ toast, openModal }) {
           <div className="card" style={{ padding: '22px 0 0' }}>
             <div style={{ padding: '0 24px 16px', borderBottom: '1px solid #F1F5F9' }}>
               <div className="section-title">Admin &amp; Staff Shift Schedules</div>
-              <div className="section-sub">Front-desk/admin availability, for schedule visibility only</div>
             </div>
             <div style={{ overflowX: 'auto' }}>
               <table className="data-table">
@@ -1356,14 +1646,11 @@ export default function Reservations({ toast, openModal }) {
                 </tbody>
               </table>
             </div>
-            <div style={{ padding: '10px 24px 16px', fontSize: 11.5, color: '#94A3B8' }}>
-              <i className="fa-solid fa-circle-info" style={{ marginRight: 5 }} />Admin/staff shifts are informational only, they don't add booking slots or affect client capacity.
-            </div>
           </div>
 
           <div className="card" style={{ padding: '22px 20px' }}>
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16 }}>
-              <div><div className="section-title">Admin &amp; Staff Availability Matrix</div><div className="section-sub">Manage admin/staff day-off availability</div></div>
+              <div><div className="section-title">Admin &amp; Staff Availability Matrix</div></div>
               <button className="btn-primary" onClick={saveAdminMatrix} disabled={adminMatrixSaving}><i className={'fa-solid ' + (adminMatrixSaving ? 'fa-spinner fa-spin' : 'fa-floppy-disk')} style={{ marginRight: 4 }} />{adminMatrixSaving ? 'Saving…' : 'Save'}</button>
             </div>
             <div style={{ overflowX: 'auto', marginBottom: 16 }}>
@@ -1409,7 +1696,7 @@ export default function Reservations({ toast, openModal }) {
 
       {/* ══════════ Page-local modals ══════════ */}
       {modal && modal.kind === 'booking' && (
-        <BookingModal key={bookingModalResetKey} selected={selected} daySlots={daySlots} slotState={slotState} defaultTime={modal.defaultTime} time={modal.time} clients={clients} clientLabel={clientLabel} serviceType={bookingServiceType} busy={busy} onClose={closeModal} onConfirm={confirmBooking} />
+        <BookingModal key={bookingModalResetKey} selected={selected} daySlots={daySlots} slotState={slotState} defaultTime={modal.defaultTime} time={modal.time} clients={clients} clientLabel={clientLabel} serviceType={bookingServiceType} busy={busy} onClose={closeModal} onConfirm={confirmBooking} onBooked={refetchReservations} toast={toast} />
       )}
       {/* Slot-already-taken confirm, rendered on top of the booking modal
          (higher z-index) rather than replacing it, so "No" can dismiss back
@@ -1430,7 +1717,7 @@ export default function Reservations({ toast, openModal }) {
         </div>
       )}
       {modal && modal.kind === 'slot' && (
-        <SlotActionsModal selected={selected} daySlots={daySlots} time={modal.time} reservation={modal.reservation} busy={busy} onClose={closeModal} onReschedule={rescheduleSlot} onCancel={cancelSlot} onNoShow={noShowSlot} onEndSession={endSessionSlot} />
+        <SlotActionsModal selected={selected} time={modal.time} reservation={modal.reservation} busy={busy} onClose={closeModal} onReschedule={rescheduleSlot} onCancel={cancelSlot} onNoShow={noShowSlot} onEndSession={endSessionSlot} />
       )}
       {viewBooking && (() => {
         const r = viewBooking;

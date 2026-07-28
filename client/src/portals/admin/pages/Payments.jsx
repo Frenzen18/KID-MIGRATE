@@ -8,7 +8,7 @@ function fmtDate(iso) {
   return new Date(iso).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
 }
 
-const STATUS_PILL = { paid: 'pill-green', pending: 'pill-amber', overdue: 'pill-red', refunded: 'pill' };
+const STATUS_PILL = { paid: 'pill-green', pending: 'pill-amber', overdue: 'pill-red', refunded: 'pill', waived: 'pill-teal' };
 // QRPh is a guardian's own self-checkout (online); Cash/Check only ever get
 // set when staff/admin book and collect payment in person (offline).
 const METHOD_CHANNEL = { QRPh: 'Online', Cash: 'Offline', Check: 'Offline', Unpaid: 'Unpaid' };
@@ -50,6 +50,28 @@ export default function Payments({ go, toast }) {
       toast('Error: ' + err.message, 'fa-triangle-exclamation');
     } finally {
       setRecordSaving(false);
+    }
+  }
+
+  /* ── Waive a no-show/retainer fee: forgives the money owed without
+     requiring payment, purely financial, doesn't touch the underlying
+     excused/unexcused status or the 3-consecutive-absence policy count. ── */
+  const [waiveTarget, setWaiveTarget] = useState(null);
+  const [waiveReason, setWaiveReason] = useState('');
+  const [waiveSaving, setWaiveSaving] = useState(false);
+  function openWaive(p) { setWaiveTarget(p); setWaiveReason(''); }
+  async function submitWaive() {
+    if (!waiveTarget || !waiveReason.trim()) return;
+    setWaiveSaving(true);
+    try {
+      await api('/payments/' + waiveTarget.id + '/waive', { method: 'POST', body: { reason: waiveReason.trim() } });
+      toast(`Waived: ${waiveTarget.invoice_no || 'invoice'} no longer needs to be paid`, 'fa-check');
+      setWaiveTarget(null);
+      fetchAll();
+    } catch (err) {
+      toast('Error: ' + err.message, 'fa-triangle-exclamation');
+    } finally {
+      setWaiveSaving(false);
     }
   }
 
@@ -143,7 +165,7 @@ export default function Payments({ go, toast }) {
               <button className="btn-secondary" style={{ height: 34, fontSize: 12.5 }} onClick={() => selectClient('')}>Clear client</button>
             )}
             <select className="form-select" style={{ width: 'auto', height: 34, fontSize: 12.5 }} value={statusFilter} onChange={e => setStatusFilter(e.target.value)}>
-              <option value="">All Status</option><option value="paid">Paid</option><option value="pending">Pending</option><option value="overdue">Overdue</option><option value="refunded">Refunded</option>
+              <option value="">All Status</option><option value="paid">Paid</option><option value="pending">Pending</option><option value="overdue">Overdue</option><option value="refunded">Refunded</option><option value="waived">Waived</option>
             </select>
             <select className="form-select" style={{ width: 'auto', height: 34, fontSize: 12.5 }} value={methodFilter} onChange={e => setMethodFilter(e.target.value)}>
               <option value="">All Methods</option><option value="Online">Online</option><option value="Offline">Offline</option><option value="Unpaid">Unpaid</option>
@@ -151,7 +173,7 @@ export default function Payments({ go, toast }) {
           </div>
         </div>
         <div style={{ overflowX: 'auto' }}><table className="data-table">
-          <thead><tr><th style={{ paddingLeft: 24 }}>Invoice No.</th><th>Client</th><th>Method</th><th>Reference</th><th>Amount</th><th>Date</th><th>Status</th><th style={{ textAlign: 'right', paddingRight: 24 }}>Actions</th></tr></thead>
+          <thead><tr><th style={{ paddingLeft: 24 }}>Invoice No. / Session Date</th><th>Client</th><th>Method</th><th>Reference</th><th>Amount</th><th>Invoiced On</th><th>Status</th><th style={{ textAlign: 'right', paddingRight: 24 }}>Actions</th></tr></thead>
           <tbody>
             {loading && <tr><td colSpan={8} style={{ textAlign: 'center', padding: 24, fontSize: 12.5, color: '#94A3B8' }}>Loading…</td></tr>}
             {!loading && filteredTxns.length === 0 && <tr><td colSpan={8} style={{ textAlign: 'center', padding: 24, fontSize: 12.5, color: '#94A3B8' }}>No transactions match these filters</td></tr>}
@@ -162,16 +184,29 @@ export default function Payments({ go, toast }) {
                   {p.fee_type === 'no_show_fee' && <span className="pill pill-red" style={{ fontSize: 9, marginLeft: 6 }}>No-Show</span>}
                   {p.fee_type === 'retainer_fee' && <span className="pill pill-amber" style={{ fontSize: 9, marginLeft: 6 }}>Retainer</span>}
                   {!p.reservation_id && p.status === 'paid' && p.fee_type === 'session' && <span className="pill pill-green" style={{ fontSize: 9, marginLeft: 6 }}>Unallocated Credit</span>}
+                  {p.reservations?.is_makeup && <span className="pill pill-blue" style={{ fontSize: 9, marginLeft: 6 }}>Make-Up</span>}
+                  {p.reservations?.date && (
+                    <div style={{ fontSize: 10.5, color: '#64748B', fontWeight: 500, marginTop: 2 }}>
+                      <i className="fa-solid fa-calendar-day" style={{ marginRight: 4 }} />
+                      {fmtDate(p.reservations.date)}{p.reservations.time_slot ? ' · ' + p.reservations.time_slot : ''}
+                    </div>
+                  )}
                 </td>
                 <td><div style={{ fontWeight: 600 }}>{p.clients?.full_name || '-'}</div><div style={{ fontSize: 11, color: '#94A3B8' }}>{p.clients?.guardian_name || ''}</div></td>
                 <td><span className={'pill ' + (CHANNEL_PILL[METHOD_CHANNEL[p.method]] || 'pill')} style={{ fontSize: 10 }}>{METHOD_CHANNEL[p.method] || p.method}</span></td>
                 <td style={{ fontFamily: 'monospace', fontSize: 12, color: 'var(--cat-1)' }}>{p.reference || '-'}</td>
                 <td style={{ fontWeight: 700, color: p.status === 'refunded' ? 'var(--color-warning)' : 'var(--color-success)' }}>₱{Number(p.amount).toLocaleString()}</td>
                 <td style={{ fontSize: 12.5 }}>{fmtDate(p.created_at)}</td>
-                <td><span className={'pill ' + STATUS_PILL[p.status]} style={{ fontSize: 10 }}>{p.status}</span></td>
+                <td>
+                  <span className={'pill ' + STATUS_PILL[p.status]} style={{ fontSize: 10 }}>{p.status}</span>
+                  {p.status === 'waived' && p.waive_reason && <div style={{ fontSize: 10.5, color: '#94A3B8', marginTop: 3, maxWidth: 160 }}>{p.waive_reason}</div>}
+                </td>
                 <td style={{ textAlign: 'right', paddingRight: 24 }}>
                   {(p.status === 'pending' || p.status === 'overdue') && (
                     <button className="btn-primary" style={{ fontSize: 11, marginRight: 6 }} onClick={() => openRecordPayment(p)}><i className="fa-solid fa-money-bill-wave" /> Record Payment</button>
+                  )}
+                  {(p.status === 'pending' || p.status === 'overdue') && ['no_show_fee', 'retainer_fee'].includes(p.fee_type) && (
+                    <button className="btn-secondary" style={{ fontSize: 11, marginRight: 6 }} onClick={() => openWaive(p)}><i className="fa-solid fa-hand-holding-heart" /> Waive</button>
                   )}
                   <button className="btn-edit" style={{ fontSize: 11 }} onClick={() => setInvoice(p)}><i className="fa-solid fa-file-invoice" /> View</button>
                 </td>
@@ -222,6 +257,30 @@ export default function Payments({ go, toast }) {
         </div>
       )}
 
+      {waiveTarget && (
+        <div style={{ position: 'fixed', inset: 0, background: 'rgba(15,23,42,.5)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 1000 }} onClick={() => !waiveSaving && setWaiveTarget(null)}>
+          <div style={{ background: '#fff', borderRadius: 16, padding: 24, width: 400 }} onClick={e => e.stopPropagation()}>
+            <div style={{ fontSize: 16, fontWeight: 700, color: '#0F172A', marginBottom: 4 }}>Waive {waiveTarget.fee_type === 'no_show_fee' ? 'No-Show Fee' : 'Retainer Fee'}</div>
+            <div style={{ fontSize: 12.5, color: '#64748B', marginBottom: 18 }}>
+              {waiveTarget.invoice_no || 'Invoice'} · {waiveTarget.clients?.full_name || '-'} · ₱{Number(waiveTarget.amount).toLocaleString()}
+            </div>
+            <div style={{ marginBottom: 6 }}>
+              <label className="form-label">Reason *</label>
+              <textarea className="form-input" rows={3} value={waiveReason} onChange={e => setWaiveReason(e.target.value)} placeholder="e.g. First offense, parent explained the situation" />
+            </div>
+            <div style={{ fontSize: 11, color: '#94A3B8', marginBottom: 18 }}>
+              This forgives the ₱{Number(waiveTarget.amount).toLocaleString()} owed, no payment will be collected. It does NOT change whether the absence counted as excused/unexcused for the attendance policy, that stays as already recorded.
+            </div>
+            <div style={{ display: 'flex', gap: 10 }}>
+              <button className="btn-secondary" style={{ flex: 1, padding: 10 }} disabled={waiveSaving} onClick={() => setWaiveTarget(null)}>Cancel</button>
+              <button className="btn-primary" style={{ flex: 1, padding: 10 }} disabled={waiveSaving || !waiveReason.trim()} onClick={submitWaive}>
+                <i className={'fa-solid ' + (waiveSaving ? 'fa-spinner fa-spin' : 'fa-hand-holding-heart')} style={{ marginRight: 5 }} />{waiveSaving ? 'Saving…' : 'Waive Fee'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* ── Printable invoice modal ── */}
       {invoice && (
         <div style={{ position: 'fixed', inset: 0, background: 'rgba(15,23,42,.5)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 1000 }} onClick={() => setInvoice(null)}>
@@ -244,8 +303,9 @@ export default function Payments({ go, toast }) {
                 <div style={{ textAlign: 'right' }}>
                   <div style={{ fontFamily: "'Poppins',sans-serif", fontSize: 20, fontWeight: 700, color: '#1F4E9E', letterSpacing: '.03em' }}>INVOICE</div>
                   <div style={{ fontFamily: 'monospace', fontSize: 12.5, fontWeight: 700, color: '#0F172A', marginTop: 4 }}>{invoice.invoice_no || invoice.id}</div>
-                  <div style={{ marginTop: 6 }}>
+                  <div style={{ marginTop: 6, display: 'flex', gap: 6, justifyContent: 'flex-end' }}>
                     <span className={'pill ' + STATUS_PILL[invoice.status]} style={{ fontSize: 10.5, textTransform: 'uppercase', letterSpacing: '.04em' }}>{invoice.status}</span>
+                    {invoice.reservations?.is_makeup && <span className="pill pill-blue" style={{ fontSize: 10.5, textTransform: 'uppercase', letterSpacing: '.04em' }}>Make-Up</span>}
                   </div>
                 </div>
               </div>

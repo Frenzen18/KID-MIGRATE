@@ -76,6 +76,11 @@ function mapClient(c, idx) {
   const thxParts = [];
   if (c.assigned_ot_therapist_name) thxParts.push(therapyType === 'Both' ? c.assigned_ot_therapist_name + ' (OT)' : c.assigned_ot_therapist_name);
   if (c.assigned_speech_therapist_name) thxParts.push(therapyType === 'Both' ? c.assigned_speech_therapist_name + ' (Speech)' : c.assigned_speech_therapist_name);
+  // A client can only ever get a therapy type/assigned therapist once their
+  // Initial Assessment is done (server-enforced in assign-schedule), so
+  // either of those already implies "done" even without checking the manual
+  // override flag or fetching this client's own reservation history.
+  const iaDone = !!c.initial_assessment_completed || !!therapyType || !!c.assigned_ot_therapist_name || !!c.assigned_speech_therapist_name;
 
   return {
     ...c,
@@ -98,6 +103,7 @@ function mapClient(c, idx) {
     thxSpeech: c.assigned_speech_therapist_name || '',
     status: st.label,
     statusPill: st.pill,
+    iaDone,
   };
 }
 
@@ -558,7 +564,13 @@ export default function Clients({ go, toast, openModal, role = 'admin', scopeToT
                       {c.photo_url
                         ? <img src={c.photo_url} alt={c.name} style={{ width: 32, height: 32, borderRadius: '50%', objectFit: 'cover', flexShrink: 0 }} />
                         : <div className="act-avatar" style={{ width: 32, height: 32, background: c.bg, color: c.color, fontSize: 11, flexShrink: 0 }}>{c.initials}</div>}
-                      <div style={{ minWidth: 0 }}><div className="cd-name">{c.name}</div><div className="cd-id">{c.client_code}</div></div>
+                      <div style={{ minWidth: 0 }}>
+                        <div className="cd-name">{c.name}</div>
+                        <div className="cd-id">{c.client_code} · Age {c.ageLabel.replace(' yrs', '')}</div>
+                        <div style={{ fontSize: 10.5, marginTop: 2 }}>
+                          Initial Assessment: <span style={{ fontWeight: 700, color: c.iaDone ? '#16A34A' : '#B45309' }}>{c.iaDone ? 'Done' : 'Not Yet'}</span>
+                        </div>
+                      </div>
                     </div>
                     <div className="cd-cell">{c.ageLabel}</div>
                     <div className="cd-cell"><div className="cd-name" style={{ fontWeight: 500 }}>{c.guardian}</div><div className="cd-sub">{c.contact}</div></div>
@@ -635,9 +647,10 @@ export default function Clients({ go, toast, openModal, role = 'admin', scopeToT
               <div style={{ flex: 1, minWidth: 0 }}>
                 <div style={{ fontSize: 18, fontWeight: 700, color: '#0F172A', fontFamily: "'Poppins',sans-serif" }}>{profile.name}</div>
                 <div style={{ fontSize: 12.5, color: '#64748B', marginTop: 2 }}>{profile.clientCode} · {profile.meta?.split(' · ')[1]}</div>
-                <div style={{ display: 'flex', gap: 8, marginTop: 6 }}><span className={profile.therapy === 'Speech' ? 'pill pill-teal' : 'pill pill-blue'}>{{ OT: 'Occupational Therapy', Speech: 'Speech Therapy', Both: 'Combined' }[profile.therapy] || 'Occupational Therapy'}</span></div>
+                <div style={{ display: 'flex', gap: 8, marginTop: 6 }}><span className={profile.therapy === 'Speech' ? 'pill pill-teal' : profile.therapy ? 'pill pill-blue' : 'pill pill-gray'}>{{ OT: 'Occupational Therapy', Speech: 'Speech Therapy', Both: 'Combined' }[profile.therapy] || 'Not Yet Assigned'}</span></div>
               </div>
               <div className="no-print" style={{ display: 'flex', gap: 8, flexShrink: 0 }}>
+                {(role === 'ot' || role === 'speech') && (
                 <div style={{ position: 'relative' }}>
                   <button className="btn-edit" onClick={() => setReportPopoverOpen(o => !o)}><i className="fa-solid fa-file-medical" style={{ marginRight: 4 }} />Generate Report</button>
                   {reportPopoverOpen && (
@@ -657,6 +670,7 @@ export default function Clients({ go, toast, openModal, role = 'admin', scopeToT
                     </div>
                   )}
                 </div>
+                )}
                 {profile.archived ? (
                   <>
                     <button className="btn-edit" onClick={() => downloadArchiveSnapshot(profile.id)}><i className="fa-solid fa-download" style={{ marginRight: 4 }} />Download Backup</button>
