@@ -12,6 +12,8 @@ import CmsEditAnnouncementModal from './modals/CmsEditAnnouncementModal.jsx';
 import CmsDeleteModal from './modals/CmsDeleteModal.jsx';
 import AddClientModal from './modals/AddClientModal.jsx';
 import AssignTherapistModal from './modals/AssignTherapistModal.jsx';
+import InactiveAccountsModal from './modals/InactiveAccountsModal.jsx';
+import InactiveChildrenModal from './modals/InactiveChildrenModal.jsx';
 
 /**
  * Shared modal dispatcher, used by both AdminPortal and StaffPortal so the
@@ -38,6 +40,8 @@ const MODAL_COMPONENTS = {
   'cms-delete': CmsDeleteModal,
   'add-client': AddClientModal,
   'assign-therapist': AssignTherapistModal,
+  'inactive-accounts': InactiveAccountsModal,
+  'inactive-children': InactiveChildrenModal,
 };
 
 export default function AdminModals({ modal, closeModal, toast }) {

@@ -12,7 +12,7 @@ import { useAuth } from '../auth.jsx';
 export default function AdminLogin() {
   const { login } = useAuth();
   const nav = useNavigate();
-  const [email, setEmail] = useState('');
+  const [identifier, setIdentifier] = useState('');
   const [password, setPassword] = useState('');
   const [showPw, setShowPw] = useState(false);
   const [err, setErr] = useState('');
@@ -23,7 +23,7 @@ export default function AdminLogin() {
     setErr('');
     setBusy(true);
     try {
-      const u = await login(email.trim(), password, 'admin');
+      const u = await login(identifier.trim(), password, 'admin');
       nav(u.must_change_password ? '/set-password' : '/admin');
     } catch (ex) {
       setErr(ex.message);
@@ -59,8 +59,8 @@ export default function AdminLogin() {
 
           <form onSubmit={submit}>
             <div style={{ marginBottom: 18 }}>
-              <label style={label}>Email</label>
-              <input style={input} type="email" value={email} onChange={e => setEmail(e.target.value)} autoComplete="username" required />
+              <label style={label}>Email or Mobile Number</label>
+              <input style={input} type="text" value={identifier} onChange={e => setIdentifier(e.target.value)} autoComplete="username" required />
             </div>
             <div style={{ marginBottom: 24 }}>
               <label style={label}>Password</label>

@@ -7,6 +7,9 @@
    =================================================================== */
 
 /* == booking == */
+.book-tab{padding:8px 18px;border-radius:9px;border:1px solid #E2E8F0;background:#F8FAFC;font-size:13px;font-weight:600;color:#64748B;cursor:pointer;transition:all .18s}
+.book-tab.active{background:#0EA5E9;color:#fff;border-color:#0EA5E9}
+.book-tab:hover:not(.active){background:#EFF6FF;color:#0284C7;border-color:#BAE6FD}
 .slot-grid { display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:10px; }
 .slot-btn { border:1px solid #DBEAFE; background:#EFF6FF; color:#1D4ED8; padding:12px; border-radius:12px; font-size:12.5px; font-weight:600; cursor:pointer; transition:all .18s; font-family:'Inter',sans-serif; }
 .slot-btn:hover, .slot-btn.active { background:linear-gradient(135deg,#0EA5E9,#0D9488); color:#fff; border-color:transparent; }

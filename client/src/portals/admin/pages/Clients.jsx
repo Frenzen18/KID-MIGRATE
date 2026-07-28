@@ -184,6 +184,20 @@ export default function Clients({ go, toast, openModal, role = 'admin', scopeToT
   const [devFields, setDevFields] = useState([]);
   useEffect(() => { api('/dev-functional-fields').then(setDevFields).catch(() => setDevFields([])); }, []);
 
+  // Child records the per-child inactivity-cleanup sweep flagged (see
+  // server/lib/accountCleanup.js), admin/staff only, a therapist has no
+  // permission to review or delete these.
+  const [flaggedChildrenCount, setFlaggedChildrenCount] = useState(0);
+  const fetchFlaggedChildrenCount = useCallback(async () => {
+    if (scopeToTherapist) return;
+    try {
+      setFlaggedChildrenCount((await api('/clients/inactive-review')).length);
+    } catch {
+      // Silent, this is a secondary banner, not worth a toast if it fails to load.
+    }
+  }, [scopeToTherapist]);
+  useEffect(() => { fetchFlaggedChildrenCount(); }, [fetchFlaggedChildrenCount]);
+
   /* Generate Report: date-range picker + AI "Therapist Summary & Recommendations" */
   const todayStr = () => new Date().toISOString().slice(0, 10);
   const monthAgoStr = () => { const d = new Date(); d.setMonth(d.getMonth() - 1); return d.toISOString().slice(0, 10); };
@@ -506,6 +520,20 @@ export default function Clients({ go, toast, openModal, role = 'admin', scopeToT
           <h1 style={{ fontSize: 22, fontWeight: 700, color: '#0F172A', margin: '0 0 4px' }}>Client Records Management</h1>
         </div>
       </div>
+
+      {/* Child records the per-child inactivity-cleanup sweep flagged (see
+          server/lib/accountCleanup.js), never auto-deleted. Just a count
+          here, same as User Management's own flagged-accounts banner, the
+          reviewable list opens in its own modal instead of rendering inline. */}
+      {!scopeToTherapist && flaggedChildrenCount > 0 && (
+        <div className="no-print card" style={{ padding: '12px 18px', marginBottom: 20, border: '1px solid #FECACA', background: '#FEF2F2', display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap' }}>
+          <i className="fa-solid fa-user-slash" style={{ color: '#DC2626' }} />
+          <div style={{ fontSize: 13, fontWeight: 600, color: '#991B1B', flex: 1 }}>
+            {flaggedChildrenCount} linked child record{flaggedChildrenCount > 1 ? 's' : ''} flagged for cleanup review
+          </div>
+          <button className="btn-secondary" style={{ fontSize: 12, padding: '7px 14px' }} onClick={() => openModal('inactive-children', { onChanged: fetchFlaggedChildrenCount })}>Review</button>
+        </div>
+      )}
 
       {/* Section Tabs: 3.1 / 3.2 / 3.3 */}
       <div className="tab-nav no-print">

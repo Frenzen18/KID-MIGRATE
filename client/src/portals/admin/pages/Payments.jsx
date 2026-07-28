@@ -1,4 +1,5 @@
 import { useState, useEffect } from 'react';
+import { createPortal } from 'react-dom';
 import { api } from '../../../api.js';
 
 /* == page: payments == */
@@ -13,6 +14,110 @@ const STATUS_PILL = { paid: 'pill-green', pending: 'pill-amber', overdue: 'pill-
 // set when staff/admin book and collect payment in person (offline).
 const METHOD_CHANNEL = { QRPh: 'Online', Cash: 'Offline', Check: 'Offline', Unpaid: 'Unpaid' };
 const CHANNEL_PILL = { Online: 'pill-blue', Offline: 'pill-teal', Unpaid: 'pill' };
+
+/** The invoice's visual content, shared between the on-screen preview and
+ *  the print-only copy portaled to document.body, see the comment above
+ *  that portal for why print needs its own separate copy. */
+function InvoiceDocument({ invoice, brand }) {
+  return (
+    <div style={{ fontFamily: "'Inter',Arial,sans-serif" }}>
+      {/* Letterhead */}
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', paddingBottom: 18, borderBottom: '3px solid #1F4E9E' }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+          {brand?.logo_url
+            ? <img src={brand.logo_url} alt={brand.clinic_name} style={{ width: 46, height: 46, borderRadius: 10, objectFit: 'cover', flexShrink: 0 }} />
+            : <div style={{ width: 46, height: 46, borderRadius: 10, background: 'linear-gradient(135deg,#1F4E9E,#0D9488)', display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}>
+                <i className="fa-solid fa-child-reaching" style={{ color: '#fff', fontSize: 19 }} />
+              </div>}
+          <div>
+            <div style={{ fontFamily: "'Poppins',sans-serif", fontSize: 18, fontWeight: 700, color: '#0F172A', lineHeight: 1.2 }}>{brand?.clinic_name || 'Bloomsdale Therapy Center'}</div>
+            <div style={{ fontSize: 11.5, color: '#64748B', marginTop: 2 }}>Pediatric Speech &amp; Occupational Therapy</div>
+            <div style={{ fontSize: 11, color: '#94A3B8', marginTop: 1 }}>{brand?.address || 'Imus, Cavite, Philippines'}</div>
+          </div>
+        </div>
+        <div style={{ textAlign: 'right' }}>
+          <div style={{ fontFamily: "'Poppins',sans-serif", fontSize: 20, fontWeight: 700, color: '#1F4E9E', letterSpacing: '.03em' }}>INVOICE</div>
+          <div style={{ fontFamily: 'monospace', fontSize: 12.5, fontWeight: 700, color: '#0F172A', marginTop: 4 }}>{invoice.invoice_no || invoice.id}</div>
+          <div style={{ marginTop: 6, display: 'flex', gap: 6, justifyContent: 'flex-end' }}>
+            <span className={'pill ' + STATUS_PILL[invoice.status]} style={{ fontSize: 10.5, textTransform: 'uppercase', letterSpacing: '.04em' }}>{invoice.status}</span>
+            {invoice.reservations?.is_makeup && <span className="pill pill-blue" style={{ fontSize: 10.5, textTransform: 'uppercase', letterSpacing: '.04em' }}>Make-Up</span>}
+          </div>
+        </div>
+      </div>
+
+      {/* Pay To / Bill To / Invoice info */}
+      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 16, padding: '18px 0', borderBottom: '1px solid #F1F5F9' }}>
+        <div>
+          <div style={{ fontSize: 10.5, fontWeight: 700, color: '#94A3B8', textTransform: 'uppercase', letterSpacing: '.06em', marginBottom: 6 }}>Pay To</div>
+          <div style={{ fontSize: 14, fontWeight: 700, color: '#0F172A' }}>{brand?.clinic_name || 'Bloomsdale Therapy Center'}</div>
+          <div style={{ fontSize: 11.5, color: '#64748B', marginTop: 2 }}>{brand?.address || 'Imus, Cavite, Philippines'}</div>
+        </div>
+        <div>
+          <div style={{ fontSize: 10.5, fontWeight: 700, color: '#94A3B8', textTransform: 'uppercase', letterSpacing: '.06em', marginBottom: 6 }}>Billed To</div>
+          <div style={{ fontSize: 14, fontWeight: 700, color: '#0F172A' }}>{invoice.clients?.full_name || '-'}</div>
+          {invoice.clients?.guardian_name && <div style={{ fontSize: 11.5, color: '#64748B', marginTop: 2 }}>Guardian: {invoice.clients.guardian_name}</div>}
+        </div>
+      </div>
+      <div style={{ display: 'flex', justifyContent: 'flex-end', padding: '14px 0' }}>
+        <div style={{ textAlign: 'right' }}>
+          <div style={{ fontSize: 10.5, fontWeight: 700, color: '#94A3B8', textTransform: 'uppercase', letterSpacing: '.06em', marginBottom: 6 }}>Invoice Date</div>
+          <div style={{ fontSize: 13, fontWeight: 600, color: '#0F172A' }}>{fmtDate(invoice.paid_at || invoice.created_at)}</div>
+        </div>
+      </div>
+
+      {/* Line items */}
+      <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12.5 }}>
+        <thead>
+          <tr style={{ background: '#F8FAFC' }}>
+            <th style={{ textAlign: 'left', padding: '9px 10px', fontSize: 10.5, fontWeight: 700, color: '#64748B', textTransform: 'uppercase', letterSpacing: '.04em', borderBottom: '1px solid #E2E8F0' }}>Description</th>
+            <th style={{ textAlign: 'right', padding: '9px 10px', fontSize: 10.5, fontWeight: 700, color: '#64748B', textTransform: 'uppercase', letterSpacing: '.04em', borderBottom: '1px solid #E2E8F0' }}>Amount</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td style={{ padding: '12px 10px', borderBottom: '1px solid #F1F5F9' }}>
+              <div style={{ fontWeight: 600, color: '#0F172A' }}>{invoice.reservations?.session_type || 'Therapy Session'}</div>
+              <div style={{ fontSize: 11.5, color: '#94A3B8', marginTop: 2 }}>
+                {invoice.reservations?.date ? fmtDate(invoice.reservations.date) : fmtDate(invoice.paid_at || invoice.created_at)}
+                {invoice.reservations?.time_slot ? ' · ' + invoice.reservations.time_slot : ''}
+                {invoice.reservations?.duration_min ? ' · ' + invoice.reservations.duration_min + ' min' : ''}
+                {invoice.reservations?.therapist_name ? ' · with ' + invoice.reservations.therapist_name : ''}
+              </div>
+            </td>
+            <td style={{ padding: '12px 10px', textAlign: 'right', fontWeight: 600, color: '#0F172A', verticalAlign: 'top' }}>₱{Number(invoice.amount).toLocaleString()}</td>
+          </tr>
+        </tbody>
+      </table>
+
+      {/* Totals */}
+      <div style={{ display: 'flex', justifyContent: 'flex-end', marginTop: 14 }}>
+        <div style={{ width: '55%' }}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', padding: '5px 10px', fontSize: 12.5 }}><span style={{ color: '#64748B' }}>Subtotal</span><span style={{ fontWeight: 600, color: '#0F172A' }}>₱{Number(invoice.amount).toLocaleString()}</span></div>
+          <div style={{ display: 'flex', justifyContent: 'space-between', padding: '10px 10px', marginTop: 4, background: '#F8FAFC', borderRadius: 8 }}>
+            <span style={{ fontWeight: 700, color: '#0F172A' }}>Total {invoice.status === 'refunded' ? 'Refunded' : 'Due/Paid'}</span>
+            <span style={{ fontFamily: "'Poppins',sans-serif", fontSize: 17, fontWeight: 700, color: 'var(--color-success)' }}>₱{Number(invoice.amount).toLocaleString()}</span>
+          </div>
+        </div>
+      </div>
+
+      {/* Payment details */}
+      <div style={{ marginTop: 20, paddingTop: 14, borderTop: '1px solid #E2E8F0' }}>
+        <div style={{ fontSize: 10.5, fontWeight: 700, color: '#94A3B8', textTransform: 'uppercase', letterSpacing: '.06em', marginBottom: 8 }}>Payment Details</div>
+        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8, fontSize: 12.5 }}>
+          <div><span style={{ color: '#64748B' }}>Method: </span><span style={{ fontWeight: 600 }}>{invoice.method}</span></div>
+          <div><span style={{ color: '#64748B' }}>Reference: </span><span style={{ fontFamily: 'monospace', fontWeight: 600, color: 'var(--cat-1)' }}>{invoice.reference || '-'}</span></div>
+          {invoice.paid_at && <div><span style={{ color: '#64748B' }}>Paid At: </span><span style={{ fontWeight: 600 }}>{fmtDate(invoice.paid_at)}</span></div>}
+        </div>
+      </div>
+
+      {/* Footer note */}
+      <div style={{ marginTop: 22, paddingTop: 14, borderTop: '1px solid #E2E8F0', textAlign: 'center' }}>
+        <div style={{ fontSize: 12, color: '#475569', fontWeight: 600 }}>Thank you for trusting {brand?.clinic_name || 'Bloomsdale Therapy Center'} with your child's care.</div>
+        <div style={{ fontSize: 10.5, color: '#94A3B8', marginTop: 4 }}>This is a system-generated invoice and does not require a signature.</div>
+      </div>
+    </div>
+  );
+}
 
 export default function Payments({ go, toast }) {
   const [payments, setPayments] = useState([]);
@@ -120,11 +225,16 @@ export default function Payments({ go, toast }) {
 
   return (
     <div className="spa-page" id="spa-payments">
+      {/* Everything on the page except the print-only portal below gets
+          hidden with display:none (not visibility:hidden) so the hidden
+          content collapses to zero height, if it stayed tall, Chrome
+          repeats any position:fixed element (like the invoice used to be)
+          once per page the hidden content would have spanned, printing the
+          same invoice many times over. */}
       <style>{`
         @media print {
-          body * { visibility: hidden; }
-          #invoice-print, #invoice-print * { visibility: visible; }
-          #invoice-print { position: fixed; top: 0; left: 0; width: 100%; margin: 0; box-shadow: none; border: none; }
+          body > *:not(#invoice-print) { display: none !important; }
+          #invoice-print { display: block !important; position: static !important; left: auto !important; width: 100% !important; }
         }
       `}</style>
 
@@ -183,7 +293,7 @@ export default function Payments({ go, toast }) {
                   {p.invoice_no || '-'}
                   {p.fee_type === 'no_show_fee' && <span className="pill pill-red" style={{ fontSize: 9, marginLeft: 6 }}>No-Show</span>}
                   {p.fee_type === 'retainer_fee' && <span className="pill pill-amber" style={{ fontSize: 9, marginLeft: 6 }}>Retainer</span>}
-                  {!p.reservation_id && p.status === 'paid' && p.fee_type === 'session' && <span className="pill pill-green" style={{ fontSize: 9, marginLeft: 6 }}>Unallocated Credit</span>}
+                  {!p.reservation_id && p.status === 'paid' && p.fee_type === 'session' && <span className="pill pill-green" style={{ fontSize: 9, marginLeft: 6 }}>Unallocated Session Credit</span>}
                   {p.reservations?.is_makeup && <span className="pill pill-blue" style={{ fontSize: 9, marginLeft: 6 }}>Make-Up</span>}
                   {p.reservations?.date && (
                     <div style={{ fontSize: 10.5, color: '#64748B', fontWeight: 500, marginTop: 2 }}>
@@ -285,101 +395,8 @@ export default function Payments({ go, toast }) {
       {invoice && (
         <div style={{ position: 'fixed', inset: 0, background: 'rgba(15,23,42,.5)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 1000 }} onClick={() => setInvoice(null)}>
           <div style={{ background: '#fff', borderRadius: 16, padding: 0, width: 520, maxHeight: '90vh', overflowY: 'auto' }} onClick={e => e.stopPropagation()}>
-            <div id="invoice-print" style={{ padding: 28, fontFamily: "'Inter',Arial,sans-serif" }}>
-              {/* Letterhead */}
-              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', paddingBottom: 18, borderBottom: '3px solid #1F4E9E' }}>
-                <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
-                  {brand?.logo_url
-                    ? <img src={brand.logo_url} alt={brand.clinic_name} style={{ width: 46, height: 46, borderRadius: 10, objectFit: 'cover', flexShrink: 0 }} />
-                    : <div style={{ width: 46, height: 46, borderRadius: 10, background: 'linear-gradient(135deg,#1F4E9E,#0D9488)', display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}>
-                        <i className="fa-solid fa-child-reaching" style={{ color: '#fff', fontSize: 19 }} />
-                      </div>}
-                  <div>
-                    <div style={{ fontFamily: "'Poppins',sans-serif", fontSize: 18, fontWeight: 700, color: '#0F172A', lineHeight: 1.2 }}>{brand?.clinic_name || 'Bloomsdale Therapy Center'}</div>
-                    <div style={{ fontSize: 11.5, color: '#64748B', marginTop: 2 }}>Pediatric Speech &amp; Occupational Therapy</div>
-                    <div style={{ fontSize: 11, color: '#94A3B8', marginTop: 1 }}>{brand?.address || 'Imus, Cavite, Philippines'}</div>
-                  </div>
-                </div>
-                <div style={{ textAlign: 'right' }}>
-                  <div style={{ fontFamily: "'Poppins',sans-serif", fontSize: 20, fontWeight: 700, color: '#1F4E9E', letterSpacing: '.03em' }}>INVOICE</div>
-                  <div style={{ fontFamily: 'monospace', fontSize: 12.5, fontWeight: 700, color: '#0F172A', marginTop: 4 }}>{invoice.invoice_no || invoice.id}</div>
-                  <div style={{ marginTop: 6, display: 'flex', gap: 6, justifyContent: 'flex-end' }}>
-                    <span className={'pill ' + STATUS_PILL[invoice.status]} style={{ fontSize: 10.5, textTransform: 'uppercase', letterSpacing: '.04em' }}>{invoice.status}</span>
-                    {invoice.reservations?.is_makeup && <span className="pill pill-blue" style={{ fontSize: 10.5, textTransform: 'uppercase', letterSpacing: '.04em' }}>Make-Up</span>}
-                  </div>
-                </div>
-              </div>
-
-              {/* Pay To / Bill To / Invoice info */}
-              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 16, padding: '18px 0', borderBottom: '1px solid #F1F5F9' }}>
-                <div>
-                  <div style={{ fontSize: 10.5, fontWeight: 700, color: '#94A3B8', textTransform: 'uppercase', letterSpacing: '.06em', marginBottom: 6 }}>Pay To</div>
-                  <div style={{ fontSize: 14, fontWeight: 700, color: '#0F172A' }}>{brand?.clinic_name || 'Bloomsdale Therapy Center'}</div>
-                  <div style={{ fontSize: 11.5, color: '#64748B', marginTop: 2 }}>{brand?.address || 'Imus, Cavite, Philippines'}</div>
-                </div>
-                <div>
-                  <div style={{ fontSize: 10.5, fontWeight: 700, color: '#94A3B8', textTransform: 'uppercase', letterSpacing: '.06em', marginBottom: 6 }}>Billed To</div>
-                  <div style={{ fontSize: 14, fontWeight: 700, color: '#0F172A' }}>{invoice.clients?.full_name || '-'}</div>
-                  {invoice.clients?.guardian_name && <div style={{ fontSize: 11.5, color: '#64748B', marginTop: 2 }}>Guardian: {invoice.clients.guardian_name}</div>}
-                </div>
-              </div>
-              <div style={{ display: 'flex', justifyContent: 'flex-end', padding: '14px 0' }}>
-                <div style={{ textAlign: 'right' }}>
-                  <div style={{ fontSize: 10.5, fontWeight: 700, color: '#94A3B8', textTransform: 'uppercase', letterSpacing: '.06em', marginBottom: 6 }}>Invoice Date</div>
-                  <div style={{ fontSize: 13, fontWeight: 600, color: '#0F172A' }}>{fmtDate(invoice.paid_at || invoice.created_at)}</div>
-                </div>
-              </div>
-
-              {/* Line items */}
-              <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12.5 }}>
-                <thead>
-                  <tr style={{ background: '#F8FAFC' }}>
-                    <th style={{ textAlign: 'left', padding: '9px 10px', fontSize: 10.5, fontWeight: 700, color: '#64748B', textTransform: 'uppercase', letterSpacing: '.04em', borderBottom: '1px solid #E2E8F0' }}>Description</th>
-                    <th style={{ textAlign: 'right', padding: '9px 10px', fontSize: 10.5, fontWeight: 700, color: '#64748B', textTransform: 'uppercase', letterSpacing: '.04em', borderBottom: '1px solid #E2E8F0' }}>Amount</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  <tr>
-                    <td style={{ padding: '12px 10px', borderBottom: '1px solid #F1F5F9' }}>
-                      <div style={{ fontWeight: 600, color: '#0F172A' }}>{invoice.reservations?.session_type || 'Therapy Session'}</div>
-                      <div style={{ fontSize: 11.5, color: '#94A3B8', marginTop: 2 }}>
-                        {invoice.reservations?.date ? fmtDate(invoice.reservations.date) : fmtDate(invoice.paid_at || invoice.created_at)}
-                        {invoice.reservations?.time_slot ? ' · ' + invoice.reservations.time_slot : ''}
-                        {invoice.reservations?.duration_min ? ' · ' + invoice.reservations.duration_min + ' min' : ''}
-                        {invoice.reservations?.therapist_name ? ' · with ' + invoice.reservations.therapist_name : ''}
-                      </div>
-                    </td>
-                    <td style={{ padding: '12px 10px', textAlign: 'right', fontWeight: 600, color: '#0F172A', verticalAlign: 'top' }}>₱{Number(invoice.amount).toLocaleString()}</td>
-                  </tr>
-                </tbody>
-              </table>
-
-              {/* Totals */}
-              <div style={{ display: 'flex', justifyContent: 'flex-end', marginTop: 14 }}>
-                <div style={{ width: '55%' }}>
-                  <div style={{ display: 'flex', justifyContent: 'space-between', padding: '5px 10px', fontSize: 12.5 }}><span style={{ color: '#64748B' }}>Subtotal</span><span style={{ fontWeight: 600, color: '#0F172A' }}>₱{Number(invoice.amount).toLocaleString()}</span></div>
-                  <div style={{ display: 'flex', justifyContent: 'space-between', padding: '10px 10px', marginTop: 4, background: '#F8FAFC', borderRadius: 8 }}>
-                    <span style={{ fontWeight: 700, color: '#0F172A' }}>Total {invoice.status === 'refunded' ? 'Refunded' : 'Due/Paid'}</span>
-                    <span style={{ fontFamily: "'Poppins',sans-serif", fontSize: 17, fontWeight: 700, color: 'var(--color-success)' }}>₱{Number(invoice.amount).toLocaleString()}</span>
-                  </div>
-                </div>
-              </div>
-
-              {/* Payment details */}
-              <div style={{ marginTop: 20, paddingTop: 14, borderTop: '1px solid #E2E8F0' }}>
-                <div style={{ fontSize: 10.5, fontWeight: 700, color: '#94A3B8', textTransform: 'uppercase', letterSpacing: '.06em', marginBottom: 8 }}>Payment Details</div>
-                <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8, fontSize: 12.5 }}>
-                  <div><span style={{ color: '#64748B' }}>Method: </span><span style={{ fontWeight: 600 }}>{invoice.method}</span></div>
-                  <div><span style={{ color: '#64748B' }}>Reference: </span><span style={{ fontFamily: 'monospace', fontWeight: 600, color: 'var(--cat-1)' }}>{invoice.reference || '-'}</span></div>
-                  {invoice.paid_at && <div><span style={{ color: '#64748B' }}>Paid At: </span><span style={{ fontWeight: 600 }}>{fmtDate(invoice.paid_at)}</span></div>}
-                </div>
-              </div>
-
-              {/* Footer note */}
-              <div style={{ marginTop: 22, paddingTop: 14, borderTop: '1px solid #E2E8F0', textAlign: 'center' }}>
-                <div style={{ fontSize: 12, color: '#475569', fontWeight: 600 }}>Thank you for trusting {brand?.clinic_name || 'Bloomsdale Therapy Center'} with your child's care.</div>
-                <div style={{ fontSize: 10.5, color: '#94A3B8', marginTop: 4 }}>This is a system-generated invoice and does not require a signature.</div>
-              </div>
+            <div style={{ padding: 28 }}>
+              <InvoiceDocument invoice={invoice} brand={brand} />
             </div>
             <div style={{ display: 'flex', gap: 8, padding: '0 24px 24px' }}>
               <button className="btn-primary" style={{ flex: 1, padding: 10 }} onClick={printInvoice}><i className="fa-solid fa-print" style={{ marginRight: 5 }} />Print / Save as PDF</button>
@@ -387,6 +404,15 @@ export default function Payments({ go, toast }) {
             </div>
           </div>
         </div>
+      )}
+      {/* Print-only copy, portaled straight to <body> (outside this page's
+          hidden-at-print ancestors) so the print stylesheet above can hide
+          literally everything else without also hiding this. */}
+      {invoice && createPortal(
+        <div id="invoice-print" style={{ position: 'fixed', top: 0, left: -99999, width: 800, padding: 28, fontFamily: "'Inter',Arial,sans-serif" }}>
+          <InvoiceDocument invoice={invoice} brand={brand} />
+        </div>,
+        document.body
       )}
     </div>
   );

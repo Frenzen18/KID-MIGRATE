@@ -22,6 +22,8 @@ import { runReminderSweep } from './lib/reminders.js';
 import { expireUnpaidBookingHolds } from './lib/bookingHolds.js';
 import { sweepUnpaidPastSessions } from './lib/noShowSweep.js';
 import { sweepMonthlyAttendance } from './lib/monthlyAttendanceSweep.js';
+import { sweepInactiveAccounts, sweepInactiveChildren } from './lib/accountCleanup.js';
+import { sweepMissedBookings } from './lib/missedBookingSweep.js';
 
 dotenv.config();
 const app = express();
@@ -107,3 +109,24 @@ sweepUnpaidPastSessions();
 const MONTHLY_ATTENDANCE_SWEEP_INTERVAL_MS = 6 * 60 * 60 * 1000;
 setInterval(sweepMonthlyAttendance, MONTHLY_ATTENDANCE_SWEEP_INTERVAL_MS);
 sweepMonthlyAttendance();
+
+// Inactive-guardian-account cleanup (see server/lib/accountCleanup.js), moves
+// in weeks-long increments (6-week warning, 2-month flag), a daily check is
+// more than enough resolution, this is never time-sensitive to the hour.
+const ACCOUNT_CLEANUP_SWEEP_INTERVAL_MS = 24 * 60 * 60 * 1000;
+setInterval(sweepInactiveAccounts, ACCOUNT_CLEANUP_SWEEP_INTERVAL_MS);
+sweepInactiveAccounts();
+
+// Per-child companion to the sweep above (see accountCleanup.js): a guardian
+// with multiple children is only exempted at the login level once ANY one
+// of them completes an Initial Assessment, this instead flags the specific
+// child who individually never has, even if a sibling did.
+setInterval(sweepInactiveChildren, ACCOUNT_CLEANUP_SWEEP_INTERVAL_MS);
+sweepInactiveChildren();
+
+// Flags a fixed recurring schedule nobody has booked at all in 3 straight
+// weeks (see server/lib/missedBookingSweep.js), week-granularity data, a
+// daily check is plenty.
+const MISSED_BOOKING_SWEEP_INTERVAL_MS = 24 * 60 * 60 * 1000;
+setInterval(sweepMissedBookings, MISSED_BOOKING_SWEEP_INTERVAL_MS);
+sweepMissedBookings();

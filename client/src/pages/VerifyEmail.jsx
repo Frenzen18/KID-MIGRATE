@@ -4,22 +4,25 @@ import { api } from '../api.js';
 import AuthLeftPanel from '../components/AuthLeftPanel.jsx';
 
 /**
- * Email verification, code-based (mirrors ForgotPassword's flow): the
- * signup/resend endpoints email a 6-digit code instead of a link, and this
- * page collects it. Reached either with a known email (from Signup's
- * navigate state, or a ?email= query param from the "verify now" prompt on
- * a blocked login) or blank, in which case the user types their email first.
+ * Account verification, code-based (mirrors ForgotPassword's flow): the
+ * signup/resend endpoints send a 6-digit code by email OR SMS, whichever the
+ * account registered with, and this page collects it. Reached either with a
+ * known identifier (from Signup's navigate state, or a ?identifier= query
+ * param from the "verify now" prompt on a blocked login) or blank, in which
+ * case the user types their email or mobile number first.
  */
 export default function VerifyEmail() {
   const nav = useNavigate();
   const location = useLocation();
   const [params] = useSearchParams();
-  const stateEmail = location.state?.email || '';
-  const queryEmail = params.get('email') || '';
-  const initialEmail = stateEmail || queryEmail;
+  const stateIdentifier = location.state?.identifier || '';
+  const queryIdentifier = params.get('identifier') || params.get('email') || '';
+  const initialIdentifier = stateIdentifier || queryIdentifier;
+  // No "@" only ever means a phone number in this app's two identifier types.
+  const isPhone = !!initialIdentifier && !initialIdentifier.includes('@');
 
-  const [step, setStep] = useState(initialEmail ? 'code' : 'email'); // email | code | success
-  const [email, setEmail] = useState(initialEmail);
+  const [step, setStep] = useState(initialIdentifier ? 'code' : 'email'); // email | code | success
+  const [identifier, setIdentifier] = useState(initialIdentifier);
   const [code, setCode] = useState('');
   const [err, setErr] = useState('');
   const [busy, setBusy] = useState(false);
@@ -28,21 +31,21 @@ export default function VerifyEmail() {
   // Signup already sends the first code as part of account creation, so
   // don't fire a second one when arriving with state from that flow, only
   // when landing here directly (e.g. the query-param link from a blocked login).
-  const autoSent = useRef(!!stateEmail);
+  const autoSent = useRef(!!stateIdentifier);
 
   useEffect(() => {
-    if (!queryEmail || autoSent.current) return;
+    if (!queryIdentifier || autoSent.current) return;
     autoSent.current = true;
-    api('/auth/resend-verification', { method: 'POST', body: { email: queryEmail } }).catch(() => {});
-  }, [queryEmail]);
+    api('/auth/resend-verification', { method: 'POST', body: { identifier: queryIdentifier } }).catch(() => {});
+  }, [queryIdentifier]);
 
   async function sendCode(e) {
     e.preventDefault();
     setErr('');
-    if (!email.trim()) return setErr('Please enter your email address.');
+    if (!identifier.trim()) return setErr('Please enter your email address or mobile number.');
     setBusy(true);
     try {
-      await api('/auth/resend-verification', { method: 'POST', body: { email: email.trim() } });
+      await api('/auth/resend-verification', { method: 'POST', body: { identifier: identifier.trim() } });
       setStep('code');
     } catch (ex) {
       setErr(ex.message || 'Something went wrong. Please try again.');
@@ -55,7 +58,7 @@ export default function VerifyEmail() {
     setErr('');
     setResendMsg('');
     try {
-      const r = await api('/auth/resend-verification', { method: 'POST', body: { email: email.trim() } });
+      const r = await api('/auth/resend-verification', { method: 'POST', body: { identifier: identifier.trim() } });
       setResendMsg(r.message || 'A new code has been sent.');
     } catch (ex) {
       setErr(ex.message);
@@ -68,7 +71,7 @@ export default function VerifyEmail() {
     if (!code.trim() || code.trim().length !== 6) return setErr('Please enter the 6-digit code.');
     setBusy(true);
     try {
-      await api('/auth/verify-email', { method: 'POST', body: { email: email.trim(), code: code.trim() } });
+      await api('/auth/verify-email', { method: 'POST', body: { identifier: identifier.trim(), code: code.trim() } });
       setStep('success');
     } catch (ex) {
       setErr(ex.message || 'Invalid code.');
@@ -89,9 +92,9 @@ export default function VerifyEmail() {
           {/* Step: enter email (only when we don't already know it) */}
           {step === 'email' && (
             <>
-              <div style={{ fontFamily: 'Poppins,sans-serif', fontSize: 26, fontWeight: 600, color: 'var(--color-ink)', marginBottom: 8 }}>Verify your email</div>
+              <div style={{ fontFamily: 'Poppins,sans-serif', fontSize: 26, fontWeight: 600, color: 'var(--color-ink)', marginBottom: 8 }}>Verify your account</div>
               <p style={{ fontSize: 14, color: 'var(--color-text-muted)', marginBottom: 28, lineHeight: 1.6 }}>
-                Enter the email address on your account. We'll send you a 6-digit code to verify it.
+                Enter the email address or mobile number on your account. We'll send you a 6-digit code to verify it.
               </p>
 
               {err && (
@@ -102,8 +105,8 @@ export default function VerifyEmail() {
 
               <form onSubmit={sendCode}>
                 <div style={{ marginBottom: 22 }}>
-                  <label style={label}>Email Address</label>
-                  <input style={input} type="email" value={email} onChange={e => setEmail(e.target.value)} placeholder="you@email.com" required />
+                  <label style={label}>Email or Mobile Number</label>
+                  <input style={input} type="text" value={identifier} onChange={e => setIdentifier(e.target.value)} placeholder="you@kidclinic.ph or +639171234567" required />
                 </div>
                 <button className="auth-submit-btn" disabled={busy} style={{ width: '100%', padding: 13, background: 'var(--color-landing-primary)', color: '#fff', border: 'none', borderRadius: 10, fontFamily: 'Inter,sans-serif', fontSize: 15, fontWeight: 700, cursor: 'pointer', opacity: busy ? .7 : 1 }}>
                   {busy ? 'Sending…' : 'Send Verification Code'}
@@ -117,7 +120,8 @@ export default function VerifyEmail() {
             <>
               <div style={{ fontFamily: 'Poppins,sans-serif', fontSize: 26, fontWeight: 600, color: 'var(--color-ink)', marginBottom: 8 }}>Enter verification code</div>
               <p style={{ fontSize: 14, color: 'var(--color-text-muted)', marginBottom: 28, lineHeight: 1.6 }}>
-                We sent a 6-digit code to <strong>{email}</strong>. Check your inbox (and spam folder) and enter it below.
+                We sent a 6-digit code to <strong>{identifier}</strong>.{' '}
+                {isPhone ? 'Check your phone for a text message and enter it below.' : 'Check your inbox (and spam folder) and enter it below.'}
               </p>
 
               {err && (
@@ -145,7 +149,7 @@ export default function VerifyEmail() {
                   />
                 </div>
                 <button className="auth-submit-btn" disabled={busy || code.length !== 6} style={{ width: '100%', padding: 13, background: 'var(--color-landing-primary)', color: '#fff', border: 'none', borderRadius: 10, fontFamily: 'Inter,sans-serif', fontSize: 15, fontWeight: 700, cursor: 'pointer', opacity: (busy || code.length !== 6) ? .7 : 1 }}>
-                  {busy ? 'Verifying…' : 'Verify Email'}
+                  {busy ? 'Verifying…' : 'Verify Account'}
                 </button>
               </form>
 
@@ -163,7 +167,7 @@ export default function VerifyEmail() {
               <div style={{ width: 64, height: 64, borderRadius: '50%', background: '#DCFCE7', display: 'flex', alignItems: 'center', justifyContent: 'center', margin: '0 auto 20px' }}>
                 <i className="fa-solid fa-check" style={{ fontSize: 28, color: '#16A34A' }} />
               </div>
-              <div style={{ fontFamily: 'Poppins,sans-serif', fontSize: 22, fontWeight: 600, color: 'var(--color-ink)', marginBottom: 10 }}>Email verified!</div>
+              <div style={{ fontFamily: 'Poppins,sans-serif', fontSize: 22, fontWeight: 600, color: 'var(--color-ink)', marginBottom: 10 }}>Account verified!</div>
               <p style={{ fontSize: 14, color: 'var(--color-text-muted)', lineHeight: 1.6, marginBottom: 24 }}>
                 Your account is now active. You can sign in to the parent portal.
               </p>

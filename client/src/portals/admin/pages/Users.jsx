@@ -208,6 +208,25 @@ export default function Users({ go, toast, openModal }) {
 
   useEffect(() => { fetchUsers(); }, [fetchUsers]);
 
+  // Guardian accounts the inactivity-cleanup sweep (server/lib/accountCleanup.js)
+  // flagged for review, never auto-deleted. Only the count lives on this page
+  // (a one-line banner), the actual reviewable list opens in its own modal on
+  // demand instead of rendering inline, this could grow into the dozens/
+  // hundreds over time and shouldn't push the real account tables off the page.
+  const [flaggedCount, setFlaggedCount] = useState(0);
+  const fetchFlaggedCount = useCallback(async () => {
+    try {
+      setFlaggedCount((await api('/users/inactive-review')).length);
+    } catch {
+      // Silent, this is a secondary banner, not worth a toast if it fails to load.
+    }
+  }, []);
+  useEffect(() => { fetchFlaggedCount(); }, [fetchFlaggedCount]);
+
+  function openInactiveAccountsReview() {
+    openModal('inactive-accounts', { onChanged: () => { fetchFlaggedCount(); fetchUsers(); } });
+  }
+
   // Guardians/Caretakers get their own table, separate from staff/therapist/admin accounts.
   const staffUsers = users.filter(u => u.role !== 'parent');
   const guardianUsers = users.filter(u => u.role === 'parent');
@@ -401,6 +420,20 @@ export default function Users({ go, toast, openModal }) {
       <div style={{ marginBottom: 24 }}>
         <h1 style={{ fontSize: 22, fontWeight: 700, color: '#0F172A', margin: '0 0 4px' }}>User Account Management</h1>
       </div>
+
+      {/* Guardian accounts flagged by the inactivity-cleanup sweep, never
+          auto-deleted. Just a count here, the reviewable list (which could
+          grow large over time) opens in its own modal instead of pushing the
+          real account tables down the page. */}
+      {flaggedCount > 0 && (
+        <div className="card" style={{ padding: '12px 18px', marginBottom: 20, border: '1px solid #FECACA', background: '#FEF2F2', display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap' }}>
+          <i className="fa-solid fa-user-slash" style={{ color: '#DC2626' }} />
+          <div style={{ fontSize: 13, fontWeight: 600, color: '#991B1B', flex: 1 }}>
+            {flaggedCount} inactive guardian account{flaggedCount > 1 ? 's' : ''} flagged for cleanup review
+          </div>
+          <button className="btn-secondary" style={{ fontSize: 12, padding: '7px 14px' }} onClick={openInactiveAccountsReview}>Review</button>
+        </div>
+      )}
 
       {loading ? (
         <div className="card"><LoadingState label="Loading users…" padding="40px 24px" fontSize={14} color="#64748B" /></div>

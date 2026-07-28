@@ -15,3 +15,20 @@ export function normalizePhone(raw) {
   if (!PH_PHONE.test(cleaned)) return null;
   return cleaned;
 }
+
+// Supabase Auth's password sign-in is built around auth.users.email, there's
+// no "email-less" account. A phone-only signup still needs a stable, unique
+// value to put there, so it gets one derived deterministically from its own
+// normalized number instead of a real address, the user never sees or types
+// it (see profiles.phone_only, which marks that this email is a placeholder).
+const SYNTHETIC_EMAIL_DOMAIN = 'phone.kidclinic.internal';
+
+/** Deterministic placeholder email for a normalized +639XXXXXXXXX number. */
+export function syntheticEmailForPhone(normalizedPhone) {
+  return normalizedPhone.replace('+', '') + '@' + SYNTHETIC_EMAIL_DOMAIN;
+}
+
+/** True if `email` is one of the placeholder addresses this app generates for a phone-only account. */
+export function isSyntheticEmail(email) {
+  return typeof email === 'string' && email.toLowerCase().endsWith('@' + SYNTHETIC_EMAIL_DOMAIN);
+}

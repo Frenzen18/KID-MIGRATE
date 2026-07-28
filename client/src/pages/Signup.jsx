@@ -57,7 +57,7 @@ export default function Signup() {
     setBusy(true);
     try {
       const result = await signup({ firstName: firstName.trim(), lastName: lastName.trim(), email: email.trim(), password, contact: contactVal });
-      nav('/verify-email', { state: { email: result.email || email.trim() } });
+      nav('/verify-email', { state: { identifier: result.identifier || email.trim() || contactVal, phoneOnly: !!result.phoneOnly } });
     } catch (ex) {
       setErr(ex.message);
     } finally {
@@ -119,8 +119,11 @@ export default function Signup() {
               </div>
             </div>
             <div style={{ marginBottom: 9 }}>
-              <label style={label}>Email Address</label>
-              <input style={input} type="email" value={email} onChange={e => setEmail(e.target.value)} placeholder="you@email.com" required />
+              <label style={label}>Email Address <span style={{ fontWeight: 400, color: '#9AA0AE' }}>(optional if you don't have one)</span></label>
+              <input style={input} type="email" value={email} onChange={e => setEmail(e.target.value)} placeholder="you@email.com" />
+              <div style={{ fontSize: 11.5, color: '#94A3B8', marginTop: 5 }}>
+                <i className="fa-solid fa-circle-info" style={{ marginRight: 5 }} />No email? Leave this blank, you'll sign in and receive codes by SMS to your mobile number instead.
+              </div>
             </div>
             <div style={{ marginBottom: 9 }}>
               <label style={label}>Contact Number</label>

@@ -11,6 +11,7 @@ import { sendMail } from '../mailer.js';
 import { sendSms } from '../sms.js';
 import { calendarAge } from '../age.js';
 import { isValidName, isSafeText } from '../validate.js';
+import { deleteInactiveChild } from '../lib/accountCleanup.js';
 
 /** Client IDs carry the enrollment year: CLI-YYYY-NNNN. */
 const NEW_CODE_FORMAT = /^CLI-\d{4}-\d{4}$/;
@@ -91,6 +92,41 @@ async function validateDevFunctionalData(raw) {
 
 const router = Router();
 router.use(requireAuth);
+
+/** GET /api/clients/inactive-review, child records flagged by the
+ *  per-child inactivity-cleanup sweep (see server/lib/accountCleanup.js,
+ *  sweepInactiveChildren) for staff to look at before anything is actually
+ *  deleted. Never auto-deletes. Placed ahead of GET /:id so "inactive-review"
+ *  is never swallowed as a client id. */
+router.get('/inactive-review', requireRole('admin', 'staff'), async (req, res) => {
+  const { data: flagged, error } = await db.from('clients')
+    .select('id, full_name, client_code, parent_id, created_at, deletion_flagged_at')
+    .not('deletion_flagged_at', 'is', null)
+    .order('deletion_flagged_at', { ascending: true });
+  if (error) return res.status(500).json({ error: error.message });
+  if (!flagged?.length) return res.json([]);
+
+  const parentIds = [...new Set(flagged.map(c => c.parent_id).filter(Boolean))];
+  const { data: guardians } = await db.from('profiles').select('id, full_name, email, contact').in('id', parentIds);
+  const guardianById = Object.fromEntries((guardians || []).map(g => [g.id, g]));
+
+  res.json(flagged.map(c => ({ ...c, guardian: guardianById[c.parent_id] || null })));
+});
+
+/** POST /api/clients/inactive-review/:id/confirm-delete, staff-confirmed hard
+ *  delete of one flagged child record only, never the guardian's login or
+ *  any other linked child. */
+router.post('/inactive-review/:id/confirm-delete', requireRole('admin', 'staff'), async (req, res) => {
+  const { data: client } = await db.from('clients').select('id, deletion_flagged_at').eq('id', req.params.id).maybeSingle();
+  if (!client) return res.status(404).json({ error: 'Client not found' });
+  if (!client.deletion_flagged_at) return res.status(400).json({ error: 'This child record is not flagged for inactivity review.' });
+  try {
+    await deleteInactiveChild(client.id, req.user.id);
+  } catch (e) {
+    return res.status(500).json({ error: e.message });
+  }
+  res.json({ ok: true });
+});
 
 /** GET /api/clients?search=&status=&therapy=&archived=, staff/admin/therapist see all; parents see own children */
 router.get('/', async (req, res) => {

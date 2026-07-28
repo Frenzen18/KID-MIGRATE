@@ -74,8 +74,11 @@ export function AuthProvider({ children }) {
     };
   }, []);
 
-  async function login(email, password, portal) {
-    const data = await api('/auth/login', { method: 'POST', body: { email, password, ...(portal ? { portal } : {}) } });
+  // `identifier` is either the account's email or its registered mobile
+  // number, see server/routes/auth.js's resolveIdentifier, a guardian with
+  // no email signs up and signs in by phone number instead.
+  async function login(identifier, password, portal) {
+    const data = await api('/auth/login', { method: 'POST', body: { identifier, password, ...(portal ? { portal } : {}) } });
     sessionStorage.setItem('kid_token', data.token);
     sessionStorage.setItem('kid_refresh_token', data.refreshToken);
     sessionStorage.setItem('kid_token_expires_at', String(data.expiresAt));
@@ -104,7 +107,10 @@ export function AuthProvider({ children }) {
     return () => clearInterval(iv);
   }, [user]);
 
-  /** Self-service parent/guardian registration. The account must verify its email before logging in. */
+  /** Self-service parent/guardian registration. `email` may be blank for a
+   *  guardian with no email address, `contact` becomes their sign-in
+   *  identifier instead (see server/routes/auth.js). The account must verify
+   *  (by email or SMS code, whichever it registered with) before logging in. */
   async function signup({ firstName, lastName, email, password, contact }) {
     return api('/auth/signup', {
       method: 'POST',

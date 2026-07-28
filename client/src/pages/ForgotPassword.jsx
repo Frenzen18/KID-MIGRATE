@@ -6,8 +6,8 @@ import AuthLeftPanel from '../components/AuthLeftPanel.jsx';
 
 export default function ForgotPassword() {
   const nav = useNavigate();
-  const [step, setStep] = useState(1); // 1: email, 2: code, 3: new password
-  const [email, setEmail] = useState('');
+  const [step, setStep] = useState(1); // 1: identifier, 2: code, 3: new password
+  const [identifier, setIdentifier] = useState('');
   const [code, setCode] = useState('');
   const [newPassword, setNewPassword] = useState('');
   const [confirmPassword, setConfirmPassword] = useState('');
@@ -15,14 +15,16 @@ export default function ForgotPassword() {
   const [showConfirm, setShowConfirm] = useState(false);
   const [err, setErr] = useState('');
   const [busy, setBusy] = useState(false);
+  // No "@" only ever means a phone number in this app's two identifier types.
+  const isPhone = !identifier.includes('@');
 
   async function sendCode(e) {
     e.preventDefault();
     setErr('');
-    if (!email.trim()) return setErr('Please enter your email address.');
+    if (!identifier.trim()) return setErr('Please enter your email address or mobile number.');
     setBusy(true);
     try {
-      await api('/auth/forgot-password', { method: 'POST', body: { email: email.trim() } });
+      await api('/auth/forgot-password', { method: 'POST', body: { identifier: identifier.trim() } });
       setStep(2);
     } catch (ex) {
       setErr(ex.message || 'Something went wrong. Please try again.');
@@ -37,7 +39,7 @@ export default function ForgotPassword() {
     if (!code.trim() || code.trim().length !== 6) return setErr('Please enter the 6-digit code.');
     setBusy(true);
     try {
-      await api('/auth/verify-reset-code', { method: 'POST', body: { email: email.trim(), code: code.trim() } });
+      await api('/auth/verify-reset-code', { method: 'POST', body: { identifier: identifier.trim(), code: code.trim() } });
       setStep(3);
     } catch (ex) {
       setErr(ex.message || 'Invalid code.');
@@ -53,7 +55,7 @@ export default function ForgotPassword() {
     if (newPassword !== confirmPassword) return setErr('Passwords do not match.');
     setBusy(true);
     try {
-      await api('/auth/reset-password', { method: 'POST', body: { email: email.trim(), code: code.trim(), newPassword } });
+      await api('/auth/reset-password', { method: 'POST', body: { identifier: identifier.trim(), code: code.trim(), newPassword } });
       setStep(4); // success
     } catch (ex) {
       setErr(ex.message || 'Failed to reset password.');
@@ -89,7 +91,7 @@ export default function ForgotPassword() {
             <>
               <div style={{ fontFamily: 'Poppins,sans-serif', fontSize: 26, fontWeight: 600, color: 'var(--color-ink)', marginBottom: 8 }}>Reset your password</div>
               <p style={{ fontSize: 14, color: 'var(--color-text-muted)', marginBottom: 28, lineHeight: 1.6 }}>
-                Enter the email address linked to your account. We'll send you a 6-digit code to reset your password.
+                Enter the email address or mobile number linked to your account. We'll send you a 6-digit code to reset your password.
               </p>
 
               {err && (
@@ -100,8 +102,8 @@ export default function ForgotPassword() {
 
               <form onSubmit={sendCode}>
                 <div style={{ marginBottom: 22 }}>
-                  <label style={label}>Email Address</label>
-                  <input style={input} type="email" value={email} onChange={e => setEmail(e.target.value)} placeholder="you@email.com" required />
+                  <label style={label}>Email or Mobile Number</label>
+                  <input style={input} type="text" value={identifier} onChange={e => setIdentifier(e.target.value)} placeholder="you@kidclinic.ph or +639171234567" required />
                 </div>
                 <button className="auth-submit-btn" disabled={busy} style={{ width: '100%', padding: 13, background: 'var(--color-landing-primary)', color: '#fff', border: 'none', borderRadius: 10, fontFamily: 'Inter,sans-serif', fontSize: 15, fontWeight: 700, cursor: 'pointer', opacity: busy ? .7 : 1 }}>
                   {busy ? 'Sending…' : 'Send Reset Code'}
@@ -115,7 +117,8 @@ export default function ForgotPassword() {
             <>
               <div style={{ fontFamily: 'Poppins,sans-serif', fontSize: 26, fontWeight: 600, color: 'var(--color-ink)', marginBottom: 8 }}>Enter reset code</div>
               <p style={{ fontSize: 14, color: 'var(--color-text-muted)', marginBottom: 28, lineHeight: 1.6 }}>
-                If <strong>{email}</strong> is registered with us, a 6-digit code is on its way. Check your inbox (and spam folder) and enter it below.
+                If <strong>{identifier}</strong> is registered with us, a 6-digit code is on its way.{' '}
+                {isPhone ? 'Check your phone for a text message and enter it below.' : 'Check your inbox (and spam folder) and enter it below.'}
               </p>
 
               {err && (

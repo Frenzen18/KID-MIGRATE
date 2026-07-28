@@ -5,9 +5,47 @@ import { normalizePhone } from '../phone.js';
 import { nextUserCode } from '../usercode.js';
 import { EMAIL_RE, passwordPolicyError, isValidName } from '../validate.js';
 import { logAudit } from '../lib/audit.js';
+import { deleteInactiveAccount } from '../lib/accountCleanup.js';
 
 const router = Router();
 router.use(requireAuth);
+
+/** GET /api/users/inactive-review, guardian accounts flagged by the
+ *  inactivity-cleanup sweep (see server/lib/accountCleanup.js) for staff to
+ *  look at before anything is actually deleted. Never auto-deletes. */
+router.get('/inactive-review', requireRole('admin', 'staff'), async (req, res) => {
+  const { data: flagged, error } = await db.from('profiles')
+    .select('id, full_name, email, contact, created_at, deletion_flagged_at')
+    .eq('role', 'parent').not('deletion_flagged_at', 'is', null)
+    .order('deletion_flagged_at', { ascending: true });
+  if (error) return res.status(500).json({ error: error.message });
+  if (!flagged?.length) return res.json([]);
+
+  const { data: clients } = await db.from('clients')
+    .select('id, full_name, client_code, parent_id').in('parent_id', flagged.map(p => p.id));
+  const byParent = {};
+  for (const c of clients || []) (byParent[c.parent_id] = byParent[c.parent_id] || []).push(c);
+
+  res.json(flagged.map(p => ({ ...p, linked_children: byParent[p.id] || [] })));
+});
+
+/** POST /api/users/inactive-review/:id/confirm-delete, staff-confirmed hard
+ *  delete: removes the flagged account and every client/child record it
+ *  created (cascades their reservations/payments/GAS entries). */
+router.post('/inactive-review/:id/confirm-delete', requireRole('admin', 'staff'), async (req, res) => {
+  const { data: profile } = await db.from('profiles').select('id, role, deletion_flagged_at').eq('id', req.params.id).maybeSingle();
+  if (!profile) return res.status(404).json({ error: 'Account not found' });
+  if (profile.role !== 'parent' || !profile.deletion_flagged_at) {
+    return res.status(400).json({ error: 'This account is not flagged for inactivity review.' });
+  }
+  try {
+    await deleteInactiveAccount(profile.id, req.user.id);
+  } catch (e) {
+    return res.status(500).json({ error: e.message });
+  }
+  res.json({ ok: true });
+});
+
 
 /** GET /api/users, all portal accounts (staff too, so 12.3 Push Trigger can target a specific user) */
 router.get('/', requireRole('admin', 'staff'), async (req, res) => {

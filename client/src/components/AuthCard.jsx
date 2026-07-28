@@ -24,7 +24,7 @@ export default function AuthCard({
 }) {
   const { login } = useAuth();
   const nav = useNavigate();
-  const [email, setEmail] = useState('');
+  const [identifier, setIdentifier] = useState('');
   const [password, setPassword] = useState('');
   const [showPw, setShowPw] = useState(false);
   const [err, setErr] = useState('');
@@ -37,7 +37,7 @@ export default function AuthCard({
     setNeedsVerification(false);
     setBusy(true);
     try {
-      const u = await login(email.trim(), password, portal);
+      const u = await login(identifier.trim(), password, portal);
       nav(u.must_change_password ? '/set-password' : (HOME_FOR_ROLE[u.role] || fallbackHome));
     } catch (ex) {
       setErr(ex.message);
@@ -63,8 +63,8 @@ export default function AuthCard({
               <i className="fa-solid fa-circle-exclamation" style={{ marginRight: 6 }} />{err}
               {needsVerification && (
                 <div style={{ marginTop: 8 }}>
-                  <Link to={`/verify-email?email=${encodeURIComponent(email.trim())}`} style={{ color: 'var(--color-landing-primary)', fontSize: 13, fontWeight: 700, textDecoration: 'underline' }}>
-                    Verify your email now
+                  <Link to={`/verify-email?identifier=${encodeURIComponent(identifier.trim())}`} style={{ color: 'var(--color-landing-primary)', fontSize: 13, fontWeight: 700, textDecoration: 'underline' }}>
+                    Verify your account now
                   </Link>
                 </div>
               )}
@@ -73,8 +73,8 @@ export default function AuthCard({
 
           <form onSubmit={submit}>
             <div style={{ marginBottom: 18 }}>
-              <label style={label}>Email Address</label>
-              <input style={input} type="email" value={email} onChange={e => setEmail(e.target.value)} placeholder="you@kidclinic.ph" autoComplete="username" required />
+              <label style={label}>Email or Mobile Number</label>
+              <input style={input} type="text" value={identifier} onChange={e => setIdentifier(e.target.value)} placeholder="you@kidclinic.ph or +639171234567" autoComplete="username" required />
             </div>
             <div style={{ marginBottom: 24 }}>
               <label style={label}>Password</label>
