@@ -2,6 +2,7 @@ import { Router } from 'express';
 import { db } from '../supabase.js';
 import { requireAuth, requireRole } from '../middleware/auth.js';
 import { logAudit } from '../lib/audit.js';
+import { applyCancelSideEffects } from '../lib/noShow.js';
 
 const router = Router();
 
@@ -163,9 +164,22 @@ router.post('/holidays', requireAuth, requireRole('admin', 'staff'), async (req,
     return res.status(500).json({ error: error.message });
   }
 
+  // A closure announced AFTER confirmed Speech/OT sessions already exist for
+  // that date (the ahead-of-time case is instead handled by
+  // fillReservationsForSchedule never generating one) auto-cancels them as
+  // excused, no guardian action or attachment needed, it's the clinic's own
+  // closure, not the family's absence.
+  const { data: affected } = await db.from('reservations')
+    .select('*').eq('date', date).in('status', ['confirmed', 'rescheduled'])
+    .in('session_type', ['Occupational Therapy', 'Speech Therapy']);
+  for (const r of affected || []) {
+    await db.from('reservations').update({ status: 'cancelled' }).eq('id', r.id);
+    await applyCancelSideEffects(r, req.user.id);
+  }
+
   await logAudit({
     table_name: 'clinic_holidays', record_id: data.id, action: 'create',
-    description: `Marked ${date} as a clinic closure${label ? ` (${label})` : ''}`,
+    description: `Marked ${date} as a clinic closure${label ? ` (${label})` : ''}` + (affected?.length ? `, ${affected.length} confirmed session(s) auto-excused` : ''),
     created_by: req.user.id
   });
 
