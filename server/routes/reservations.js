@@ -1522,15 +1522,37 @@ router.post('/:id/cancellation-requests', (req, res, next) => {
 });
 
 /**
- * GET /api/reservations/cancellation-requests?status=pending, staff/admin
- * only. Lists requests newest-first with the reservation + client name joined
+ * GET /api/reservations/cancellation-requests?status=pending, staff/admin see
+ * every request (their review queue). A guardian (`parent` role) may also
+ * call this to see their OWN children's requests only - scoped by client_id
+ * ownership below - e.g. for the small pending/excused/unexcused list on
+ * their Booking page (finding 8), never someone else's. `client_id` further
+ * narrows either view to one child; for a parent it 403s if that child isn't
+ * one of theirs. Lists newest-first with the reservation + client name joined
  * in, so the review UI needs no follow-up round trip per row.
  */
-router.get('/cancellation-requests', requireRole('admin', 'staff'), async (req, res) => {
+router.get('/cancellation-requests', async (req, res) => {
+  let ownClientIds = null;
+  if (req.user.role === 'parent') {
+    const { data: myClients } = await db.from('clients').select('id').eq('parent_id', req.user.id);
+    ownClientIds = (myClients || []).map(c => c.id);
+    if (req.query.client_id && !ownClientIds.includes(req.query.client_id)) {
+      return res.status(403).json({ error: 'Not your child\'s requests' });
+    }
+  } else if (!['admin', 'staff'].includes(req.user.role)) {
+    return res.status(403).json({ error: 'Forbidden' });
+  }
+
   let q = db.from('cancellation_requests')
     .select('*, reservations(date, time_slot, session_type, therapist_name, status), clients(full_name)')
     .order('created_at', { ascending: false });
   if (req.query.status) q = q.eq('status', req.query.status);
+  if (req.query.client_id) q = q.eq('client_id', req.query.client_id);
+  // No client_id filter given: a guardian still only ever sees their own
+  // children's requests (never the whole clinic's), an empty list of ids
+  // means no linked children at all, so no requests can match.
+  else if (ownClientIds) q = q.in('client_id', ownClientIds.length ? ownClientIds : ['00000000-0000-0000-0000-000000000000']);
+
   const { data, error } = await q;
   if (error) return res.status(500).json({ error: error.message });
   res.json(data);

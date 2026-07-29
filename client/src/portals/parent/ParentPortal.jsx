@@ -320,6 +320,12 @@ export default function ParentPortal() {
   // staff after Initial Assessment), drives both the read-only schedule card and
   // which session types are actually self-bookable (see sessionTypesFor above).
   const [childSchedules, setChildSchedules] = useState([]);
+  // The active child's own cancellation requests (pending/excused/unexcused),
+  // shown as a compact list next to the Fixed Weekly Schedule card so a
+  // guardian can see the state of a request they already submitted instead
+  // of it vanishing with no trace (finding 8), see GET
+  // /reservations/cancellation-requests?client_id= below.
+  const [cancellationRequests, setCancellationRequests] = useState([]);
   // Clinic-wide closures (holidays), so "no time slots" can explain why instead
   // of just looking broken, no booking of any kind is allowed on one.
   const [holidays, setHolidays] = useState([]);
@@ -536,6 +542,19 @@ export default function ParentPortal() {
       .catch(() => { if (!cancelled) setChildSchedules([]); });
     return () => { cancelled = true; };
   }, [activeChild?.id]);
+
+  /** Refetches the active child's own cancellation requests, exposed as a
+   *  function (not just inline in the effect below) so submitCancellationRequest
+   *  can also call it right after a successful submit, the guardian's new
+   *  'pending' request should show up in the list immediately, not only after
+   *  the next child switch/reload. */
+  function fetchCancellationRequests() {
+    if (!activeChild?.id) { setCancellationRequests([]); return; }
+    api('/reservations/cancellation-requests?client_id=' + activeChild.id)
+      .then(list => setCancellationRequests(list || []))
+      .catch(() => setCancellationRequests([]));
+  }
+  useEffect(fetchCancellationRequests, [activeChild?.id]);
 
   /* ── Waitlist offers: any of this guardian's children who've been notified
      a waitlisted slot opened up (see notifyWaitlistForFreedSlot), shown as an
@@ -1033,6 +1052,7 @@ export default function ParentPortal() {
       if (!res.ok) throw new Error(body.error || 'Failed to submit request');
       toast('Cancellation request submitted for review', 'fa-circle-check');
       setCancellationRequestSession(null);
+      fetchCancellationRequests(); // shows up in the guardian's own request list right away
     } catch (err) {
       toast(err.message, 'fa-triangle-exclamation');
     } finally {
@@ -1598,18 +1618,63 @@ export default function ParentPortal() {
                         {upcoming.length === 0 && (
                           <div style={{ fontSize: 12, color: '#94A3B8' }}>No upcoming confirmed sessions yet.</div>
                         )}
-                        {upcoming.map(session => (
-                          <div key={session.id} style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', fontSize: 12.5, padding: '6px 0', borderTop: '1px solid #E2E8F0' }}>
-                            <span>{fmtDate(session.date)} · {session.time_slot}</span>
-                            <button className="btn-secondary" style={{ padding: '4px 10px', fontSize: 11.5 }} onClick={() => openCancellationRequestModal(session)}>
-                              <i className="fa-solid fa-file-circle-question" style={{ marginRight: 5 }} />Request Cancellation
-                            </button>
-                          </div>
-                        ))}
+                        {upcoming.map(session => {
+                          // Staff can't act on a cancellation request in time once the
+                          // session is today, whether it's already passed or starting in
+                          // the next few minutes, same day-cutoff todayStr() already uses
+                          // elsewhere in this file, isSlotPast alone wouldn't catch the
+                          // "starting in 10 minutes" case since it only trips once the
+                          // slot's own start time has passed (finding 9).
+                          const tooSoonToRequest = session.date <= todayStr();
+                          // A pending request for this exact session already exists,
+                          // submitting a second one would just 409 from the server's
+                          // unique constraint, so hide the button instead of letting the
+                          // guardian hit that confusing raw error a second time (finding 8).
+                          const alreadyRequested = cancellationRequests.some(r => r.reservation_id === session.id && r.status === 'pending');
+                          return (
+                            <div key={session.id} style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', fontSize: 12.5, padding: '6px 0', borderTop: '1px solid #E2E8F0' }}>
+                              <span>{fmtDate(session.date)} · {session.time_slot}</span>
+                              {alreadyRequested ? (
+                                <span className="pill pill-blue" style={{ fontSize: 10.5 }}>Cancellation pending review</span>
+                              ) : tooSoonToRequest ? (
+                                <span style={{ fontSize: 11, color: '#94A3B8' }} title="Too close to the session date for a cancellation request to be reviewed in time. Contact the clinic directly.">Too late to request</span>
+                              ) : (
+                                <button className="btn-secondary" style={{ padding: '4px 10px', fontSize: 11.5 }} onClick={() => openCancellationRequestModal(session)}>
+                                  <i className="fa-solid fa-file-circle-question" style={{ marginRight: 5 }} />Request Cancellation
+                                </button>
+                              )}
+                            </div>
+                          );
+                        })}
                       </div>
                     </div>
                   );
                 })}
+              </div>
+            )}
+            {/* Compact list of this child's own cancellation requests (any status),
+                next to the Fixed Weekly Schedule card above, so a guardian who
+                already submitted one can see it's pending instead of it looking
+                like it vanished (finding 8). See GET
+                /reservations/cancellation-requests?client_id= (guardian-scoped). */}
+            {cancellationRequests.length > 0 && (
+              <div className="card" style={{ padding: '18px 20px', marginBottom: 16 }}>
+                <div style={{ fontSize: 14, fontWeight: 700, color: '#0F172A', marginBottom: 10 }}>
+                  <i className="fa-solid fa-file-circle-question" style={{ color: '#4F46E5', marginRight: 7 }} />
+                  My Cancellation Requests
+                </div>
+                <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+                  {cancellationRequests.map(req => {
+                    const pillClass = req.status === 'excused' ? 'pill-green' : req.status === 'unexcused' ? 'pill-red' : 'pill-blue';
+                    const statusLabel = req.status === 'excused' ? 'Excused' : req.status === 'unexcused' ? 'Unexcused' : 'Pending';
+                    return (
+                      <div key={req.id} style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', fontSize: 12.5, padding: '6px 0', borderTop: '1px solid #E2E8F0', gap: 10, flexWrap: 'wrap' }}>
+                        <span>{req.reservations?.session_type} · {req.reservations?.date ? fmtDate(req.reservations.date) : ''}{req.reservations?.time_slot ? ' · ' + req.reservations.time_slot : ''}</span>
+                        <span className={'pill ' + pillClass} style={{ fontSize: 10.5 }}>{statusLabel}</span>
+                      </div>
+                    );
+                  })}
+                </div>
               </div>
             )}
             <div style={{ display: 'grid', gridTemplateColumns: '1fr', gap: 16, marginBottom: 24 }}>
@@ -1619,6 +1684,23 @@ export default function ParentPortal() {
                   <span className="pill pill-blue">{selectedSlot ? selectedSlot + ' selected' : 'No time selected'}</span>
                 </div>
 
+                {sessionOptions.length === 0 ? (
+                  // Nothing is actually bookable here: the child's therapy type is
+                  // already Speech/OT (assigned), so those sessions only ever come
+                  // from a staff-assigned fixed weekly schedule (see the read-only
+                  // schedule card above), not from this picker, and Initial
+                  // Assessment has already been used up. Rendering the full
+                  // calendar + slot grid in this state would look interactive but
+                  // could never actually submit, so show a short explanation
+                  // instead (finding 7).
+                  <div style={{ background: '#F8FAFC', border: '1px solid #E2E8F0', borderRadius: 12, padding: '18px 16px', textAlign: 'center' }}>
+                    <i className="fa-solid fa-calendar-check" style={{ color: '#94A3B8', marginRight: 8 }} />
+                    <span style={{ fontSize: 12.5, color: '#64748B' }}>
+                      {bookingChild?.full_name}'s Speech/Occupational Therapy sessions are scheduled automatically once a fixed weekly slot is assigned, see the Fixed Weekly Schedule above. Contact the clinic for any changes.
+                    </span>
+                  </div>
+                ) : (
+                <>
                 {/* Who + what, side by side instead of two full-width rows */}
                 <div style={{ display: 'flex', gap: 14, flexWrap: 'wrap', marginBottom: 6 }}>
                   {children.length > 1 && (
@@ -1781,6 +1863,8 @@ export default function ParentPortal() {
                 </>
                 )}
                 </div>
+                </>
+                )}
               </div>
             </div>
 
