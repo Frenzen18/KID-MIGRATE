@@ -54,6 +54,7 @@ const EMPTY_LINK_FORM = {
 
 // Philippine mobile number: +639XXXXXXXXX only
 const PH_PHONE = /^\+639\d{9}$/;
+const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
 /* Patients must be 3–21 years old. */
 function maxPatientDob() { // youngest allowed: exactly 3 years old
@@ -266,7 +267,10 @@ function InvoiceDocument({ invoice, brand }) {
 }
 
 export default function ParentPortal() {
-  const { logout, user, updateUser, updateProfile } = useAuth();
+  const {
+    logout, user, updateUser,
+    requestProfileEmailCode, confirmProfileEmailCode, requestProfilePhoneCode, confirmProfilePhoneCode
+  } = useAuth();
   const nav = useNavigate();
   const toast = useToast();
 
@@ -283,11 +287,27 @@ export default function ParentPortal() {
   const [brand, setBrand] = useState(null);
   useEffect(() => { fetch('/api/settings/branding/public').then(r => r.json()).then(setBrand).catch(() => {}); }, []);
 
-  /* ── My Profile modal, self-service contact number edit ── */
+  /* ── My Profile modal, self-service email/phone edit. Email and phone are
+     shown read-only with a "Change" button each; clicking one turns just
+     that field into an input + "Send Code", and confirming the code (see
+     requestProfileEmailCode/confirmProfileEmailCode + phone equivalents in
+     auth.jsx) is the only way the value actually changes - 'edit' is the
+     read-only/single-field-editing form, 'verify-email'/'verify-phone' are
+     the code-entry steps. ── */
   const [profileModal, setProfileModal] = useState(false);
+  const [profileStep, setProfileStep] = useState('edit'); // 'edit' | 'verify-email' | 'verify-phone'
+  const [editingField, setEditingField] = useState(null); // null | 'email' | 'phone', which field (if any) is mid-edit
+  const [emailInput, setEmailInput] = useState('');
+  const [emailErr, setEmailErr] = useState('');
   const [contactInput, setContactInput] = useState('+63');
   const [contactErr, setContactErr] = useState('');
-  const [contactSaving, setContactSaving] = useState(false);
+  const [profileSaving, setProfileSaving] = useState(false);
+  const [pendingEmail, setPendingEmail] = useState(null);
+  const [pendingContact, setPendingContact] = useState(null);
+  const [profileCode, setProfileCode] = useState('');
+  const [profileCodeErr, setProfileCodeErr] = useState('');
+  const [profileVerifying, setProfileVerifying] = useState(false);
+  const [profileResendMsg, setProfileResendMsg] = useState('');
 
   /* ── Data state ── */
   const [children, setChildren] = useState(null); // null = loading
@@ -478,8 +498,12 @@ export default function ParentPortal() {
         if (childrenData && childrenData.length > 0) {
           const detail = await api('/clients/' + childrenData[0].id).catch(() => childrenData[0]);
           setActiveChild(detail);
-        } else {
-          // No child yet, guide the parent through the intake form right away
+        } else if (!(user?.id && localStorage.getItem(`kid_onboarding_dismissed_${user.id}`) === '1')) {
+          // No child yet and this guardian hasn't dismissed the welcome
+          // prompt before, guide them through the intake form right away.
+          // Once dismissed (see linkChildModal's onClose below), it stays
+          // dismissed across reloads instead of forcing itself open every
+          // time the dashboard loads with still no child linked.
           setOnboarding(true);
           setLinkChildModal(true);
         }
@@ -690,9 +714,35 @@ export default function ParentPortal() {
 
   function openProfileModal() {
     setProfileOpen(false);
+    setProfileStep('edit');
+    setEditingField(null);
+    setEmailErr('');
+    setContactErr('');
+    setPendingEmail(null);
+    setPendingContact(null);
+    setProfileCode('');
+    setProfileCodeErr('');
+    setProfileResendMsg('');
+    setProfileModal(true);
+  }
+
+  function startEditEmail() {
+    setEmailInput(user?.email || '');
+    setEmailErr('');
+    setEditingField('email');
+  }
+  function cancelEditEmail() {
+    setEmailErr('');
+    setEditingField(null);
+  }
+  function startEditPhone() {
     setContactInput(user?.contact || '+63');
     setContactErr('');
-    setProfileModal(true);
+    setEditingField('phone');
+  }
+  function cancelEditPhone() {
+    setContactErr('');
+    setEditingField(null);
   }
 
   /** Live phone input: keep only digits after "+63", flag letters immediately, same pattern as the child-intake form. */
@@ -705,17 +755,90 @@ export default function ParentPortal() {
     setContactInput(`+63${digits}`);
   }
 
-  async function saveContact() {
-    if (!PH_PHONE.test(contactInput)) { setContactErr('Phone number must be +63 followed by 10 digits (e.g. +63 917 123 4567).'); return; }
-    setContactSaving(true);
+  /** "Send Code" on the Email row: nothing changes until the code that lands
+   *  in the NEW inbox is confirmed (see verifyProfileEmailCode). */
+  async function sendEmailCode() {
+    const val = emailInput.trim();
+    if (!val || !EMAIL_RE.test(val)) { setEmailErr('Please enter a valid email address.'); return; }
+    if (val.toLowerCase() === (user?.email || '').toLowerCase()) {
+      setEmailErr('That is already your current email address.'); return;
+    }
+    setProfileSaving(true);
     try {
-      await updateProfile({ contact: contactInput });
-      toast('Phone number updated', 'fa-circle-check');
-      setProfileModal(false);
+      await requestProfileEmailCode(val);
+      setPendingEmail(val);
+      setProfileCode('');
+      setProfileCodeErr('');
+      setProfileResendMsg('');
+      setProfileStep('verify-email');
     } catch (e) {
-      setContactErr(e.message || 'Failed to update phone number');
+      setEmailErr(e.message || 'Failed to send verification code');
     } finally {
-      setContactSaving(false);
+      setProfileSaving(false);
+    }
+  }
+
+  /** "Send Code" on the Phone row, mirrors sendEmailCode above. */
+  async function sendPhoneCode() {
+    if (!PH_PHONE.test(contactInput)) { setContactErr('Phone number must be +63 followed by 10 digits (e.g. +63 917 123 4567).'); return; }
+    if (contactInput === (user?.contact || '+63')) { setContactErr('That is already your current phone number.'); return; }
+    setProfileSaving(true);
+    try {
+      await requestProfilePhoneCode(contactInput);
+      setPendingContact(contactInput);
+      setProfileCode('');
+      setProfileCodeErr('');
+      setProfileResendMsg('');
+      setProfileStep('verify-phone');
+    } catch (e) {
+      setContactErr(e.message || 'Failed to send verification code');
+    } finally {
+      setProfileSaving(false);
+    }
+  }
+
+  async function verifyProfileEmailCode() {
+    if (profileCode.trim().length !== 6) { setProfileCodeErr('Please enter the 6-digit code.'); return; }
+    setProfileVerifying(true);
+    setProfileCodeErr('');
+    try {
+      await confirmProfileEmailCode(pendingEmail, profileCode.trim());
+      toast('Email address updated', 'fa-circle-check');
+      setEditingField(null);
+      setProfileStep('edit');
+    } catch (e) {
+      setProfileCodeErr(e.message || 'Invalid code.');
+    } finally {
+      setProfileVerifying(false);
+    }
+  }
+
+  async function verifyProfilePhoneCode() {
+    if (profileCode.trim().length !== 6) { setProfileCodeErr('Please enter the 6-digit code.'); return; }
+    setProfileVerifying(true);
+    setProfileCodeErr('');
+    try {
+      await confirmProfilePhoneCode(pendingContact, profileCode.trim());
+      toast('Phone number updated', 'fa-circle-check');
+      setEditingField(null);
+      setProfileStep('edit');
+    } catch (e) {
+      setProfileCodeErr(e.message || 'Invalid code.');
+    } finally {
+      setProfileVerifying(false);
+    }
+  }
+
+  async function resendProfileCode() {
+    setProfileCodeErr('');
+    setProfileResendMsg('');
+    try {
+      const r = profileStep === 'verify-email'
+        ? await requestProfileEmailCode(pendingEmail)
+        : await requestProfilePhoneCode(pendingContact);
+      setProfileResendMsg(r.message || 'A new code has been sent.');
+    } catch (e) {
+      setProfileCodeErr(e.message || 'Failed to resend code.');
     }
   }
 
@@ -1003,6 +1126,21 @@ export default function ParentPortal() {
     };
   }
 
+  /** Closes the "Link Your Child" modal from any of its steps (Data Privacy
+   *  Consent, Child/Guardian/Development, or the Modal's own X). If this was
+   *  the auto-opened onboarding prompt, remembers that this guardian
+   *  dismissed it so it doesn't force itself open again on every reload
+   *  before a child is actually linked (see the no-children mount effect). */
+  function closeLinkChildModal() {
+    if (onboarding && user?.id) localStorage.setItem(`kid_onboarding_dismissed_${user.id}`, '1');
+    setOnboarding(false);
+    setLinkChildModal(false);
+    setLinkErr('');
+    setLinkConsent(false);
+    setConsentChecked(false);
+    setLinkStep(1);
+  }
+
   /** Records the RA 10173 consent on the account so the notice is shown only once. */
   async function agreeConsent() {
     setLinkConsent(true);
@@ -1215,12 +1353,9 @@ export default function ParentPortal() {
               description="Your account doesn't have any child profiles linked yet. Register your child's information below to get started with booking sessions and tracking progress."
             />
             <div style={{ textAlign: 'center', marginTop: 16 }}>
-              <div style={{ display: 'inline-flex', gap: 12 }}>
-                <button onClick={() => setLinkChildModal(true)} style={{ padding: '12px 24px', background: '#1F4E9E', color: '#fff', border: 'none', borderRadius: 8, fontSize: 14, fontWeight: 700, cursor: 'pointer', display: 'flex', alignItems: 'center', gap: 8 }}>
-                  <i className="fa-solid fa-link" /> Link Your Child
-                </button>
-                <a href="#" onClick={e => { e.preventDefault(); goPage('notifications'); }} className="qa-btn" style={{ width: 'auto', padding: '12px 16px', fontSize: 13, textDecoration: 'none' }}><i className="fa-solid fa-bell" style={{ color: '#0EA5E9' }} /> Check Notifications</a>
-              </div>
+              <button onClick={() => setLinkChildModal(true)} style={{ padding: '12px 24px', background: '#1F4E9E', color: '#fff', border: 'none', borderRadius: 8, fontSize: 14, fontWeight: 700, cursor: 'pointer', display: 'inline-flex', alignItems: 'center', gap: 8 }}>
+                <i className="fa-solid fa-link" /> Link Your Child
+              </button>
             </div>
           </div>
           <div className="page-footer"><span style={{ fontSize: 12, color: '#94A3B8' }}>© 2026 KID Clinic Information Management System · All rights reserved</span></div>
@@ -2507,26 +2642,110 @@ export default function ParentPortal() {
         document.body
       )}
 
-      {profileModal && (
+      {profileModal && profileStep === 'edit' && (
         <Modal onClose={() => setProfileModal(false)} title="My Profile">
           <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
             <div>
               <label className="form-label">Name</label>
               <input className="form-input" value={user?.name || ''} disabled style={{ background: '#F1F5F9' }} />
             </div>
+
             <div>
               <label className="form-label">Email</label>
-              <input className="form-input" value={user?.email || ''} disabled style={{ background: '#F1F5F9' }} />
+              {editingField === 'email' ? (
+                <>
+                  <input
+                    className="form-input" type="email" value={emailInput} autoFocus
+                    onChange={e => { setEmailInput(e.target.value); setEmailErr(''); }}
+                    placeholder="you@example.com"
+                  />
+                  {emailErr && <div style={{ fontSize: 11.5, color: '#DC2626', fontWeight: 600, marginTop: 4 }}>{emailErr}</div>}
+                  <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8, marginTop: 8 }}>
+                    <button className="btn-secondary" onClick={cancelEditEmail} disabled={profileSaving}>Cancel</button>
+                    <button className="btn-primary" onClick={sendEmailCode} disabled={profileSaving}>
+                      {profileSaving ? 'Sending…' : 'Send Code'}
+                    </button>
+                  </div>
+                </>
+              ) : (
+                <div style={{ display: 'flex', gap: 8 }}>
+                  <input className="form-input" value={user?.email || ''} disabled placeholder="No email on file" style={{ flex: 1, background: '#F1F5F9' }} />
+                  <button className="btn-secondary" onClick={startEditEmail} style={{ whiteSpace: 'nowrap' }}>Change</button>
+                </div>
+              )}
             </div>
+
             <div>
               <label className="form-label">Phone Number *</label>
-              <input className="form-input" type="tel" value={formatPhoneDisplay(contactInput)} onChange={handleContactInput} placeholder="+63 000 000 0000" maxLength={16} />
-              {contactErr && <div style={{ fontSize: 11.5, color: '#DC2626', fontWeight: 600, marginTop: 4 }}>{contactErr}</div>}
+              {editingField === 'phone' ? (
+                <>
+                  <input className="form-input" type="tel" value={formatPhoneDisplay(contactInput)} onChange={handleContactInput} placeholder="+63 000 000 0000" maxLength={16} autoFocus />
+                  {contactErr && <div style={{ fontSize: 11.5, color: '#DC2626', fontWeight: 600, marginTop: 4 }}>{contactErr}</div>}
+                  <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8, marginTop: 8 }}>
+                    <button className="btn-secondary" onClick={cancelEditPhone} disabled={profileSaving}>Cancel</button>
+                    <button className="btn-primary" onClick={sendPhoneCode} disabled={profileSaving}>
+                      {profileSaving ? 'Sending…' : 'Send Code'}
+                    </button>
+                  </div>
+                </>
+              ) : (
+                <div style={{ display: 'flex', gap: 8 }}>
+                  <input className="form-input" value={formatPhoneDisplay(user?.contact || '')} disabled style={{ flex: 1, background: '#F1F5F9' }} />
+                  <button className="btn-secondary" onClick={startEditPhone} style={{ whiteSpace: 'nowrap' }}>Change</button>
+                </div>
+              )}
             </div>
+
+            {!editingField && (
+              <p style={{ fontSize: 11.5, color: '#64748B', margin: 0 }}>
+                <i className="fa-solid fa-circle-info" style={{ marginRight: 5 }} />
+                Changing your email or phone number requires entering a verification code sent to the new one.
+              </p>
+            )}
+
+            {!editingField && (
+              <div style={{ display: 'flex', justifyContent: 'flex-end' }}>
+                <button className="btn-secondary" onClick={() => setProfileModal(false)}>Close</button>
+              </div>
+            )}
+          </div>
+        </Modal>
+      )}
+
+      {profileModal && (profileStep === 'verify-email' || profileStep === 'verify-phone') && (
+        <Modal onClose={() => setProfileModal(false)} title={profileStep === 'verify-email' ? 'Confirm Your Email' : 'Confirm Your Phone Number'}>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
+            <p style={{ fontSize: 13, color: '#64748B', margin: 0, lineHeight: 1.6 }}>
+              We sent a 6-digit code to <strong>{profileStep === 'verify-email' ? pendingEmail : formatPhoneDisplay(pendingContact)}</strong>.{' '}
+              {profileStep === 'verify-email' ? 'Check your inbox (and spam folder) and enter it below.' : 'Check your phone for a text message and enter it below.'}
+            </p>
+            {profileResendMsg && <div style={{ fontSize: 12.5, color: '#15803D', fontWeight: 600 }}>{profileResendMsg}</div>}
+            <div>
+              <label className="form-label">6-Digit Code</label>
+              <input
+                className="form-input"
+                style={{ fontSize: 20, letterSpacing: 6, textAlign: 'center', fontWeight: 700 }}
+                type="text" inputMode="numeric" maxLength={6}
+                value={profileCode}
+                onChange={e => { setProfileCode(e.target.value.replace(/\D/g, '').slice(0, 6)); setProfileCodeErr(''); }}
+                placeholder="000000"
+              />
+              {profileCodeErr && <div style={{ fontSize: 11.5, color: '#DC2626', fontWeight: 600, marginTop: 4 }}>{profileCodeErr}</div>}
+            </div>
+            <button
+              onClick={resendProfileCode}
+              style={{ background: 'none', border: 'none', color: 'var(--color-landing-primary, #1F4E9E)', fontSize: 12.5, fontWeight: 600, cursor: 'pointer', padding: 0, textAlign: 'left' }}
+            >
+              Didn't receive it? Resend code
+            </button>
             <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8 }}>
-              <button className="btn-secondary" onClick={() => setProfileModal(false)} disabled={contactSaving}>Cancel</button>
-              <button className="btn-primary" onClick={saveContact} disabled={contactSaving}>
-                {contactSaving ? 'Saving…' : 'Save Changes'}
+              <button className="btn-secondary" onClick={() => setProfileStep('edit')} disabled={profileVerifying}>Back</button>
+              <button
+                className="btn-primary"
+                onClick={profileStep === 'verify-email' ? verifyProfileEmailCode : verifyProfilePhoneCode}
+                disabled={profileVerifying || profileCode.length !== 6}
+              >
+                {profileVerifying ? 'Verifying…' : 'Verify'}
               </button>
             </div>
           </div>
@@ -2535,7 +2754,7 @@ export default function ParentPortal() {
 
       {linkChildModal && (
         <Modal
-          onClose={() => { setLinkChildModal(false); setLinkErr(''); setLinkConsent(false); setConsentChecked(false); setLinkStep(1); }}
+          onClose={closeLinkChildModal}
           title={!(linkConsent || user?.privacy_consent_at) ? 'Data Privacy Consent' : onboarding ? 'Welcome to KID Clinic!' : 'Link Your Child'}
         >
           {!(linkConsent || user?.privacy_consent_at) ? (
@@ -2562,7 +2781,7 @@ export default function ParentPortal() {
               <span>I have read and understood this notice, and as the child's parent/guardian I <strong>consent</strong> to KID Clinic collecting and processing this information to provide therapy services.</span>
             </label>
             <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 10 }}>
-              <button type="button" onClick={() => { setLinkChildModal(false); setLinkConsent(false); setConsentChecked(false); }} style={{ padding: '10px 20px', background: '#F1F5F9', color: '#475569', border: 'none', borderRadius: 8, fontSize: 13, fontWeight: 600, cursor: 'pointer' }}>Cancel</button>
+              <button type="button" onClick={closeLinkChildModal} style={{ padding: '10px 20px', background: '#F1F5F9', color: '#475569', border: 'none', borderRadius: 8, fontSize: 13, fontWeight: 600, cursor: 'pointer' }}>Cancel</button>
               <button type="button" disabled={!consentChecked} onClick={agreeConsent} style={{ padding: '10px 24px', background: consentChecked ? '#1F4E9E' : '#CBD5E1', color: '#fff', border: 'none', borderRadius: 8, fontSize: 13, fontWeight: 700, cursor: consentChecked ? 'pointer' : 'default' }}>
                 I Agree, Continue
               </button>
@@ -2732,7 +2951,7 @@ export default function ParentPortal() {
 
             <div style={{ display: 'flex', justifyContent: 'space-between', gap: 10, marginTop: 20, paddingTop: 16, borderTop: '1px solid #E2E8F0' }}>
               {linkStep === 1 ? (
-                <button type="button" onClick={() => { setLinkChildModal(false); setLinkErr(''); setLinkConsent(false); setConsentChecked(false); setLinkStep(1); }} style={{ padding: '10px 20px', background: '#F1F5F9', color: '#475569', border: 'none', borderRadius: 8, fontSize: 13, fontWeight: 600, cursor: 'pointer' }}>Cancel</button>
+                <button type="button" onClick={closeLinkChildModal} style={{ padding: '10px 20px', background: '#F1F5F9', color: '#475569', border: 'none', borderRadius: 8, fontSize: 13, fontWeight: 600, cursor: 'pointer' }}>Cancel</button>
               ) : (
                 <button type="button" onClick={prevLinkStep} style={{ padding: '10px 20px', background: '#F1F5F9', color: '#475569', border: 'none', borderRadius: 8, fontSize: 13, fontWeight: 600, cursor: 'pointer' }}><i className="fa-solid fa-arrow-left" style={{ marginRight: 6 }} />Back</button>
               )}

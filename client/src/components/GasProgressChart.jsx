@@ -1,4 +1,5 @@
 import { useMemo, useState } from 'react';
+import { gasRemarksPreview } from '../gasRemarks.js';
 
 /**
  * Longitudinal Progress Trend Graph for GAS (Goal Attainment Scaling).
@@ -147,7 +148,7 @@ function DisciplineChart({ discipline, entries }) {
                       level: p.level, weight: p.weight,
                       date: fullDate(p.date),
                       therapist: p.entry.therapist_name,
-                      remarks: p.entry.remarks,
+                      remarks: gasRemarksPreview(p.entry.remarks),
                       discipline: p.entry.discipline,
                       tScore: p.entry.gas_t_score
                     });
@@ -183,11 +184,12 @@ function DisciplineChart({ discipline, entries }) {
               </div>
               {tip.remarks && (
                 <>
-                  <div style={{ fontSize: 10, fontWeight: 700, color: '#64748B', textTransform: 'uppercase', letterSpacing: '.5px', marginTop: 4, marginBottom: 2 }}>Therapist Remarks</div>
-                  <div style={{ color: '#CBD5E1', fontSize: 11.5 }}>
+                  <div style={{ fontSize: 10, fontWeight: 700, color: '#64748B', textTransform: 'uppercase', letterSpacing: '.5px', marginTop: 4, marginBottom: 2 }}>Therapist Notes</div>
+                  <div style={{ color: '#CBD5E1', fontSize: 11.5, lineHeight: 1.5 }}>
                     <i className="fa-regular fa-note-sticky" style={{ marginRight: 4, opacity: .7 }} />
                     "{tip.remarks}"
                   </div>
+                  <div style={{ fontSize: 10, color: '#64748B', marginTop: 4 }}>See the full entry for complete notes.</div>
                 </>
               )}
             </div>
@@ -256,7 +258,7 @@ function DisciplineChart({ discipline, entries }) {
                       top: r.top - wrap.top,
                       score: p.score, date: fullDate(p.date),
                       therapist: p.entry.therapist_name,
-                      remarks: p.entry.remarks,
+                      remarks: gasRemarksPreview(p.entry.remarks),
                       goals: (p.entry.scores || []).map(s => `${s.item_title}: ${s.level > 0 ? '+' + s.level : s.level}`)
                     });
                   }}
@@ -285,11 +287,12 @@ function DisciplineChart({ discipline, entries }) {
               )}
               {tScoreTip.remarks && (
                 <>
-                  <div style={{ fontSize: 10, fontWeight: 700, color: '#64748B', textTransform: 'uppercase', letterSpacing: '.5px', marginTop: 6, marginBottom: 2 }}>Therapist Remarks</div>
-                  <div style={{ color: '#CBD5E1', fontSize: 11.5 }}>
+                  <div style={{ fontSize: 10, fontWeight: 700, color: '#64748B', textTransform: 'uppercase', letterSpacing: '.5px', marginTop: 6, marginBottom: 2 }}>Therapist Notes</div>
+                  <div style={{ color: '#CBD5E1', fontSize: 11.5, lineHeight: 1.5 }}>
                     <i className="fa-regular fa-note-sticky" style={{ marginRight: 4, opacity: .7 }} />
                     "{tScoreTip.remarks}"
                   </div>
+                  <div style={{ fontSize: 10, color: '#64748B', marginTop: 4 }}>See the full entry for complete notes.</div>
                 </>
               )}
             </div>

@@ -440,8 +440,14 @@ export default function ScorecardWizardModal({ client, therapistName, discipline
         {/* ── Step 3: After Assessment ── */}
         {step === 3 && (
           <div className="gas-two-col">
-            <div>
-              <label className="form-label">Remarks: Plans, Analysis, and Instructions</label>
+            <div className="gas-doc-card">
+              <div className="gas-doc-card-head">
+                <i className="fa-solid fa-pen-to-square" />
+                <div>
+                  <div className="title">Remarks: Plans, Analysis, and Instructions</div>
+                  <div className="sub">Your clinical notes for this session</div>
+                </div>
+              </div>
               <textarea className="form-input" rows="10" style={{ height: 'auto', padding: '10px 12px', resize: 'vertical', marginBottom: 12 }}
                 placeholder="Remarks: Plans, Analysis, and Instructions" value={remarks} onChange={e => setRemarks(e.target.value)} />
               <button className="btn-secondary" style={{ width: '100%' }} disabled={summaryLoading} onClick={generateSummary}>
@@ -450,8 +456,11 @@ export default function ScorecardWizardModal({ client, therapistName, discipline
               </button>
             </div>
 
-            <div>
-              <label className="form-label">Summary Preview</label>
+            <div className="gas-doc-card ai">
+              <div className="gas-doc-card-head">
+                <i className="fa-solid fa-wand-magic-sparkles" />
+                <div className="title">Summary Preview</div>
+              </div>
               <textarea className="form-input" rows="10" style={{ height: 'auto', padding: '10px 12px', resize: 'vertical', marginBottom: 12 }}
                 placeholder='Click "Generate Summary" to draft a note from Sections 1–3, then edit as needed…'
                 value={summaryDraft} onChange={e => setSummaryDraft(e.target.value)} />

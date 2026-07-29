@@ -161,14 +161,31 @@ export function AuthProvider({ children }) {
     updateUser({ must_change_password: false });
   }
 
-  /** Self-service update of your own contact number (e.g. the "My Profile" panel). */
-  async function updateProfile({ contact }) {
-    const data = await api('/auth/me', { method: 'PUT', body: { contact } });
+  /** "My Profile" panel, step 1 of changing your email: sends a 6-digit code
+   *  to the NEW address. Doesn't touch the account until confirmed below. */
+  async function requestProfileEmailCode(email) {
+    return api('/auth/me/request-email-code', { method: 'POST', body: { email } });
+  }
+  /** Step 2: applies the new email only once its code checks out. */
+  async function confirmProfileEmailCode(email, code) {
+    const data = await api('/auth/me/confirm-email-code', { method: 'POST', body: { email, code } });
+    updateUser({ email: data.email, phone_only: false });
+    return data;
+  }
+  /** Same two-step flow as above, for the account's contact number. */
+  async function requestProfilePhoneCode(contact) {
+    return api('/auth/me/request-phone-code', { method: 'POST', body: { contact } });
+  }
+  async function confirmProfilePhoneCode(contact, code) {
+    const data = await api('/auth/me/confirm-phone-code', { method: 'POST', body: { contact, code } });
     updateUser({ contact: data.contact });
     return data;
   }
 
-  return <AuthCtx.Provider value={{ user, login, signup, logout, updateUser, changePassword, updateProfile }}>{children}</AuthCtx.Provider>;
+  return <AuthCtx.Provider value={{
+    user, login, signup, logout, updateUser, changePassword,
+    requestProfileEmailCode, confirmProfileEmailCode, requestProfilePhoneCode, confirmProfilePhoneCode
+  }}>{children}</AuthCtx.Provider>;
 }
 
 export const useAuth = () => useContext(AuthCtx);

@@ -4,6 +4,7 @@ import { api } from '../../../api.js';
 import { useAuth } from '../../../auth.jsx';
 import NewSessionEntryModal from './milestones/NewSessionEntryModal.jsx';
 import ScorecardWizardModal from './milestones/ScorecardWizardModal.jsx';
+import { parseGasRemarks } from '../../../gasRemarks.js';
 
 /* == page: milestones == */
 
@@ -999,8 +1000,14 @@ export default function Milestones({ go, toast, openModal }) {
                   {gasStep === 3 && (
                     <div className="gas-two-col">
                       {/* Left: Documentation & Actions */}
-                      <div>
-                        <label className="form-label">Remarks: Plans, Analysis, and Instructions</label>
+                      <div className="gas-doc-card">
+                        <div className="gas-doc-card-head">
+                          <i className="fa-solid fa-pen-to-square" />
+                          <div>
+                            <div className="title">Remarks: Plans, Analysis, and Instructions</div>
+                            <div className="sub">Your clinical notes for this session</div>
+                          </div>
+                        </div>
                         <textarea className="form-input" rows="10" style={{ height: 'auto', padding: '10px 12px', resize: 'vertical', marginBottom: 12 }}
                           placeholder="Remarks: Plans, Analysis, and Instructions" value={gasForm.remarks} onChange={e => setGasForm(f => ({ ...f, remarks: e.target.value }))} />
                         <button className="btn-secondary" style={{ width: '100%' }} onClick={generateGasSummary}>
@@ -1009,8 +1016,11 @@ export default function Milestones({ go, toast, openModal }) {
                       </div>
 
                       {/* Right: Summary Preview & Submit */}
-                      <div>
-                        <label className="form-label">Summary Preview</label>
+                      <div className="gas-doc-card ai">
+                        <div className="gas-doc-card-head">
+                          <i className="fa-solid fa-wand-magic-sparkles" />
+                          <div className="title">Summary Preview</div>
+                        </div>
                         <textarea className="form-input" rows="10" style={{ height: 'auto', padding: '10px 12px', resize: 'vertical', marginBottom: 12 }}
                           placeholder="Click “Generate Summary” to draft a note from Sections 1–3, then edit as needed…"
                           value={gasSummaryDraft} onChange={e => setGasSummaryDraft(e.target.value)} />
@@ -1223,7 +1233,7 @@ export default function Milestones({ go, toast, openModal }) {
             <div><div className="form-label">GAS T-Score</div><span className={'pill pill-' + gasScoreTone(gasEntryModal.entry.gas_t_score)} style={{ fontSize: 13 }}>{gasEntryModal.entry.gas_t_score}</span></div>
           </div>
           {(() => {
-            const { parentObservation, remarks } = splitGasRemarks(gasEntryModal.entry.remarks);
+            const { parentObservation, overallSummary, goalProgress, plansInstructions, freeText } = parseGasRemarks(gasEntryModal.entry.remarks);
             return (
               <>
                 {parentObservation && (
@@ -1232,28 +1242,46 @@ export default function Milestones({ go, toast, openModal }) {
                     <div style={{ fontSize: 12.5, color: '#334155', lineHeight: 1.6, whiteSpace: 'pre-wrap', padding: 10, borderRadius: 9, border: '1px solid #E2E8F0', background: '#FAFBFC' }}>{parentObservation}</div>
                   </div>
                 )}
+                {overallSummary && (
+                  <div style={{ marginBottom: 18 }}>
+                    <div className="form-label">Clinical Summary</div>
+                    <div style={{ fontSize: 12.5, color: '#334155', lineHeight: 1.6, whiteSpace: 'pre-wrap', padding: 10, borderRadius: 9, border: '1px solid #BFDBFE', background: '#EFF6FF' }}>{overallSummary}</div>
+                  </div>
+                )}
                 <div className="section-title" style={{ fontSize: 13, marginBottom: 8 }}>Goals Scored</div>
                 <div style={{ display: 'flex', flexDirection: 'column', gap: 8, marginBottom: 18 }}>
-                  {(gasEntryModal.entry.scores || []).map(s => (
-                    <div key={s.id} style={{ padding: 12, borderRadius: 10, border: '1px solid #E2E8F0', background: '#FAFBFC' }}>
-                      <div style={{ display: 'flex', justifyContent: 'space-between', gap: 8, marginBottom: 2 }}>
-                        <div style={{ fontSize: 13, fontWeight: 600, color: '#0F172A' }}>Goal: {s.item_title}</div>
-                        <span style={{ fontSize: 10.5, color: '#94A3B8', whiteSpace: 'nowrap' }}>weight ×{s.weight}</span>
+                  {(gasEntryModal.entry.scores || []).map(s => {
+                    const progressNote = goalProgress.find(g => g.toLowerCase().startsWith((s.item_title || '').toLowerCase()));
+                    return (
+                      <div key={s.id} style={{ padding: 12, borderRadius: 10, border: '1px solid #E2E8F0', background: '#FAFBFC' }}>
+                        <div style={{ display: 'flex', justifyContent: 'space-between', gap: 8, marginBottom: 2 }}>
+                          <div style={{ fontSize: 13, fontWeight: 600, color: '#0F172A' }}>Goal: {s.item_title}</div>
+                          <span style={{ fontSize: 10.5, color: '#94A3B8', whiteSpace: 'nowrap' }}>weight ×{s.weight}</span>
+                        </div>
+                        <input type="range" min={-2} max={2} step={1} value={s.level} disabled className="gas-goal-slider" />
+                        <div className="gas-slider-scale">
+                          <span>[-2]</span><span>-1</span><span>0</span><span>+1</span><span>[+2]</span>
+                        </div>
+                        <div style={{ marginTop: 8, fontSize: 11.5, color: '#334155', background: '#EFF6FF', border: '1px solid #BFDBFE', borderRadius: 7, padding: '6px 9px' }}>
+                          {s.level_label}
+                        </div>
+                        {progressNote && (
+                          <div style={{ marginTop: 6, fontSize: 11.5, color: '#475569', lineHeight: 1.5 }}>{progressNote}</div>
+                        )}
                       </div>
-                      <input type="range" min={-2} max={2} step={1} value={s.level} disabled className="gas-goal-slider" />
-                      <div className="gas-slider-scale">
-                        <span>[-2]</span><span>-1</span><span>0</span><span>+1</span><span>[+2]</span>
-                      </div>
-                      <div style={{ marginTop: 8, fontSize: 11.5, color: '#334155', background: '#EFF6FF', border: '1px solid #BFDBFE', borderRadius: 7, padding: '6px 9px' }}>
-                        {s.level_label}
-                      </div>
-                    </div>
-                  ))}
+                    );
+                  })}
                 </div>
-                {remarks && (
+                {plansInstructions && (
+                  <div style={{ marginBottom: 18 }}>
+                    <div className="form-label">Plans, Analysis, and Instructions</div>
+                    <div style={{ fontSize: 12.5, color: '#334155', lineHeight: 1.6, whiteSpace: 'pre-wrap', padding: 10, borderRadius: 9, border: '1px solid #E2E8F0', background: '#FAFBFC' }}>{plansInstructions}</div>
+                  </div>
+                )}
+                {freeText && (
                   <div style={{ marginBottom: 18 }}>
                     <div className="form-label">Remarks</div>
-                    <div style={{ fontSize: 12.5, color: '#334155', lineHeight: 1.6, whiteSpace: 'pre-wrap' }}>{remarks}</div>
+                    <div style={{ fontSize: 12.5, color: '#334155', lineHeight: 1.6, whiteSpace: 'pre-wrap' }}>{freeText}</div>
                   </div>
                 )}
               </>
