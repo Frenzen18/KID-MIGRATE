@@ -173,8 +173,12 @@ router.post('/holidays', requireAuth, requireRole('admin', 'staff'), async (req,
     .select('*').eq('date', date).in('status', ['confirmed', 'rescheduled'])
     .in('session_type', ['Occupational Therapy', 'Speech Therapy']);
   for (const r of affected || []) {
-    await db.from('reservations').update({ status: 'cancelled' }).eq('id', r.id);
-    await applyCancelSideEffects(r, req.user.id);
+    try {
+      await db.from('reservations').update({ status: 'cancelled' }).eq('id', r.id);
+      await applyCancelSideEffects(r, req.user.id);
+    } catch (err) {
+      console.error(`Holiday auto-excuse: failed to process reservation ${r.id} for ${date}:`, err);
+    }
   }
 
   await logAudit({
