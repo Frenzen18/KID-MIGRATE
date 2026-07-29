@@ -120,7 +120,7 @@ async function outstandingMakeupTherapists(clientId, sessionType) {
  * and 'Unpaid'/'pending', but the booking admin/staff can override the
  * amount and method at booking time via `opts`.
  */
-async function ensurePaymentForReservation(reservation, actorId, opts = {}) {
+export async function ensurePaymentForReservation(reservation, actorId, opts = {}) {
   const { data: existing } = await db.from('payments').select('id').eq('reservation_id', reservation.id).eq('fee_type', 'session').maybeSingle();
   if (existing) return existing;
 
@@ -191,7 +191,7 @@ async function ensurePaymentForReservation(reservation, actorId, opts = {}) {
 /** True if `date` is marked as a clinic-wide closure (see clinic_holidays table,
  *  managed on the Employee Scheduling tab). No booking of any kind, Initial
  *  Assessment or therapist-shift-driven, is allowed on a holiday. */
-async function isClinicHoliday(date) {
+export async function isClinicHoliday(date) {
   const { data, error } = await db.from('clinic_holidays').select('label').eq('date', date).maybeSingle();
   if (error) {
     // Don't silently treat a broken query (e.g. the clinic_holidays table not
