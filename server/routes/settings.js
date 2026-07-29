@@ -172,10 +172,12 @@ router.post('/holidays', requireAuth, requireRole('admin', 'staff'), async (req,
   const { data: affected } = await db.from('reservations')
     .select('*').eq('date', date).in('status', ['confirmed', 'rescheduled'])
     .in('session_type', ['Occupational Therapy', 'Speech Therapy']);
+  let excusedCount = 0;
   for (const r of affected || []) {
     try {
       await db.from('reservations').update({ status: 'cancelled' }).eq('id', r.id);
       await applyCancelSideEffects(r, req.user.id);
+      excusedCount++;
     } catch (err) {
       console.error(`Holiday auto-excuse: failed to process reservation ${r.id} for ${date}:`, err);
     }
@@ -183,7 +185,7 @@ router.post('/holidays', requireAuth, requireRole('admin', 'staff'), async (req,
 
   await logAudit({
     table_name: 'clinic_holidays', record_id: data.id, action: 'create',
-    description: `Marked ${date} as a clinic closure${label ? ` (${label})` : ''}` + (affected?.length ? `, ${affected.length} confirmed session(s) auto-excused` : ''),
+    description: `Marked ${date} as a clinic closure${label ? ` (${label})` : ''}` + (excusedCount ? `, ${excusedCount} confirmed session(s) auto-excused` : ''),
     created_by: req.user.id
   });
 
