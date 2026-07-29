@@ -1564,6 +1564,19 @@ router.put('/cancellation-requests/:id/review', requireRole('admin', 'staff'), a
   if (request.status !== 'pending') return res.status(409).json({ error: 'This request was already reviewed.' });
 
   const reservation = request.reservations;
+  if (!['confirmed', 'rescheduled'].includes(reservation.status)) {
+    // Something else already resolved this reservation (e.g. a clinic
+    // holiday auto-excuse, or a direct staff cancellation) while the
+    // request was still sitting as 'pending'. Applying a verdict now would
+    // stack a second, conflicting set of side effects (e.g. a duplicate
+    // no-show fee) on a session that's already been dealt with. Mark the
+    // stale request resolved instead of leaving it stuck in the queue.
+    await db.from('cancellation_requests').update({
+      status: 'excused', reviewed_by: null, reviewed_at: new Date().toISOString(),
+      review_note: 'Auto-resolved: underlying session was already cancelled by another action'
+    }).eq('id', request.id);
+    return res.status(409).json({ error: 'This session was already resolved by another action (e.g. a clinic closure). Nothing to review.' });
+  }
   await db.from('reservations').update({ status: 'cancelled' }).eq('id', reservation.id);
   await applyCancellationReviewSideEffects(reservation, verdict === 'excused', req.user.id);
 
