@@ -7,6 +7,7 @@ import { notifyEvent, therapistUserId } from '../lib/notify.js';
 import { rateFor, genInvoiceNo } from '../lib/billing.js';
 import { applyNoShowSideEffects, applyCancelSideEffects, releaseSessionPaymentAsCredit } from '../lib/noShow.js';
 import { dischargeSchedule, notifyWaitlistForFreedSlot, notifyWaitlistEntry, assignWaitlistEntry } from '../lib/recurringSchedules.js';
+import { fillReservationsForSchedule } from '../lib/recurringFill.js';
 
 const router = Router();
 router.use(requireAuth);
@@ -1543,6 +1544,10 @@ router.post('/:clientId/assign-schedule', requireRole('admin', 'staff'), async (
     status: 'active', created_by: req.user.id
   }).select().single();
   if (schedErr) return res.status(500).json({ error: schedErr.message });
+
+  // Fixed Speech/OT slots are pre-filled with confirmed sessions immediately,
+  // no more manual weekly booking — see server/lib/recurringFill.js.
+  await fillReservationsForSchedule(schedule, req.user.id);
 
   // A schedule IS this client's intake outcome for that discipline, so it
   // drives the same client-record fields the rest of the app already reads

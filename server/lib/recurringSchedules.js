@@ -4,6 +4,7 @@ import { notifyEvent, channelEnabled } from './notify.js';
 import { sendMail } from '../mailer.js';
 import { sendSms } from '../sms.js';
 import { releaseSessionPaymentAsCredit } from './noShow.js';
+import { fillReservationsForSchedule } from './recurringFill.js';
 
 /** Today's date (YYYY-MM-DD) in Philippine time (UTC+8), independent of server timezone. */
 function todayPH() {
@@ -127,6 +128,8 @@ export async function assignWaitlistEntry(entry, actorId) {
     status: 'active', created_by: actorId
   }).select().single();
   if (schedErr) throw new Error(schedErr.message);
+
+  await fillReservationsForSchedule(schedule, actorId);
 
   const clientPatch = {};
   if (entry.discipline === 'OT') clientPatch.assigned_ot_therapist_name = entry.therapist_name;
