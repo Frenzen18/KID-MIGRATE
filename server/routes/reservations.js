@@ -1587,17 +1587,30 @@ router.put('/cancellation-requests/:id/review', requireRole('admin', 'staff'), a
 
   const reservation = request.reservations;
   if (!['confirmed', 'rescheduled'].includes(reservation.status)) {
-    // Something else already resolved this reservation (e.g. a clinic
-    // holiday auto-excuse, or a direct staff cancellation) while the
-    // request was still sitting as 'pending'. Applying a verdict now would
-    // stack a second, conflicting set of side effects (e.g. a duplicate
-    // no-show fee) on a session that's already been dealt with. Mark the
-    // stale request resolved instead of leaving it stuck in the queue.
-    await db.from('cancellation_requests').update({
-      status: 'excused', reviewed_by: null, reviewed_at: new Date().toISOString(),
-      review_note: 'Auto-resolved: underlying session was already cancelled by another action'
-    }).eq('id', request.id);
-    return res.status(409).json({ error: 'This session was already resolved by another action (e.g. a clinic closure). Nothing to review.' });
+    if (reservation.status === 'cancelled') {
+      // Something else already cancelled this reservation (e.g. a clinic
+      // holiday auto-excuse, or a direct staff cancellation) while the
+      // request was still sitting as 'pending'. Applying a verdict now would
+      // stack a second, conflicting set of side effects (e.g. a duplicate
+      // no-show fee) on a session that's already been dealt with. Mark the
+      // stale request resolved instead of leaving it stuck in the queue.
+      await db.from('cancellation_requests').update({
+        status: 'excused', reviewed_by: null, reviewed_at: new Date().toISOString(),
+        review_note: 'Auto-resolved: underlying session was already cancelled by another action'
+      }).eq('id', request.id);
+      return res.status(409).json({ error: 'This session was already resolved by another action (e.g. a clinic closure). Nothing to review.' });
+    }
+    // The reservation ended up in some other terminal state (e.g. the
+    // session actually happened and was marked 'completed', or was marked
+    // 'no_show') while the cancellation request was still pending. That
+    // outcome is factually correct and shouldn't be overwritten with an
+    // auto-'excused' label (there's no accurate status value for "stale,
+    // but not actually excused" in the cancellation_requests schema), so
+    // leave the request as 'pending' untouched and just report that
+    // there's nothing to review here.
+    return res.status(409).json({
+      error: `This session's outcome was already resolved another way (marked ${reservation.status}). Nothing to review.`
+    });
   }
   await db.from('reservations').update({ status: 'cancelled' }).eq('id', reservation.id);
   await applyCancellationReviewSideEffects(reservation, verdict === 'excused', req.user.id);
