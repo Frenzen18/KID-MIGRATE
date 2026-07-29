@@ -81,13 +81,26 @@ export async function fillReservationsForSchedule(schedule, actorId) {
     if (error) {
       // A concurrent fill (assignment-time call racing the sweep) can lose the
       // unique-slot index race here, that date simply already exists now,
-      // nothing to do.
-      if (error.code === '23505') continue;
+      // nothing to do - but log it, since from this client's schedule's
+      // perspective that occurrence never got auto-filled and would otherwise
+      // vanish for the week with no staff-facing signal at all.
+      if (error.code === '23505') {
+        console.error(`Auto-fill skipped for schedule ${schedule.id} (client ${schedule.client_id}) on ${date} at ${schedule.time_slot}: slot already occupied by another booking for therapist ${schedule.therapist_name}.`);
+        continue;
+      }
       console.error(`Auto-fill failed for schedule ${schedule.id} on ${date}:`, error.message);
       continue;
     }
 
-    await ensurePaymentForReservation(reservation, actorId, {});
+    try {
+      await ensurePaymentForReservation(reservation, actorId, {});
+    } catch (paymentError) {
+      // The reservation itself was created successfully and is a real,
+      // confirmed slot - don't roll it back. Only invoice creation failed, so
+      // log with enough context to trace it; staff can manually generate the
+      // invoice later via the normal Payments flow.
+      console.error(`Auto-fill: reservation ${reservation.id} created for schedule ${schedule.id} (${schedule.discipline}, client ${schedule.client_id}) on ${date}, but ensurePaymentForReservation failed:`, paymentError.message || paymentError);
+    }
     created++;
   }
 
