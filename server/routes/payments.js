@@ -8,6 +8,7 @@ import { generateQrph, retrievePaymentIntent, retryQrphOnIntent } from '../lib/p
 import { markPaidByIntentId } from '../lib/paymongoWebhook.js';
 import { sendMail } from '../mailer.js';
 import { makeLimiter, isProd, MIN } from '../lib/rateLimit.js';
+import { FILL_HORIZON_DAYS } from '../lib/horizon.js';
 
 const router = Router();
 router.use(requireAuth);
@@ -18,6 +19,23 @@ const qrphLimiter = makeLimiter(isProd ? MIN : 10 * 1000, 10, 'Too many QR reque
 // The status endpoint is meant to be polled every few seconds while a checkout
 // modal is open, so it needs a much more generous budget than one-shot QR generation.
 const qrphStatusLimiter = makeLimiter(isProd ? MIN : 10 * 1000, 60, 'Too many status checks. Please wait a moment and try again.');
+
+/** Today's date (YYYY-MM-DD) in Philippine time (UTC+8). */
+function todayPH() {
+  return new Date(Date.now() + 8 * 60 * 60 * 1000).toISOString().slice(0, 10);
+}
+
+/** True if `reservation` is further out than the auto-fill horizon allows
+ *  paying ahead for, only meaningful for a fixed-schedule Speech/OT session,
+ *  an Initial Assessment or make-up invoice has no such cap (see
+ *  FILL_HORIZON_DAYS in server/lib/recurringFill.js: only that many days of
+ *  confirmed reservations ever exist, this guard just fails loudly instead of
+ *  silently relying on that side effect). */
+function beyondAdvancePaymentHorizon(reservation) {
+  if (!reservation || !reservation.recurring_schedule_id || reservation.is_makeup) return false;
+  const daysAhead = Math.round((Date.parse(reservation.date) - Date.parse(todayPH())) / 86400000);
+  return daysAhead > FILL_HORIZON_DAYS;
+}
 
 /** GET /api/payments, staff/admin all; parents see their children's */
 router.get('/', async (req, res) => {
@@ -86,7 +104,8 @@ router.post('/checkout/combined', qrphLimiter, async (req, res) => {
   const ids = Array.isArray(req.body?.payment_ids) ? [...new Set(req.body.payment_ids)] : [];
   if (ids.length < 1) return res.status(400).json({ error: 'payment_ids is required' });
 
-  const { data: rows, error } = await db.from('payments').select('*, clients(parent_id)').in('id', ids);
+  const { data: rows, error } = await db.from('payments')
+    .select('*, clients(parent_id), reservations(date, session_type, recurring_schedule_id, is_makeup)').in('id', ids);
   if (error) return res.status(500).json({ error: error.message });
   if (!rows || rows.length !== ids.length) return res.status(404).json({ error: 'One or more invoices were not found' });
 
@@ -112,6 +131,12 @@ router.post('/checkout/combined', qrphLimiter, async (req, res) => {
       if (!prefix.every(id => selectedForClient.has(id))) {
         return res.status(400).json({ error: 'Please settle outstanding session invoices in order, sessions must be paid earliest-first.' });
       }
+    }
+  }
+
+  for (const p of rows) {
+    if (beyondAdvancePaymentHorizon(p.reservations)) {
+      return res.status(400).json({ error: `${p.reservations.session_type} on ${p.reservations.date} is too far ahead to pay for yet, it opens up ${FILL_HORIZON_DAYS} days before its date.` });
     }
   }
 
@@ -328,7 +353,8 @@ router.post('/:id/waive', requireRole('admin', 'staff'), async (req, res) => {
 
 /** POST /api/payments/:id/qrph, generate (or reuse) a PayMongo QRPh code for this invoice */
 router.post('/:id/qrph', qrphLimiter, async (req, res) => {
-  const { data: payment, error } = await db.from('payments').select('*, clients(full_name, parent_id)').eq('id', req.params.id).single();
+  const { data: payment, error } = await db.from('payments')
+    .select('*, clients(full_name, parent_id), reservations(date, session_type, recurring_schedule_id, is_makeup)').eq('id', req.params.id).single();
   if (error || !payment) return res.status(404).json({ error: 'Payment not found' });
   // Billing is admin/staff-only, or the parent paying their own child's invoice.
   // Not a therapist role (ot/speech), which has no business generating a live
@@ -356,6 +382,10 @@ router.post('/:id/qrph', qrphLimiter, async (req, res) => {
         return res.status(400).json({ error: 'Please pay your earliest outstanding session invoice first, sessions must be settled in order.' });
       }
     }
+  }
+
+  if (beyondAdvancePaymentHorizon(payment.reservations)) {
+    return res.status(400).json({ error: `${payment.reservations.session_type} on ${payment.reservations.date} is too far ahead to pay for yet, it opens up ${FILL_HORIZON_DAYS} days before its date.` });
   }
 
   // Reuse an existing unexpired QR, but only if it's still actually payable,

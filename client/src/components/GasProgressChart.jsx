@@ -1,4 +1,5 @@
 import { useMemo, useState } from 'react';
+import { gasRemarksPreview } from '../gasRemarks.js';
 
 /**
  * Longitudinal Progress Trend Graph for GAS (Goal Attainment Scaling).
@@ -54,25 +55,38 @@ function DisciplineChart({ discipline, entries }) {
   // Goal scales model
   const goalModel = useMemo(() => {
     if (!sorted.length) return null;
+    // Grouped by the goal's stable item_id, not its title text: item_title is
+    // only a per-entry snapshot (survives a later rename/delete of the goal,
+    // see gas_entry_scores.item_title in schema.sql), so keying on it would
+    // split one goal's line into two the moment it's renamed. item_id is
+    // absent only for an entry scored against a goal that's since been
+    // deleted outright (on delete set null) - falls back to its snapshot
+    // title in that case, same as before.
     const goalMap = {};
     sorted.forEach((entry, idx) => {
       for (const s of entry.scores || []) {
-        const title = s.item_title || 'Unknown Goal';
-        if (!goalMap[title]) goalMap[title] = [];
-        goalMap[title].push({ date: entry.session_date, level: s.level, entryIdx: idx, weight: s.weight });
+        const key = s.item_id || 'title:' + (s.item_title || 'Unknown Goal');
+        if (!goalMap[key]) goalMap[key] = [];
+        goalMap[key].push({ date: entry.session_date, level: s.level, entryIdx: idx, weight: s.weight, title: s.item_title || 'Unknown Goal' });
       }
     });
-    const goalNames = Object.keys(goalMap);
-    if (!goalNames.length) return null;
+    const goalKeys = Object.keys(goalMap);
+    if (!goalKeys.length) return null;
     const uniqueDates = [...new Set(sorted.map(e => e.session_date))];
     const W = 640, H = 220, x0 = 40, x1 = 530, y0 = 190, y1 = 20;
     const xFor = d => uniqueDates.length === 1 ? (x0 + x1) / 2 : x0 + (uniqueDates.indexOf(d) / (uniqueDates.length - 1)) * (x1 - x0);
     const yFor = lvl => y0 - ((lvl + 2) / 4) * (y0 - y1);
-    const series = goalNames.map((name, i) => ({
-      name,
-      color: GOAL_COLORS[i % GOAL_COLORS.length],
-      pts: goalMap[name].map(p => ({ ...p, x: xFor(p.date), y: yFor(p.level), entry: sorted[p.entryIdx] }))
-    }));
+    const series = goalKeys.map((key, i) => {
+      const pts = goalMap[key];
+      // Most recent snapshot's title wins the display label, so a rename
+      // relabels the existing line going forward instead of forking it.
+      const name = pts[pts.length - 1].title;
+      return {
+        name,
+        color: GOAL_COLORS[i % GOAL_COLORS.length],
+        pts: pts.map(p => ({ ...p, x: xFor(p.date), y: yFor(p.level), entry: sorted[p.entryIdx] }))
+      };
+    });
     return { W, H, x0, x1, y0, y1, series, uniqueDates, xFor, yFor };
   }, [sorted]);
 
@@ -147,7 +161,7 @@ function DisciplineChart({ discipline, entries }) {
                       level: p.level, weight: p.weight,
                       date: fullDate(p.date),
                       therapist: p.entry.therapist_name,
-                      remarks: p.entry.remarks,
+                      remarks: gasRemarksPreview(p.entry.remarks),
                       discipline: p.entry.discipline,
                       tScore: p.entry.gas_t_score
                     });
@@ -183,11 +197,12 @@ function DisciplineChart({ discipline, entries }) {
               </div>
               {tip.remarks && (
                 <>
-                  <div style={{ fontSize: 10, fontWeight: 700, color: '#64748B', textTransform: 'uppercase', letterSpacing: '.5px', marginTop: 4, marginBottom: 2 }}>Therapist Remarks</div>
-                  <div style={{ color: '#CBD5E1', fontSize: 11.5 }}>
+                  <div style={{ fontSize: 10, fontWeight: 700, color: '#64748B', textTransform: 'uppercase', letterSpacing: '.5px', marginTop: 4, marginBottom: 2 }}>Therapist Notes</div>
+                  <div style={{ color: '#CBD5E1', fontSize: 11.5, lineHeight: 1.5 }}>
                     <i className="fa-regular fa-note-sticky" style={{ marginRight: 4, opacity: .7 }} />
                     "{tip.remarks}"
                   </div>
+                  <div style={{ fontSize: 10, color: '#64748B', marginTop: 4 }}>See the full entry for complete notes.</div>
                 </>
               )}
             </div>
@@ -256,7 +271,7 @@ function DisciplineChart({ discipline, entries }) {
                       top: r.top - wrap.top,
                       score: p.score, date: fullDate(p.date),
                       therapist: p.entry.therapist_name,
-                      remarks: p.entry.remarks,
+                      remarks: gasRemarksPreview(p.entry.remarks),
                       goals: (p.entry.scores || []).map(s => `${s.item_title}: ${s.level > 0 ? '+' + s.level : s.level}`)
                     });
                   }}
@@ -285,11 +300,12 @@ function DisciplineChart({ discipline, entries }) {
               )}
               {tScoreTip.remarks && (
                 <>
-                  <div style={{ fontSize: 10, fontWeight: 700, color: '#64748B', textTransform: 'uppercase', letterSpacing: '.5px', marginTop: 6, marginBottom: 2 }}>Therapist Remarks</div>
-                  <div style={{ color: '#CBD5E1', fontSize: 11.5 }}>
+                  <div style={{ fontSize: 10, fontWeight: 700, color: '#64748B', textTransform: 'uppercase', letterSpacing: '.5px', marginTop: 6, marginBottom: 2 }}>Therapist Notes</div>
+                  <div style={{ color: '#CBD5E1', fontSize: 11.5, lineHeight: 1.5 }}>
                     <i className="fa-regular fa-note-sticky" style={{ marginRight: 4, opacity: .7 }} />
                     "{tScoreTip.remarks}"
                   </div>
+                  <div style={{ fontSize: 10, color: '#64748B', marginTop: 4 }}>See the full entry for complete notes.</div>
                 </>
               )}
             </div>

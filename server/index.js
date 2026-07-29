@@ -24,6 +24,7 @@ import { sweepUnpaidPastSessions } from './lib/noShowSweep.js';
 import { sweepMonthlyAttendance } from './lib/monthlyAttendanceSweep.js';
 import { sweepInactiveAccounts, sweepInactiveChildren } from './lib/accountCleanup.js';
 import { sweepMissedBookings } from './lib/missedBookingSweep.js';
+import { sweepRecurringFill } from './lib/recurringFillSweep.js';
 
 dotenv.config();
 const app = express();
@@ -130,3 +131,12 @@ sweepInactiveChildren();
 const MISSED_BOOKING_SWEEP_INTERVAL_MS = 24 * 60 * 60 * 1000;
 setInterval(sweepMissedBookings, MISSED_BOOKING_SWEEP_INTERVAL_MS);
 sweepMissedBookings();
+
+// Keeps every active Speech/OT fixed schedule's confirmed reservations
+// topped up to the rolling 2-week horizon (see server/lib/recurringFill.js),
+// since one day passing moves that horizon's far edge forward by a day.
+// Once daily is enough resolution for a multi-day window; the immediate call
+// below means a server restart doesn't wait a full day to catch up.
+const RECURRING_FILL_SWEEP_INTERVAL_MS = 24 * 60 * 60 * 1000;
+setInterval(sweepRecurringFill, RECURRING_FILL_SWEEP_INTERVAL_MS);
+sweepRecurringFill();

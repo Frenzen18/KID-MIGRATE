@@ -439,7 +439,12 @@ export default function Dashboard({ go, toast, openModal, role = 'admin' }) {
     // calendar month, a whole new point appears once entries start landing
     // in a new month.
     function buildGoalTrend(disc) {
-      const goalBuckets = {}; // goalName -> month -> levels[]
+      // Bucketed by the goal's stable item_id, not its item_title snapshot -
+      // same reasoning as GasProgressChart.jsx: keying on title would split a
+      // goal's trend the moment it's renamed, since item_title is frozen per
+      // entry at scoring time. Falls back to the title only for an entry
+      // whose goal has since been deleted outright (item_id null).
+      const goalBuckets = {}; // goalKey -> { title, months: { month -> levels[] } }
       const monthSet = new Set();
       for (const e of gasEntries) {
         if (e.discipline !== disc) continue;
@@ -447,17 +452,21 @@ export default function Dashboard({ go, toast, openModal, role = 'admin' }) {
         if (!month) continue;
         monthSet.add(month);
         for (const sc of (e.scores || [])) {
-          const title = sc.item_title || 'Unknown Goal';
           if (sc.level == null) continue;
-          goalBuckets[title] ||= {};
-          (goalBuckets[title][month] ||= []).push(sc.level);
+          const key = sc.item_id || 'title:' + (sc.item_title || 'Unknown Goal');
+          // gasEntries comes from GET /gas/entries, ordered session_date desc
+          // (gas.js:221), so the bucket's title is only ever set on its FIRST
+          // occurrence here, i.e. the most recent snapshot - never overwritten
+          // by an older, possibly pre-rename title encountered later.
+          const bucket = (goalBuckets[key] ||= { title: sc.item_title || 'Unknown Goal', months: {} });
+          (bucket.months[month] ||= []).push(sc.level);
         }
       }
       const months = [...monthSet].sort().slice(-6);
       const labels = months.map(m => MONTH_ABBR[parseInt(m.split('-')[1], 10) - 1]);
-      const goalSeries = Object.keys(goalBuckets).map((name, i) => ({
-        name, color: GOAL_COLORS[i % GOAL_COLORS.length],
-        values: months.map(m => avg(goalBuckets[name][m] || []))
+      const goalSeries = Object.keys(goalBuckets).map((key, i) => ({
+        name: goalBuckets[key].title, color: GOAL_COLORS[i % GOAL_COLORS.length],
+        values: months.map(m => avg(goalBuckets[key].months[m] || []))
       }));
       return { goalLabels: labels, goalSeries };
     }

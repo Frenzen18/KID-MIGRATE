@@ -2,6 +2,7 @@ import { Router } from 'express';
 import { db } from '../supabase.js';
 import { requireAuth, requireRole } from '../middleware/auth.js';
 import { logAudit } from '../lib/audit.js';
+import { applyCancelSideEffects } from '../lib/noShow.js';
 
 const router = Router();
 
@@ -163,9 +164,36 @@ router.post('/holidays', requireAuth, requireRole('admin', 'staff'), async (req,
     return res.status(500).json({ error: error.message });
   }
 
+  // A closure announced AFTER confirmed sessions already exist for that date
+  // (the ahead-of-time case for Speech/OT is instead handled by
+  // fillReservationsForSchedule never generating one) auto-cancels EVERYTHING
+  // still standing that date as excused, no guardian action or attachment
+  // needed, it's the clinic's own closure, not the family's absence. Not
+  // scoped to Speech/OT: an Initial Assessment (or anything else) booked on a
+  // day the clinic turns out to be closed must not be left standing either.
+  const { data: affected } = await db.from('reservations')
+    .select('*').eq('date', date).in('status', ['confirmed', 'rescheduled']);
+  let excusedCount = 0;
+  for (const r of affected || []) {
+    try {
+      await db.from('reservations').update({ status: 'cancelled' }).eq('id', r.id);
+      // A closure is a legitimate reason like any other: applyCancelSideEffects
+      // only converts an already-PAID invoice into a credit, it never touches a
+      // still-pending one, so that must be cleared explicitly first, same as
+      // every other excused-cancellation path in this codebase. Scoped to the
+      // session invoice only, a pending no_show_fee or retainer_fee row on the
+      // same reservation isn't this closure's business.
+      await db.from('payments').delete().eq('reservation_id', r.id).eq('fee_type', 'session').eq('status', 'pending');
+      await applyCancelSideEffects(r, req.user.id);
+      excusedCount++;
+    } catch (err) {
+      console.error(`Holiday auto-excuse: failed to process reservation ${r.id} for ${date}:`, err);
+    }
+  }
+
   await logAudit({
     table_name: 'clinic_holidays', record_id: data.id, action: 'create',
-    description: `Marked ${date} as a clinic closure${label ? ` (${label})` : ''}`,
+    description: `Marked ${date} as a clinic closure${label ? ` (${label})` : ''}` + (excusedCount ? `, ${excusedCount} confirmed session(s) auto-excused` : ''),
     created_by: req.user.id
   });
 

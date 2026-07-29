@@ -289,8 +289,9 @@ h1,h2,h3,h4,h5 { font-family: 'Poppins', sans-serif; }
 .form-input, .form-select {
   width: 100%; height: 38px; padding: 0 12px;
   border: 1px solid var(--color-border); border-radius: 9px;
-  font-size: 13px; color: var(--color-text); background: var(--color-surface-muted); outline: none;
+  font-family: inherit; font-size: 13px; color: var(--color-text); background: var(--color-surface-muted); outline: none;
 }
+textarea.form-input { line-height: 1.55; }
 .form-input:focus, .form-select:focus { border-color: var(--color-primary); background: #fff; }
 .form-label { font-size: 12px; font-weight: 600; color: var(--color-text-muted); display: block; margin-bottom: 5px; }
 .btn-primary {

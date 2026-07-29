@@ -24,7 +24,7 @@
 .cp-row{display:flex;align-items:center;gap:11px;padding:10px;border-radius:10px;cursor:pointer;border:1px solid transparent;transition:all .15s;margin-bottom:2px}
 .cp-row:hover{background:#F8FAFC}
 .cp-row.active{background:#F0F9FF;border-color:#BAE6FD}
-.cp-tip{position:absolute;z-index:50;background:#0F172A;color:#fff;border-radius:12px;padding:13px 15px;font-size:12px;line-height:1.5;width:max-content;max-width:290px;box-shadow:0 12px 32px rgba(15,23,42,.45);pointer-events:none;transform:translate(-50%,-112%)}
+.cp-tip{position:absolute;z-index:50;background:#0F172A;color:#fff;border-radius:12px;padding:13px 15px;font-size:12px;line-height:1.5;width:max-content;max-width:300px;max-height:280px;overflow:hidden;box-shadow:0 12px 32px rgba(15,23,42,.45);pointer-events:none;transform:translate(-50%,-112%)}
 .cp-tip .tt-dom{font-weight:700;display:flex;align-items:center;gap:6px;margin-bottom:6px;font-size:12px}
 .cp-tip .tt-note{color:#CBD5E1;font-size:11.5px}
 .cp-tip .tt-section{font-size:10px;font-weight:700;color:#94A3B8;text-transform:uppercase;letter-spacing:.06em;margin:7px 0 4px}
@@ -135,6 +135,16 @@ textarea.big-input{resize:vertical;line-height:1.6}
 .gas-goal-slider::-webkit-slider-thumb{-webkit-appearance:none;appearance:none;width:20px;height:20px;border-radius:50%;background:#fff;border:3px solid #0EA5E9;box-shadow:0 1px 4px rgba(15,23,42,.25);cursor:pointer}
 .gas-goal-slider::-moz-range-thumb{width:20px;height:20px;border-radius:50%;background:#fff;border:3px solid #0EA5E9;box-shadow:0 1px 4px rgba(15,23,42,.25);cursor:pointer}
 .gas-slider-scale{display:flex;justify-content:space-between;font-size:10px;color:#94A3B8;font-weight:600;padding:0 1px}
+.gas-doc-card{border:1px solid #E2E8F0;border-radius:12px;background:#FAFBFC;padding:14px;display:flex;flex-direction:column;height:100%}
+.gas-doc-card.ai{background:#F5F3FF;border-color:#DDD6FE}
+.gas-doc-card-head{display:flex;align-items:center;gap:9px;margin-bottom:10px}
+.gas-doc-card-head i{width:26px;height:26px;border-radius:8px;display:flex;align-items:center;justify-content:center;font-size:12px;background:#E0F2FE;color:#0284C7;flex-shrink:0}
+.gas-doc-card.ai .gas-doc-card-head i{background:#EDE9FE;color:#7C3AED}
+.gas-doc-card-head .title{font-size:12.5px;font-weight:700;color:#0F172A;line-height:1.3}
+.gas-doc-card-head .sub{font-size:10.5px;color:#94A3B8;font-weight:500;line-height:1.3}
+.gas-doc-card textarea.form-input{background:#fff;flex:1}
+.gas-doc-card.ai textarea.form-input{border-color:#DDD6FE}
+.gas-doc-card.ai textarea.form-input:focus{border-color:#A78BFA}
 
 /* == reservations == */
 .cal-grid{display:grid;grid-template-columns:repeat(7,1fr);gap:3px}

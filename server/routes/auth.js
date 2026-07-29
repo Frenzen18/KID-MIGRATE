@@ -522,20 +522,134 @@ router.get('/session-check', requireAuth, async (req, res) => {
 });
 
 /**
- * PUT /api/auth/me { contact }, self-service update of your own contact
- * number (e.g. the guardian/caretaker "My Profile" panel). Any authenticated
- * role can use this for their own account; it never touches other users.
+ * Self-service email/phone changes from the guardian/caretaker "My Profile"
+ * panel now require proving ownership of the NEW address/number before it's
+ * written anywhere, the same code-in-verification_codes machinery signup and
+ * password reset already use (see server/codes.js), just under two purposes
+ * of its own so a stray code from one flow can never confirm another. Each
+ * field is request-code (send, or resend if already pending) then
+ * confirm-code (checks it, then applies the change) - nothing is written to
+ * profiles/auth.users until confirm succeeds.
  */
-router.put('/me', requireAuth, async (req, res) => {
+function requestCodeCooldownError(entry) {
+  if (!entry) return null;
+  const elapsed = Date.now() - new Date(entry.created_at).getTime();
+  if (elapsed >= RESEND_COOLDOWN) return null;
+  return `Please wait ${Math.ceil((RESEND_COOLDOWN - elapsed) / 1000)}s before requesting another code.`;
+}
+
+/** POST /api/auth/me/request-email-code  { email } */
+router.post('/me/request-email-code', requireAuth, emailLimiter, async (req, res) => {
+  const email = String(req.body?.email || '').trim();
+  if (!email || !EMAIL_RE.test(email)) return res.status(400).json({ error: 'Please enter a valid email address.' });
+
+  const { data: taken } = await db.from('profiles').select('id').ilike('email', email).neq('id', req.user.id).maybeSingle();
+  if (taken) return res.status(400).json({ error: 'This email address is already registered to another account.' });
+
+  const cooldownErr = requestCodeCooldownError(await getCode({ email, purpose: 'profile_email' }));
+  if (cooldownErr) return res.status(429).json({ error: cooldownErr });
+
+  const code = String(Math.floor(100000 + Math.random() * 900000));
+  try {
+    await sendMail({
+      to: email,
+      subject: 'Confirm your email: KID Clinic',
+      html: `
+        <div style="font-family: 'Inter', Arial, sans-serif; max-width: 480px; margin: 0 auto; padding: 32px 24px;">
+          <div style="text-align: center; margin-bottom: 24px;">
+            <h2 style="color: #1F4E9E; margin: 0;">KID Clinic</h2>
+            <p style="color: #64748B; font-size: 13px;">Pediatric Speech &amp; Occupational Therapy</p>
+          </div>
+          <div style="background: #F8FAFC; border: 1px solid #E2E8F0; border-radius: 12px; padding: 24px; text-align: center;">
+            <p style="color: #334155; font-size: 14px; margin: 0 0 16px;">Hi ${req.user.name || 'there'},</p>
+            <p style="color: #64748B; font-size: 13px; margin: 0 0 20px;">Use this code to confirm this email address for your KID Clinic account. It expires in 15 minutes.</p>
+            <div style="background: #1F4E9E; color: #fff; font-size: 32px; font-weight: 700; letter-spacing: 8px; padding: 16px 24px; border-radius: 8px; display: inline-block;">${code}</div>
+            <p style="color: #94A3B8; font-size: 12px; margin: 20px 0 0;">If you didn't request this, please ignore this email.</p>
+          </div>
+        </div>
+      `
+    });
+    await setCode({ email, purpose: 'profile_email', code, userId: req.user.id, fullName: req.user.name, expiresAt: Date.now() + VERIFY_CODE_TTL });
+    res.json({ ok: true, message: 'A verification code has been sent to that email address.' });
+  } catch (e) {
+    console.error('Profile email code send error:', e.message);
+    res.status(500).json({ error: 'Failed to send the code. Please try again later.' });
+  }
+});
+
+/** POST /api/auth/me/confirm-email-code  { email, code } */
+router.post('/me/confirm-email-code', requireAuth, codeLimiter, async (req, res) => {
+  const email = String(req.body?.email || '').trim();
+  const { code } = req.body || {};
+  if (!email || !code) return res.status(400).json({ error: 'Email and code are required.' });
+
+  const entry = await getCode({ email, purpose: 'profile_email' });
+  if (!entry || entry.user_id !== req.user.id || Date.now() > new Date(entry.expires_at).getTime()) {
+    if (entry) await deleteCode({ email, purpose: 'profile_email' });
+    return res.status(400).json({ error: 'Invalid or expired code. Please check the code or request a new one.' });
+  }
+  if (entry.code !== code.trim()) {
+    return res.status(400).json({ error: 'Invalid or expired code. Please check the code or request a new one.' });
+  }
+
+  const { error: authErr } = await db.auth.admin.updateUserById(req.user.id, { email, email_confirm: true });
+  if (authErr) return res.status(500).json({ error: 'Could not update your email: ' + authErr.message });
+
+  // A phone-only account (see profiles.phone_only) had only a synthetic
+  // placeholder before, confirming a real one graduates it to a normal account.
+  const { error } = await db.from('profiles').update({ email, phone_only: false }).eq('id', req.user.id);
+  if (error) return res.status(500).json({ error: error.message });
+
+  await deleteCode({ email, purpose: 'profile_email' });
+  await logAudit({
+    table_name: 'profiles', record_id: req.user.id, action: 'update',
+    description: 'Updated own email address', updated_by: req.user.id
+  });
+
+  res.json({ email });
+});
+
+/** POST /api/auth/me/request-phone-code  { contact } */
+router.post('/me/request-phone-code', requireAuth, emailLimiter, async (req, res) => {
   const contact = normalizePhone(req.body?.contact);
   if (!contact) return res.status(400).json({ error: 'Contact number must be a PH mobile number (e.g. 09171234567 or +639171234567).' });
 
   const { data: taken } = await db.from('profiles').select('id').eq('contact', contact).neq('id', req.user.id).maybeSingle();
   if (taken) return res.status(400).json({ error: 'This contact number is already registered to another account.' });
 
+  const cooldownErr = requestCodeCooldownError(await getCode({ phone: contact, purpose: 'profile_phone' }));
+  if (cooldownErr) return res.status(429).json({ error: cooldownErr });
+
+  const code = String(Math.floor(100000 + Math.random() * 900000));
+  try {
+    await sendSms({ to: contact, message: `Hi ${req.user.name || 'there'}! Your KID Clinic phone number update code is ${code}. It expires in 15 minutes.` });
+    await setCode({ phone: contact, purpose: 'profile_phone', code, userId: req.user.id, fullName: req.user.name, expiresAt: Date.now() + VERIFY_CODE_TTL });
+    res.json({ ok: true, message: 'A verification code has been sent to that mobile number.' });
+  } catch (e) {
+    console.error('Profile phone code send error:', e.message);
+    res.status(500).json({ error: 'Failed to send the code. Please try again later.' });
+  }
+});
+
+/** POST /api/auth/me/confirm-phone-code  { contact, code } */
+router.post('/me/confirm-phone-code', requireAuth, codeLimiter, async (req, res) => {
+  const contact = normalizePhone(req.body?.contact);
+  const { code } = req.body || {};
+  if (!contact || !code) return res.status(400).json({ error: 'Contact number and code are required.' });
+
+  const entry = await getCode({ phone: contact, purpose: 'profile_phone' });
+  if (!entry || entry.user_id !== req.user.id || Date.now() > new Date(entry.expires_at).getTime()) {
+    if (entry) await deleteCode({ phone: contact, purpose: 'profile_phone' });
+    return res.status(400).json({ error: 'Invalid or expired code. Please check the code or request a new one.' });
+  }
+  if (entry.code !== code.trim()) {
+    return res.status(400).json({ error: 'Invalid or expired code. Please check the code or request a new one.' });
+  }
+
   const { data, error } = await db.from('profiles').update({ contact }).eq('id', req.user.id).select('contact').single();
   if (error) return res.status(500).json({ error: error.message });
 
+  await deleteCode({ phone: contact, purpose: 'profile_phone' });
   await logAudit({
     table_name: 'profiles', record_id: req.user.id, action: 'update',
     description: 'Updated own contact number', updated_by: req.user.id

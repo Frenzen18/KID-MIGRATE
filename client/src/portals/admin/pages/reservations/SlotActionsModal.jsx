@@ -183,7 +183,7 @@ export default function SlotActionsModal({ selected, time, reservation, busy, on
             </div>
           </div>
         )}
-        {canCancel && (
+        {canCancel && !isLockedToSchedule && (
         <div style={{ padding: 14, borderRadius: 10, border: '1px solid #E2E8F0', background: '#F8FAFC' }}>
           <div style={{ fontSize: 12.5, fontWeight: 700, color: '#0F172A', marginBottom: 10 }}><i className="fa-solid fa-arrows-rotate" style={{ color: 'var(--color-primary)', marginRight: 7 }} />Reschedule to a different date &amp; time</div>
           {isLockedToSchedule && homeSchedule && (

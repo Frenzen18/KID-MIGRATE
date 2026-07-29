@@ -68,11 +68,16 @@ export async function checkConsecutiveAbsences(reservation) {
   // consecutive" - never a make-up (deliberately booked on a different day,
   // see POST /reservations), which would otherwise mix into the same
   // recurring_schedule_id and get mistaken for one of the schedule's real
-  // weekly misses.
+  // weekly misses. Also excludes administrative_cancel rows (the schedule
+  // itself was edited/discharged, not a real miss, see
+  // migration_administrative_cancel_flag.sql) - left in, editing a schedule
+  // could cancel 2+ already-generated future occurrences at once and get
+  // mistaken for 2-3 real consecutive absences.
   const { data: rows } = await db.from('reservations')
     .select('id, status, no_show_excused, date, time_slot')
     .eq('recurring_schedule_id', reservation.recurring_schedule_id)
     .eq('is_makeup', false)
+    .eq('administrative_cancel', false)
     .in('status', ['completed', 'no_show', 'cancelled', 'confirmed', 'rescheduled'])
     .lte('date', currentWeekEndPH())
     .order('date', { ascending: false })
@@ -266,4 +271,73 @@ export async function applyCancelSideEffects(reservation, actorId) {
   }
 
   await checkConsecutiveAbsences({ ...reservation, no_show_excused: true }, actorId);
+}
+
+/**
+ * Side effects of a STAFF/ADMIN REVIEW VERDICT on a guardian-submitted
+ * cancellation request (see PUT /reservations/cancellation-requests/:id/review),
+ * for a fixed Speech/OT weekly slot's specific occurrence. Distinct from
+ * applyCancelSideEffects (a direct staff/admin cancel, always treated as a
+ * legitimate excused reason with no review step) and applyNoShowSideEffects
+ * (a genuine missed session, reservation.status becomes 'no_show') — this one
+ * is reached only through the guardian-request-with-attachment flow, and the
+ * reservation's terminal status is 'cancelled' either way (set by the caller
+ * before this runs).
+ *
+ * excused: true  -> same as a legitimate cancellation: paid invoice becomes a
+ *                    credit, unpaid invoice is dropped, no fee, counts as an
+ *                    excused absence for the 3-consecutive-absence policy.
+ * excused: false -> a no-show fee ALWAYS applies (the guardian cancelled
+ *                    without a reason staff accepted), on top of (never
+ *                    instead of) crediting an already-paid invoice: paid ->
+ *                    credit + fee; unpaid -> that pending session charge is
+ *                    dropped and replaced by the fee. Counts as an unexcused
+ *                    absence for the 3-consecutive-absence policy.
+ */
+export async function applyCancellationReviewSideEffects(reservation, excused, actorId) {
+  await db.from('reservations').update({ no_show_excused: excused }).eq('id', reservation.id);
+
+  const { data: client } = await db.from('clients').select('full_name, parent_id').eq('id', reservation.client_id).maybeSingle();
+  const guardianId = client?.parent_id || null;
+
+  if (excused) {
+    await db.from('payments').delete().eq('reservation_id', reservation.id).eq('status', 'pending');
+    const credited = await releaseSessionPaymentAsCredit(reservation, 'Cancellation request excused');
+    if (guardianId) {
+      await notifyEvent(null, {
+        title: 'Cancellation request excused',
+        body: `Your cancellation request for ${reservation.date} at ${reservation.time_slot} was excused, no fee was charged.${credited ? ' Your payment for it will be applied to your next session.' : ''}`,
+        icon: 'fa-circle-check',
+        target_user: guardianId
+      });
+    }
+  } else {
+    // Same idempotency guard as applyNoShowSideEffects: the (reservation_id,
+    // fee_type) unique index means calling this twice never double-charges.
+    const { data: existingFee } = await db.from('payments').select('id')
+      .eq('reservation_id', reservation.id).eq('fee_type', 'no_show_fee').maybeSingle();
+    if (!existingFee) {
+      // Unpaid session charge is superseded by the fee, not left standing
+      // alongside it, same "one outstanding charge for this miss" shape as
+      // every other unexcused-absence path in this file.
+      await db.from('payments').delete().eq('reservation_id', reservation.id).eq('fee_type', 'session').eq('status', 'pending');
+      const credited = await releaseSessionPaymentAsCredit(reservation, 'Cancellation request unexcused, no-show fee applied');
+
+      const invoice_no = await genInvoiceNo();
+      const { error: feeErr } = await db.from('payments').insert({
+        client_id: reservation.client_id, reservation_id: reservation.id, fee_type: 'no_show_fee',
+        amount: NO_SHOW_FEE, method: 'Unpaid', status: 'pending', invoice_no
+      });
+      if (!feeErr && guardianId) {
+        await notifyEvent(null, {
+          title: 'Cancellation request unexcused, no-show fee added',
+          body: `Your cancellation request for ${reservation.date} at ${reservation.time_slot} was not excused. A ₱${NO_SHOW_FEE} no-show fee was added.${credited ? ' Your payment for that session will be applied to your next one.' : ''}`,
+          icon: 'fa-triangle-exclamation',
+          target_user: guardianId
+        });
+      }
+    }
+  }
+
+  await checkConsecutiveAbsences({ ...reservation, no_show_excused: excused });
 }

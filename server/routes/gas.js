@@ -100,11 +100,13 @@ router.get('/questionnaires/:id', async (req, res) => {
   res.json({ ...set, items: items || [] });
 });
 
-/** POST /api/gas/questionnaires, admin creates a new versioned goal set (starts as draft) */
-router.post('/questionnaires', requireRole('admin'), async (req, res) => {
+/** POST /api/gas/questionnaires, therapist (their own discipline) or admin/staff creates a new versioned goal set (starts as draft) */
+router.post('/questionnaires', requireRole('admin', 'staff', 'ot', 'speech'), async (req, res) => {
   const b = req.body || {};
   if (!b.name || !b.discipline) return res.status(400).json({ error: 'name and discipline are required' });
   if (!DISCIPLINES.includes(b.discipline)) return res.status(400).json({ error: 'invalid discipline' });
+  const disciplineErr0 = assertDisciplineAccess(req.user, b.discipline);
+  if (disciplineErr0) return res.status(403).json({ error: disciplineErr0 });
 
   const { data, error } = await db.from('gas_questionnaires').insert({
     discipline: b.discipline, name: b.name, status: 'draft', created_by: req.user.id
@@ -121,7 +123,12 @@ router.post('/questionnaires', requireRole('admin'), async (req, res) => {
 });
 
 /** PUT /api/gas/questionnaires/:id, rename, activate, or archive a goal set */
-router.put('/questionnaires/:id', requireRole('admin'), async (req, res) => {
+router.put('/questionnaires/:id', requireRole('admin', 'staff', 'ot', 'speech'), async (req, res) => {
+  const { data: existingSet } = await db.from('gas_questionnaires').select('discipline').eq('id', req.params.id).maybeSingle();
+  if (!existingSet) return res.status(404).json({ error: 'Questionnaire not found' });
+  const disciplineErr = assertDisciplineAccess(req.user, existingSet.discipline);
+  if (disciplineErr) return res.status(403).json({ error: disciplineErr });
+
   const b = req.body || {};
   const patch = {};
   for (const k of ['name', 'status']) if (k in b) patch[k] = b[k];
@@ -142,8 +149,12 @@ router.put('/questionnaires/:id', requireRole('admin'), async (req, res) => {
 });
 
 /** DELETE /api/gas/questionnaires/:id, items cascade; past entries keep their own snapshot */
-router.delete('/questionnaires/:id', requireRole('admin'), async (req, res) => {
-  const { data: existing } = await db.from('gas_questionnaires').select('name').eq('id', req.params.id).maybeSingle();
+router.delete('/questionnaires/:id', requireRole('admin', 'staff', 'ot', 'speech'), async (req, res) => {
+  const { data: existing } = await db.from('gas_questionnaires').select('name, discipline').eq('id', req.params.id).maybeSingle();
+  if (!existing) return res.status(404).json({ error: 'Questionnaire not found' });
+  const disciplineErr = assertDisciplineAccess(req.user, existing.discipline);
+  if (disciplineErr) return res.status(403).json({ error: disciplineErr });
+
   const { error } = await db.from('gas_questionnaires').delete().eq('id', req.params.id);
   if (error) return res.status(500).json({ error: error.message });
 
@@ -156,8 +167,13 @@ router.delete('/questionnaires/:id', requireRole('admin'), async (req, res) => {
   res.json({ ok: true });
 });
 
-/** POST /api/gas/questionnaires/:id/items, admin adds a goal (5 outcome levels + weight) to a set */
-router.post('/questionnaires/:id/items', requireRole('admin'), async (req, res) => {
+/** POST /api/gas/questionnaires/:id/items, therapist (their own discipline) or admin/staff adds a goal (5 outcome levels + weight) to a set */
+router.post('/questionnaires/:id/items', requireRole('admin', 'staff', 'ot', 'speech'), async (req, res) => {
+  const { data: parentSet } = await db.from('gas_questionnaires').select('discipline').eq('id', req.params.id).maybeSingle();
+  if (!parentSet) return res.status(404).json({ error: 'Questionnaire not found' });
+  const disciplineErr = assertDisciplineAccess(req.user, parentSet.discipline);
+  if (disciplineErr) return res.status(403).json({ error: disciplineErr });
+
   const b = req.body || {};
   for (const k of ['title', 'level_m2', 'level_m1', 'level_0', 'level_p1', 'level_p2']) {
     if (!b[k]) return res.status(400).json({ error: `${k} is required` });
@@ -182,8 +198,13 @@ router.post('/questionnaires/:id/items', requireRole('admin'), async (req, res) 
   res.status(201).json(data);
 });
 
-/** PUT /api/gas/items/:id, admin edits a goal's title/description/levels/weight/order */
-router.put('/items/:id', requireRole('admin'), async (req, res) => {
+/** PUT /api/gas/items/:id, therapist (their own discipline) or admin/staff edits a goal's title/description/levels/weight/order */
+router.put('/items/:id', requireRole('admin', 'staff', 'ot', 'speech'), async (req, res) => {
+  const { data: existingItem } = await db.from('gas_questionnaire_items').select('questionnaire_id, gas_questionnaires(discipline)').eq('id', req.params.id).maybeSingle();
+  if (!existingItem) return res.status(404).json({ error: 'Goal not found' });
+  const disciplineErr = assertDisciplineAccess(req.user, existingItem.gas_questionnaires?.discipline);
+  if (disciplineErr) return res.status(403).json({ error: disciplineErr });
+
   const b = req.body || {};
   const patch = {};
   for (const k of ITEM_FIELDS) if (k in b) patch[k] = b[k];
@@ -202,8 +223,12 @@ router.put('/items/:id', requireRole('admin'), async (req, res) => {
 });
 
 /** DELETE /api/gas/items/:id */
-router.delete('/items/:id', requireRole('admin'), async (req, res) => {
-  const { data: existing } = await db.from('gas_questionnaire_items').select('title').eq('id', req.params.id).maybeSingle();
+router.delete('/items/:id', requireRole('admin', 'staff', 'ot', 'speech'), async (req, res) => {
+  const { data: existing } = await db.from('gas_questionnaire_items').select('title, gas_questionnaires(discipline)').eq('id', req.params.id).maybeSingle();
+  if (!existing) return res.status(404).json({ error: 'Goal not found' });
+  const disciplineErr = assertDisciplineAccess(req.user, existing.gas_questionnaires?.discipline);
+  if (disciplineErr) return res.status(403).json({ error: disciplineErr });
+
   const { error } = await db.from('gas_questionnaire_items').delete().eq('id', req.params.id);
   if (error) return res.status(500).json({ error: error.message });
 

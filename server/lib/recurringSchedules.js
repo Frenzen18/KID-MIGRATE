@@ -4,6 +4,7 @@ import { notifyEvent, channelEnabled } from './notify.js';
 import { sendMail } from '../mailer.js';
 import { sendSms } from '../sms.js';
 import { releaseSessionPaymentAsCredit } from './noShow.js';
+import { fillReservationsForSchedule } from './recurringFill.js';
 
 /** Today's date (YYYY-MM-DD) in Philippine time (UTC+8), independent of server timezone. */
 function todayPH() {
@@ -114,9 +115,14 @@ export async function assignWaitlistEntry(entry, actorId) {
     .select('id').eq('client_id', client.id).eq('therapist_name', entry.therapist_name).eq('status', 'active').maybeSingle();
   if (alreadyHasTherapist) throw new Error(`${entry.therapist_name} already has an active schedule with ${client.full_name}, one session per therapist per week.`);
 
+  // Same-discipline same-day/time only - two different therapists of the
+  // SAME discipline can never both hold this client at once, but a different
+  // discipline at the same day/time is fine (e.g. concurrent OT + Speech for
+  // a Combined client), see the matching check in POST assign-schedule.
   const { data: clientSameSlot } = await db.from('recurring_schedules')
-    .select('id').eq('client_id', client.id).eq('day_of_week', entry.day_of_week).eq('time_slot', entry.time_slot).eq('status', 'active').maybeSingle();
-  if (clientSameSlot) throw new Error(`${client.full_name} already has a schedule at that day and time.`);
+    .select('id').eq('client_id', client.id).eq('discipline', entry.discipline)
+    .eq('day_of_week', entry.day_of_week).eq('time_slot', entry.time_slot).eq('status', 'active').maybeSingle();
+  if (clientSameSlot) throw new Error(`${client.full_name} already has a ${sessionType} schedule at that day and time.`);
 
   const { data: slotTakenBy } = await db.from('recurring_schedules')
     .select('id').eq('day_of_week', entry.day_of_week).eq('time_slot', entry.time_slot).eq('therapist_name', entry.therapist_name).eq('status', 'active').maybeSingle();
@@ -127,6 +133,17 @@ export async function assignWaitlistEntry(entry, actorId) {
     status: 'active', created_by: actorId
   }).select().single();
   if (schedErr) throw new Error(schedErr.message);
+
+  // Isolated in its own try/catch: the schedule row itself is already
+  // committed above, so a transient fill failure shouldn't throw out of this
+  // function and fail the whole assignment (client patch/waitlist status
+  // update/audit/notification back in the route caller), the daily sweep
+  // will top up the reservations on its next run regardless.
+  try {
+    await fillReservationsForSchedule(schedule, actorId);
+  } catch (fillErr) {
+    console.error(`[assignWaitlistEntry] fillReservationsForSchedule failed for schedule ${schedule.id} (client ${client.id}, ${sessionType}):`, fillErr);
+  }
 
   const clientPatch = {};
   if (entry.discipline === 'OT') clientPatch.assigned_ot_therapist_name = entry.therapist_name;
@@ -141,24 +158,36 @@ export async function assignWaitlistEntry(entry, actorId) {
 }
 
 /**
- * Cancels every still-future reservation tied to a schedule that's about to
- * be discharged. Discharging ends the family's claim to the slot, leaving
- * their already-booked future occurrences standing would strand them on a
+ * Cancels every still-unresolved reservation tied to a schedule that's about
+ * to be discharged, dated today or later (never a past one - that's already
+ * effectively completed history everywhere else in this app, e.g.
+ * isEffectivelyCompleted client-side, and must never be retroactively
+ * rewritten). Discharging ends the family's claim to the slot, leaving
+ * their already-booked upcoming occurrences standing would strand them on a
  * schedule that no longer exists (can't be rescheduled or self-cancelled,
  * see the "no longer active" guards in PUT /reservations/:id) AND keep the
- * slot occupied right when the waitlist is about to be offered it. Treated
- * like a legitimate-reason cancellation: a paid invoice becomes a credit for
- * the family's next session, a pending one is simply dropped, no fee either way.
+ * slot occupied right when the waitlist is about to be offered it.
+ *
+ * Includes TODAY's own occurrence, not just strictly-future ones: discharge
+ * removes the slot outright, so today's still-'confirmed' session (not yet
+ * happened, or not yet resolved) must not survive to later be mistaken for a
+ * genuine no-show/absence against a schedule that no longer exists - that
+ * would incorrectly count against the family for something they're no
+ * longer even being asked to attend.
+ *
+ * Treated like a legitimate-reason cancellation: a paid invoice becomes a
+ * credit for the family's next session, a pending one is simply dropped, no
+ * fee either way, and no_show_excused: true keeps it out of any absence count.
  */
 async function cancelFutureReservationsForDischarge(schedule) {
   const { data: future } = await db.from('reservations')
     .select('*').eq('recurring_schedule_id', schedule.id)
     .in('status', ['confirmed', 'rescheduled', 'awaiting_payment'])
-    .gt('date', todayPH());
+    .gte('date', todayPH());
   for (const r of future || []) {
     await db.from('payments').delete().eq('reservation_id', r.id).eq('status', 'pending');
     const credited = await releaseSessionPaymentAsCredit(r, 'Schedule discharged');
-    await db.from('reservations').update({ status: 'cancelled', no_show_excused: true }).eq('id', r.id);
+    await db.from('reservations').update({ status: 'cancelled', no_show_excused: true, administrative_cancel: true }).eq('id', r.id);
     if (r.created_by) {
       await notifyEvent(null, {
         title: 'Session cancelled, schedule ended',
@@ -187,6 +216,27 @@ export async function dischargeSchedule(schedule, actorId, { reason = 'manual' }
   // the next family accepts it while the outgoing client's future sessions
   // are still sitting on the calendar, colliding with every one of theirs.
   const cancelledCount = await cancelFutureReservationsForDischarge(schedule);
+
+  // If no other active schedules remain for this discipline, clear the
+  // assigned therapist name AND update therapy_type on the client record so
+  // the Clients page no longer shows a stale therapist/type after discharge.
+  const { data: remainingSameDiscipline } = await db.from('recurring_schedules')
+    .select('id').eq('client_id', schedule.client_id).eq('discipline', schedule.discipline)
+    .eq('status', 'active').neq('id', schedule.id);
+  if (!remainingSameDiscipline || remainingSameDiscipline.length === 0) {
+    const otherDiscipline = schedule.discipline === 'OT' ? 'Speech' : 'OT';
+    const { data: remainingOther } = await db.from('recurring_schedules')
+      .select('id').eq('client_id', schedule.client_id).eq('discipline', otherDiscipline)
+      .eq('status', 'active');
+    const hasOtherDiscipline = remainingOther && remainingOther.length > 0;
+
+    // Clear the therapist for the discharged discipline, and downgrade
+    // therapy_type: Both→other, single→null.
+    const clientPatch = schedule.discipline === 'OT'
+      ? { assigned_ot_therapist_name: null, therapy_type: hasOtherDiscipline ? 'Speech' : null }
+      : { assigned_speech_therapist_name: null, therapy_type: hasOtherDiscipline ? 'OT' : null };
+    await db.from('clients').update(clientPatch).eq('id', schedule.client_id);
+  }
 
   const sessionType = schedule.discipline === 'OT' ? 'Occupational Therapy' : 'Speech Therapy';
   await logAudit({

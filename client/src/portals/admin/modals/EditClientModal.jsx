@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef, forwardRef, useImperativeHandle } from 'react';
 import { Modal } from '../../../components/ui.jsx';
 import { api } from '../../../api.js';
 import { sanitizeNameInput, hasInvalidNameChars, INVALID_NAME_MSG } from '../../../nameInput.js';
@@ -30,7 +30,11 @@ function todayPH() {
  *
  * Mirrors checkConsecutiveAbsences server-side exactly: excludes make-up
  * sessions (booked on a different day by design, they'd otherwise get
- * mistaken for one of the schedule's own weekly misses), treats a past
+ * mistaken for one of the schedule's own weekly misses), excludes an
+ * administrative_cancel row (the schedule itself was edited/discharged, not
+ * a real miss - editing a schedule can cancel 2+ already-generated future
+ * occurrences at once, which would otherwise misread as 2-3 real consecutive
+ * absences right after a routine day/time change), treats a past
  * confirmed/rescheduled row nobody explicitly resolved as attended (same as
  * everywhere else in the app), and requires each absence to be exactly 7
  * days apart from the next - a week the family never booked at all leaves no
@@ -40,7 +44,7 @@ function todayPH() {
 function computeAttendanceStreak(schedule) {
   const today = todayPH();
   const resolved = (schedule.reservations || [])
-    .filter(r => !r.is_makeup && (
+    .filter(r => !r.is_makeup && !r.administrative_cancel && (
       r.status === 'completed' || r.status === 'no_show' || r.status === 'cancelled'
       || (['confirmed', 'rescheduled'].includes(r.status) && r.date < today)
     ))
@@ -85,36 +89,55 @@ function nextOccurrenceDate(jsDay) {
 
 /**
  * Every time_slot already spoken for on this weekday for this therapist, from
- * three independent sources, split into two kinds:
+ * three independent sources, split into three kinds:
  *
- * `blocked` (can't be picked at all): the therapist's own real booked shift
- * capacity (GET /reservations/slots) is full, or this same client's OWN other
- * active schedule already has them booked elsewhere that same day/time (they
- * can't be in two sessions at once, and there's no "waitlist" for a conflict
- * with yourself).
+ * `blocked` (can't be picked at all, no waitlist makes sense): the
+ * therapist's own real booked shift capacity (GET /reservations/slots) is
+ * full.
  *
  * `waitlistable` (still pickable): ANOTHER active recurring schedule already
  * pinned to that exact day/time/therapist (GET /recurring-schedules/taken, a
  * schedule is a standing pin, not a booked reservation, so the slots endpoint
- * alone can't see it). This one stays selectable on purpose, picking it and
- * clicking Assign is exactly how "Add to Waitlist Instead" gets offered,
- * graying it out identically to a hard block would make the waitlist
- * unreachable through the UI.
+ * alone can't see it) - someone else's slot, so joining their waitlist is a
+ * real option.
+ *
+ * `selfConflict` (a hard "Schedule Conflict", never a waitlist candidate):
+ * this SAME client already has another active schedule of the SAME
+ * discipline at that exact day/time. Two different therapists of the same
+ * discipline can never both hold this client at once - that's not "someone
+ * else's slot to wait for", it's just not a valid combination, so it's kept
+ * in its own bucket instead of lumped into `blocked` (see ScheduleTimePicker,
+ * which labels it distinctly). A DIFFERENT discipline at the same day/time is
+ * fine (e.g. a Combined client's OT and Speech running concurrently), so this
+ * only ever looks at schedules matching `discipline`.
+ *
+ * All three stay selectable in the picker (informational labels only, never
+ * `disabled`) so the option list doesn't silently shrink, but only `blocked`/
+ * `waitlistable` ever offer "Add to Waitlist Instead" - see occupiedPick in
+ * ScheduleRow/PendingSlotPicker.
  *
  * `excludeScheduleId` lets an edit-in-place exclude the schedule being edited
  * from all three checks, otherwise it would flag itself as a conflict.
+ *
+ * `excludeClientId` (edit-in-place only) additionally excludes that client's
+ * OWN existing bookings from the real shift-capacity check (`blocked`) -
+ * without it, the client's own already-generated session on that exact
+ * date/hour/therapist (see recurringFill.js) fills the one slot of capacity
+ * and makes the schedule they're currently on look "occupied" to themselves.
  */
-function useTakenTimes(therapistName, dayOfWeek, allActiveSchedules, excludeScheduleId) {
+function useTakenTimes(therapistName, dayOfWeek, discipline, allActiveSchedules, excludeScheduleId, excludeClientId) {
   const [shiftTaken, setShiftTaken] = useState(new Set());
   useEffect(() => {
     if (!therapistName || dayOfWeek === '') { setShiftTaken(new Set()); return; }
     let cancelled = false;
     const date = nextOccurrenceDate(Number(dayOfWeek));
-    api('/reservations/slots?date=' + date + '&therapist_name=' + encodeURIComponent(therapistName))
+    const qs = 'date=' + date + '&therapist_name=' + encodeURIComponent(therapistName)
+      + (excludeClientId ? '&exclude_client_id=' + excludeClientId : '');
+    api('/reservations/slots?' + qs)
       .then(slots => { if (!cancelled) setShiftTaken(new Set((slots || []).filter(s => (s.available ?? 0) <= 0).map(s => s.time_slot))); })
       .catch(() => { if (!cancelled) setShiftTaken(new Set()); });
     return () => { cancelled = true; };
-  }, [therapistName, dayOfWeek]);
+  }, [therapistName, dayOfWeek, excludeClientId]);
 
   const [scheduleTaken, setScheduleTaken] = useState(new Set());
   useEffect(() => {
@@ -130,15 +153,17 @@ function useTakenTimes(therapistName, dayOfWeek, allActiveSchedules, excludeSche
 
   const clientTaken = dayOfWeek === ''
     ? new Set()
-    : new Set((allActiveSchedules || []).filter(s => s.day_of_week === Number(dayOfWeek) && s.id !== excludeScheduleId).map(s => s.time_slot));
+    : new Set((allActiveSchedules || [])
+        .filter(s => s.discipline === discipline && s.day_of_week === Number(dayOfWeek) && s.id !== excludeScheduleId)
+        .map(s => s.time_slot));
 
-  return { blocked: new Set([...shiftTaken, ...clientTaken]), waitlistable: scheduleTaken };
+  return { blocked: shiftTaken, waitlistable: scheduleTaken, selfConflict: clientTaken };
 }
 
 /** Shared Therapist/Day/Time picker markup for both the "assign new" form
  *  and a schedule's inline edit form, so their behavior (and the taken-time
- *  graying) never drifts apart. `takenTimes` is the { blocked, waitlistable }
- *  shape from useTakenTimes. */
+ *  graying) never drifts apart. `takenTimes` is the { blocked, waitlistable,
+ *  selfConflict } shape from useTakenTimes. */
 function ScheduleTimePicker({ therapistName, setTherapistName, dayOfWeek, setDayOfWeek, timeSlot, setTimeSlot, roleTherapists, takenTimes }) {
   const selectedTherapist = roleTherapists.find(t => t.name === therapistName);
   const worksChosenDay = selectedTherapist && dayOfWeek !== ''
@@ -165,7 +190,14 @@ function ScheduleTimePicker({ therapistName, setTherapistName, dayOfWeek, setDay
         <label className="form-label">Day of the Week</label>
         <select className="form-select" value={dayOfWeek} onChange={e => { setDayOfWeek(e.target.value); setTimeSlot(''); }} disabled={!therapistName}>
           <option value="">- Select -</option>
-          {WEEKDAY_NAMES.map((name, idx) => <option key={idx} value={idx}>{name}</option>)}
+          {WEEKDAY_NAMES.map((name, idx) => {
+            // Days the clinic doesn't run for this therapist at all (e.g. a
+            // closed Sunday nobody opted into) are left out entirely instead
+            // of listed and then rejected below, there's nothing bookable
+            // there to pick in the first place.
+            if (selectedTherapist && selectedTherapist.work_days[toWorkDaysIndex(idx)] === false) return null;
+            return <option key={idx} value={idx}>{name}</option>;
+          })}
         </select>
       </div>
       <div>
@@ -175,18 +207,24 @@ function ScheduleTimePicker({ therapistName, setTherapistName, dayOfWeek, setDay
         ) : !worksChosenDay ? (
           <div className="form-input" style={{ display: 'flex', alignItems: 'center', color: '#DC2626', background: '#FEF2F2', fontSize: 12 }}>Not on shift {WEEKDAY_NAMES[dayOfWeek]}s</div>
         ) : (
-          <select className="form-select" value={timeSlot} onChange={e => setTimeSlot(e.target.value)} style={timeSlot && takenTimes.blocked.has(timeSlot) ? { color: '#94A3B8' } : timeSlot && takenTimes.waitlistable.has(timeSlot) ? { color: '#B45309' } : undefined}>
+          <select className="form-select" value={timeSlot} onChange={e => setTimeSlot(e.target.value)} style={timeSlot && takenTimes.selfConflict.has(timeSlot) ? { color: '#DC2626' } : timeSlot && (takenTimes.blocked.has(timeSlot) || takenTimes.waitlistable.has(timeSlot)) ? { color: '#B45309' } : undefined}>
             <option value="">- Select -</option>
             {timeOptions.map(t => {
-              const blocked = takenTimes.blocked.has(t);
-              const waitlistable = !blocked && takenTimes.waitlistable.has(t);
+              // None of the three kinds disable the option, staff can still
+              // pick an occupied slot on purpose - `blocked`/`waitlistable`
+              // get offered "Add to Waitlist Instead" once the assign/save
+              // attempt confirms it's really taken; `selfConflict` never does
+              // (there's no one else's waitlist to join for double-booking
+              // this same client), it's labeled as a flat conflict instead.
+              const conflict = takenTimes.selfConflict.has(t);
+              const occupied = !conflict && (takenTimes.blocked.has(t) || takenTimes.waitlistable.has(t));
               return (
                 // Every option sets its own color explicitly, an option with
                 // no color of its own would otherwise inherit the <select>'s
                 // (set below to reflect the currently chosen value), turning
                 // the WHOLE open list that color instead of just this one row.
-                <option key={t} value={t} disabled={blocked} style={{ color: blocked ? '#CBD5E1' : waitlistable ? '#B45309' : '#0F172A' }}>
-                  {t}{blocked ? ' (occupied)' : waitlistable ? ' (taken, pick to join waitlist)' : ''}
+                <option key={t} value={t} style={{ color: conflict ? '#DC2626' : occupied ? '#B45309' : '#0F172A' }}>
+                  {t}{conflict ? ' (schedule conflict)' : occupied ? ' (occupied, pick to join waitlist)' : ''}
                 </option>
               );
             })}
@@ -218,17 +256,35 @@ function ScheduleRow({ clientId, discipline, disciplineLabel, allTherapists, sch
   // its own point of view), only OTHER schedules' therapists are excluded.
   const takenTherapistNames = new Set((allActiveSchedules || []).filter(s => s.id !== schedule.id).map(s => s.therapist_name));
   const roleTherapists = (allTherapists || []).filter(t => t.role === (discipline === 'OT' ? 'ot' : 'speech') && (!takenTherapistNames.has(t.name) || t.name === schedule.therapist_name));
-  const takenTimes = useTakenTimes(editing ? therapistName : '', editing ? dayOfWeek : '', allActiveSchedules, schedule.id);
+  const takenTimes = useTakenTimes(editing ? therapistName : '', editing ? dayOfWeek : '', discipline, allActiveSchedules, schedule.id, clientId);
+
+  // Set when save() hits a slot another client already holds (server-confirmed),
+  // offers "Add to Waitlist Instead" instead of a dead-end error.
+  const [slotConflict, setSlotConflict] = useState(null);
+
+  // Shows the waitlist button the moment an occupied slot is PICKED, not only
+  // after clicking Save and getting a conflict back, using the same
+  // blocked/waitlistable info the picker already labels "(occupied)" with.
+  // selfConflict (this client's own same-discipline schedule already there)
+  // is deliberately excluded - there's no one else's waitlist to join for
+  // double-booking yourself, see scheduleConflictPick below instead.
+  const occupiedPick = therapistName && dayOfWeek !== '' && timeSlot
+    && (takenTimes.blocked.has(timeSlot) || takenTimes.waitlistable.has(timeSlot));
+  const waitlistTarget = slotConflict || (occupiedPick ? { therapistName, dayOfWeek: Number(dayOfWeek), timeSlot } : null);
+  const scheduleConflictPick = therapistName && dayOfWeek !== '' && timeSlot && takenTimes.selfConflict.has(timeSlot);
 
   function startEdit() {
     setTherapistName(schedule.therapist_name);
     setDayOfWeek(String(schedule.day_of_week));
     setTimeSlot(schedule.time_slot);
+    setSlotConflict(null);
     setEditing(true);
   }
 
   async function save() {
     if (!therapistName || dayOfWeek === '' || !timeSlot) return toast('Fill in therapist, day, and time', 'fa-triangle-exclamation');
+    if (scheduleConflictPick) return toast(`Schedule conflict: this client already has a ${disciplineLabel} schedule ${WEEKDAY_NAMES[dayOfWeek]}s at ${timeSlot}.`, 'fa-triangle-exclamation');
+    setSlotConflict(null);
     setBusy(true);
     try {
       const result = await api('/reservations/recurring-schedules/' + schedule.id, {
@@ -246,6 +302,24 @@ function ScheduleRow({ clientId, discipline, disciplineLabel, allTherapists, sch
       onChanged();
     } catch (e) {
       toast(e.message || 'Failed to update schedule', 'fa-triangle-exclamation');
+      if (e.data?.slotTaken) setSlotConflict({ therapistName, dayOfWeek: Number(dayOfWeek), timeSlot });
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function addToWaitlist() {
+    if (!waitlistTarget) return;
+    setBusy(true);
+    try {
+      await api('/reservations/schedule-waitlist', {
+        method: 'POST',
+        body: { discipline, therapist_name: waitlistTarget.therapistName, day_of_week: waitlistTarget.dayOfWeek, time_slot: waitlistTarget.timeSlot, client_id: clientId }
+      });
+      toast('Added to the waitlist for that slot', 'fa-check');
+      setSlotConflict(null);
+    } catch (e) {
+      toast(e.message || 'Failed to add to waitlist', 'fa-triangle-exclamation');
     } finally {
       setBusy(false);
     }
@@ -302,11 +376,22 @@ function ScheduleRow({ clientId, discipline, disciplineLabel, allTherapists, sch
           roleTherapists={roleTherapists} takenTimes={takenTimes}
         />
       </div>
-      <div style={{ display: 'flex', gap: 8 }}>
-        <button className="btn-primary" style={{ fontSize: 11.5, padding: '6px 12px' }} disabled={busy} onClick={save}>
+      {scheduleConflictPick && (
+        <div style={{ fontSize: 11.5, color: '#DC2626', marginBottom: 8 }}>
+          <i className="fa-solid fa-triangle-exclamation" style={{ marginRight: 5 }} />
+          Schedule conflict: this client already has a {disciplineLabel} schedule {WEEKDAY_NAMES[dayOfWeek]}s at {timeSlot}. Pick a different day or time.
+        </div>
+      )}
+      <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+        <button className="btn-primary" style={{ fontSize: 11.5, padding: '6px 12px' }} disabled={busy || scheduleConflictPick} onClick={save}>
           <i className={'fa-solid ' + (busy ? 'fa-spinner fa-spin' : 'fa-check')} style={{ marginRight: 5 }} />{busy ? 'Saving…' : 'Save'}
         </button>
         <button className="btn-secondary" style={{ fontSize: 11.5, padding: '6px 12px' }} disabled={busy} onClick={() => setEditing(false)}>Cancel</button>
+        {waitlistTarget && (
+          <button className="btn-secondary" style={{ fontSize: 11.5, padding: '6px 12px' }} disabled={busy} onClick={addToWaitlist}>
+            <i className="fa-solid fa-user-clock" style={{ marginRight: 5 }} />Add to Waitlist Instead
+          </button>
+        )}
       </div>
     </div>
   );
@@ -323,65 +408,214 @@ function ScheduleRow({ clientId, discipline, disciplineLabel, allTherapists, sch
  * + Discharge; otherwise it's the assignment form that creates one (see
  * POST .../assign-schedule).
  */
-function DisciplineScheduleSection({ clientId, discipline, disciplineLabel, allTherapists, legacyAssigned, schedules, allActiveSchedules, recommended, onChanged, toast }) {
-  // Therapists already covering this discipline for this client are excluded,
-  // 1 session per therapist per week, the same person can't hold a second slot.
-  const takenTherapistNames = new Set(schedules.map(s => s.therapist_name));
-  const roleTherapists = (allTherapists || []).filter(t => t.role === (discipline === 'OT' ? 'ot' : 'speech') && !takenTherapistNames.has(t.name));
-  const atRecommendedCap = recommended != null && schedules.length >= recommended;
-  const [therapistName, setTherapistName] = useState('');
-  const [dayOfWeek, setDayOfWeek] = useState('');
-  const [timeSlot, setTimeSlot] = useState('');
-  const [busy, setBusy] = useState(false);
+const EMPTY_SLOT = { therapistName: '', dayOfWeek: '', timeSlot: '', conflict: null };
 
-  // Every time_slot already spoken for on this weekday for whichever
-  // therapist is picked: their own real shift capacity, ANOTHER active
-  // schedule already pinned to that exact combo, or this same client's own
-  // other schedules, so it's grayed out here too instead of only failing
-  // once "Assign" is clicked (see useTakenTimes above).
-  const takenTimes = useTakenTimes(therapistName, dayOfWeek, allActiveSchedules, null);
+/** Turns one discipline's filled (day + time picked) pending rows into the
+ *  same `{ id, day_of_week, time_slot, therapist_name, discipline }` shape a
+ *  real recurring_schedules row has, so a row's OTHER still-unsaved sibling
+ *  rows (same discipline) can be merged straight into its own useTakenTimes
+ *  conflict check alongside actually-committed schedules, see
+ *  DisciplineScheduleSection below. */
+function pendingAsSchedules(pendingSlots, disciplineLabel) {
+  return pendingSlots
+    .map((s, i) => ({ s, i }))
+    .filter(({ s }) => s.dayOfWeek !== '' && s.timeSlot)
+    .map(({ s, i }) => ({
+      id: `pending-${disciplineLabel}-${i}`, day_of_week: Number(s.dayOfWeek), time_slot: s.timeSlot,
+      therapist_name: s.therapistName, discipline: disciplineLabel
+    }));
+}
 
-  // Set when assign() hits a slot another client already holds, offers
-  // "Add to Waitlist" instead of just a dead-end error.
-  const [slotConflict, setSlotConflict] = useState(null);
+/**
+ * One of the (possibly several) simultaneous therapist/day/time pickers shown
+ * when a discipline is short more than one weekly session vs. its recommended
+ * count, so staff fill in all of them before ever hitting Save Changes rather
+ * than assigning one, saving, then finding out a second slot's now available.
+ * Its own `useTakenTimes` call lives in its own component (not a loop inside
+ * the parent) since hook call count must stay static per render - an array of
+ * pickers whose length itself changes size can't share one hook slot.
+ */
+function PendingSlotPicker({ slot, onChange, roleTherapists, allActiveSchedules, discipline, clientId, disciplineLabel, toast, busy, setBusy }) {
+  const { therapistName, dayOfWeek, timeSlot } = slot;
+  // ScheduleTimePicker's therapist <select> fires setTherapistName then
+  // immediately setDayOfWeek('') and setTimeSlot('') right after, to clear
+  // the downstream fields (see its onChange below). Each setter here must go
+  // through onChange as a functional update (patch against whatever the
+  // PREVIOUS call in that same sequence just produced), never rebuilt from
+  // this render's own `slot` closure - otherwise the 2nd/3rd calls would
+  // overwrite the 1st call's therapist pick with stale, pre-pick data.
+  const setTherapistName = v => onChange(() => ({ therapistName: v, dayOfWeek: '', timeSlot: '', conflict: null }));
+  const setDayOfWeek = v => onChange(prev => ({ ...prev, dayOfWeek: v, timeSlot: '', conflict: null }));
+  const setTimeSlot = v => onChange(prev => ({ ...prev, timeSlot: v, conflict: null }));
 
-  async function assign() {
-    if (!therapistName) return toast('Select a therapist', 'fa-triangle-exclamation');
-    if (dayOfWeek === '') return toast('Select a day of the week', 'fa-triangle-exclamation');
-    if (!timeSlot) return toast('Select a time slot', 'fa-triangle-exclamation');
-    setSlotConflict(null);
-    setBusy(true);
-    try {
-      await api('/reservations/' + clientId + '/assign-schedule', {
-        method: 'POST',
-        body: { discipline, therapist_name: therapistName, day_of_week: Number(dayOfWeek), time_slot: timeSlot }
-      });
-      toast(`${disciplineLabel} schedule assigned: ${WEEKDAY_NAMES[dayOfWeek]}s at ${timeSlot} with ${therapistName}`, 'fa-check');
-      onChanged();
-    } catch (e) {
-      toast(e.message || 'Failed to assign schedule', 'fa-triangle-exclamation');
-      if (e.data?.slotTaken) setSlotConflict({ therapistName, dayOfWeek: Number(dayOfWeek), timeSlot });
-    } finally {
-      setBusy(false);
-    }
-  }
+  const takenTimes = useTakenTimes(therapistName, dayOfWeek, discipline, allActiveSchedules, null);
+  // selfConflict (this client's own same-discipline pick/schedule already at
+  // this day/time) is excluded from occupiedPick - there's no one else's
+  // waitlist to join for double-booking yourself, see scheduleConflictPick.
+  const occupiedPick = therapistName && dayOfWeek !== '' && timeSlot
+    && (takenTimes.blocked.has(timeSlot) || takenTimes.waitlistable.has(timeSlot));
+  const waitlistTarget = slot.conflict || (occupiedPick ? { therapistName, dayOfWeek: Number(dayOfWeek), timeSlot } : null);
+  const scheduleConflictPick = therapistName && dayOfWeek !== '' && timeSlot && takenTimes.selfConflict.has(timeSlot);
 
   async function addToWaitlist() {
-    if (!slotConflict) return;
+    if (!waitlistTarget) return;
     setBusy(true);
     try {
       await api('/reservations/schedule-waitlist', {
         method: 'POST',
-        body: { discipline, therapist_name: slotConflict.therapistName, day_of_week: slotConflict.dayOfWeek, time_slot: slotConflict.timeSlot, client_id: clientId }
+        body: { discipline, therapist_name: waitlistTarget.therapistName, day_of_week: waitlistTarget.dayOfWeek, time_slot: waitlistTarget.timeSlot, client_id: clientId }
       });
       toast('Added to the waitlist for that slot', 'fa-check');
-      setSlotConflict(null);
+      onChange(() => ({ ...EMPTY_SLOT }));
     } catch (e) {
       toast(e.message || 'Failed to add to waitlist', 'fa-triangle-exclamation');
     } finally {
       setBusy(false);
     }
   }
+
+  return (
+    <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10, border: '1px solid #E2E8F0', borderRadius: 8, padding: 10, background: '#F8FAFC' }}>
+      <ScheduleTimePicker
+        therapistName={therapistName} setTherapistName={setTherapistName}
+        dayOfWeek={dayOfWeek} setDayOfWeek={setDayOfWeek}
+        timeSlot={timeSlot} setTimeSlot={setTimeSlot}
+        roleTherapists={roleTherapists} takenTimes={takenTimes}
+      />
+      {scheduleConflictPick ? (
+        <div style={{ gridColumn: '1/-1', fontSize: 11.5, color: '#DC2626' }}>
+          <i className="fa-solid fa-triangle-exclamation" style={{ marginRight: 5 }} />
+          Schedule conflict: this client already has a {disciplineLabel} schedule {WEEKDAY_NAMES[dayOfWeek]}s at {timeSlot}. Pick a different day or time.
+        </div>
+      ) : waitlistTarget && (
+        <div style={{ gridColumn: '1/-1' }}>
+          <button className="btn-secondary" style={{ fontSize: 12, padding: '7px 14px' }} disabled={busy} onClick={addToWaitlist}>
+            <i className="fa-solid fa-user-clock" style={{ marginRight: 5 }} />Add to Waitlist Instead
+          </button>
+        </div>
+      )}
+    </div>
+  );
+}
+
+const DisciplineScheduleSection = forwardRef(function DisciplineScheduleSection(
+  { clientId, discipline, disciplineLabel, allTherapists, legacyAssigned, schedules, allActiveSchedules, recommended, onChanged, toast },
+  ref
+) {
+  // Therapists already covering this discipline for this client are excluded,
+  // 1 session per therapist per week, the same person can't hold a second slot.
+  const takenTherapistNames = new Set(schedules.map(s => s.therapist_name));
+  const roleTherapists = (allTherapists || []).filter(t => t.role === (discipline === 'OT' ? 'ot' : 'speech') && !takenTherapistNames.has(t.name));
+  const atRecommendedCap = recommended != null && schedules.length >= recommended;
+  const [busy, setBusy] = useState(false);
+
+  // How many simultaneous picker rows to show: the actual remaining gap to
+  // the recommended weekly count (so picking "2 or 3 per week" immediately
+  // offers that many therapist slots at once, no intermediate Save Changes
+  // needed between the 1st and 2nd), or just one open-ended row when no
+  // recommendation is set (the old unlimited-add-one-at-a-time behavior).
+  const slotsNeeded = recommended != null ? Math.max(0, recommended - schedules.length) : 1;
+  const [pendingSlots, setPendingSlots] = useState(() => Array.from({ length: slotsNeeded }, () => ({ ...EMPTY_SLOT })));
+
+  // Grows/shrinks the pending-row count from the end only as the recommended
+  // dropdown changes or a schedule gets committed/discharged elsewhere, so
+  // picks already entered in earlier rows are never disturbed.
+  useEffect(() => {
+    setPendingSlots(prev => {
+      if (slotsNeeded === prev.length) return prev;
+      if (slotsNeeded > prev.length) return [...prev, ...Array.from({ length: slotsNeeded - prev.length }, () => ({ ...EMPTY_SLOT }))];
+      return prev.slice(0, slotsNeeded);
+    });
+  }, [slotsNeeded]);
+
+  // `updater` is a function (prevSlot) => nextSlot, same shape as React's own
+  // functional setState - each call composes against whatever the previous
+  // call in the same event handler just produced (see PendingSlotPicker's
+  // setTherapistName/setDayOfWeek/setTimeSlot), not a stale render-time value.
+  function updateSlot(index, updater) {
+    setPendingSlots(prev => prev.map((s, i) => i === index ? updater(s) : s));
+  }
+
+  /**
+   * Exposed to the parent's single Save Changes button (no more standalone
+   * "Assign ... Schedule" button per discipline, that was a redundant second
+   * save action for what's really one edit to the client's profile). Commits
+   * every fully-picked row (therapist + day + time), in order, so 2+
+   * simultaneous assignments for a "2 or more per week" recommendation all
+   * go in from one Save Changes click. A row left half-filled blocks the
+   * whole save (same "fill it in or clear it" rule as a single row always
+   * had); a failed row (e.g. a slot conflict) keeps its values and shows
+   * "Add to Waitlist Instead" instead of being silently discarded, while
+   * any other row that succeeded is still committed.
+   * Returns true only if every fully-picked row committed successfully (or
+   * there was nothing pending to commit); false keeps Save Changes from
+   * closing the modal so staff can fix the failed row(s).
+   */
+  useImperativeHandle(ref, () => ({
+    async commitPending() {
+      const filled = pendingSlots.filter(s => s.therapistName && s.dayOfWeek !== '' && s.timeSlot);
+      const empty = pendingSlots.filter(s => !s.therapistName && s.dayOfWeek === '' && !s.timeSlot);
+      if (filled.length + empty.length !== pendingSlots.length) {
+        toast(`Fill in therapist, day, and time for every ${disciplineLabel} row you started, or clear it to skip`, 'fa-triangle-exclamation');
+        return false;
+      }
+      if (filled.length === 0) {
+        // A discipline shown here means the client's Therapy Type calls for
+        // it, so it needs an actual therapist/day/time on file, not just the
+        // label. Block Save Changes until one is assigned, UNLESS a schedule
+        // already covers it (nothing new needed) or there's truly no eligible
+        // therapist to pick from at all (roleTherapists.length === 0, the
+        // read-only "No other registered ... therapists available" state),
+        // where requiring a pick would be a dead end with no way to satisfy it.
+        if (schedules.length === 0 && roleTherapists.length > 0) {
+          toast(`Assign a ${disciplineLabel} therapist, day, and time before saving, or change the Therapy Type above if this discipline isn't needed.`, 'fa-triangle-exclamation');
+          return false;
+        }
+        return true;
+      }
+      // Two of these rows landing on the same day/time (necessarily two
+      // different therapists, same discipline - the picker already excludes
+      // reusing a therapist across rows) is never valid, checked here before
+      // either one ever reaches the server so it's caught as a clear error
+      // instead of the 2nd row's API call failing with a raw 409. A different
+      // discipline at the same day/time is fine (e.g. concurrent OT + Speech
+      // for a Combined client) and isn't checked here at all - see the
+      // (discipline-scoped) selfConflict bucket in useTakenTimes for why.
+      for (let a = 0; a < filled.length; a++) {
+        for (let b = a + 1; b < filled.length; b++) {
+          if (filled[a].dayOfWeek === filled[b].dayOfWeek && filled[a].timeSlot === filled[b].timeSlot) {
+            toast(`Schedule conflict: two ${disciplineLabel} rows are both set to ${WEEKDAY_NAMES[filled[a].dayOfWeek]}s at ${filled[a].timeSlot}. Pick a different day or time for one of them.`, 'fa-triangle-exclamation');
+            return false;
+          }
+        }
+      }
+      setBusy(true);
+      const nextSlots = [...pendingSlots];
+      let anySucceeded = false;
+      let anyFailed = false;
+      for (let i = 0; i < nextSlots.length; i++) {
+        const s = nextSlots[i];
+        if (!(s.therapistName && s.dayOfWeek !== '' && s.timeSlot)) continue;
+        try {
+          await api('/reservations/' + clientId + '/assign-schedule', {
+            method: 'POST',
+            body: { discipline, therapist_name: s.therapistName, day_of_week: Number(s.dayOfWeek), time_slot: s.timeSlot }
+          });
+          toast(`${disciplineLabel} schedule assigned: ${WEEKDAY_NAMES[s.dayOfWeek]}s at ${s.timeSlot} with ${s.therapistName}`, 'fa-check');
+          nextSlots[i] = { ...EMPTY_SLOT };
+          anySucceeded = true;
+        } catch (e) {
+          toast(e.message || `Failed to assign ${disciplineLabel} schedule with ${s.therapistName}`, 'fa-triangle-exclamation');
+          nextSlots[i] = { ...s, conflict: e.data?.slotTaken ? { therapistName: s.therapistName, dayOfWeek: Number(s.dayOfWeek), timeSlot: s.timeSlot } : null };
+          anyFailed = true;
+        }
+      }
+      setPendingSlots(nextSlots);
+      setBusy(false);
+      if (anySucceeded) onChanged();
+      return !anyFailed;
+    }
+  }), [pendingSlots, clientId, discipline, disciplineLabel, onChanged, toast, schedules.length, roleTherapists.length]);
 
   return (
     <div style={{ gridColumn: '1/-1', border: '1px dashed #CBD5E1', borderRadius: 10, padding: '12px 14px' }}>
@@ -405,28 +639,43 @@ function DisciplineScheduleSection({ clientId, discipline, disciplineLabel, allT
       ) : roleTherapists.length === 0 ? (
         <div style={{ fontSize: 11.5, color: '#94A3B8' }}>No other registered {discipline === 'OT' ? 'Occupational' : 'Speech-Language'} therapists available.</div>
       ) : (
-        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
-          <ScheduleTimePicker
-            therapistName={therapistName} setTherapistName={setTherapistName}
-            dayOfWeek={dayOfWeek} setDayOfWeek={setDayOfWeek}
-            timeSlot={timeSlot} setTimeSlot={setTimeSlot}
-            roleTherapists={roleTherapists} takenTimes={takenTimes}
-          />
-          <div style={{ gridColumn: '1/-1', display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
-            <button className="btn-primary" style={{ fontSize: 12, padding: '7px 14px' }} disabled={busy} onClick={assign}>
-              <i className={'fa-solid ' + (busy ? 'fa-spinner fa-spin' : 'fa-calendar-plus')} style={{ marginRight: 5 }} />{busy ? 'Assigning…' : `Assign ${disciplineLabel} Schedule`}
-            </button>
-            {slotConflict && (
-              <button className="btn-secondary" style={{ fontSize: 12, padding: '7px 14px' }} disabled={busy} onClick={addToWaitlist}>
-                <i className="fa-solid fa-user-clock" style={{ marginRight: 5 }} />Add to Waitlist Instead
-              </button>
-            )}
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+          {pendingSlots.map((slot, i) => {
+            // A therapist already picked in another one of these simultaneous
+            // rows is excluded here too (1 session per therapist per week, same
+            // rule as against already-committed schedules), but stays selectable
+            // in ITS OWN row, same "own current pick is never taken from its own
+            // point of view" pattern ScheduleRow already uses.
+            const takenByOtherRows = new Set(pendingSlots.filter((_, j) => j !== i).map(s => s.therapistName).filter(Boolean));
+            const availableTherapists = roleTherapists.filter(t => !takenByOtherRows.has(t.name));
+            // Day/time conflict set for THIS row: real committed schedules
+            // (useTakenTimes itself narrows these to just this discipline,
+            // see selfConflict there) plus this discipline's OTHER pending
+            // rows, merged in so the picker grays an about-to-collide slot
+            // out immediately, not just after a failed Save Changes attempt.
+            // A sibling discipline's picks are deliberately NOT included -
+            // a Combined client can have OT and Speech at the same day/time.
+            const conflictSchedules = [
+              ...allActiveSchedules,
+              ...pendingAsSchedules(pendingSlots.filter((_, j) => j !== i), discipline)
+            ];
+            return (
+              <PendingSlotPicker
+                key={i} slot={slot} onChange={next => updateSlot(i, next)}
+                roleTherapists={availableTherapists} allActiveSchedules={conflictSchedules}
+                discipline={discipline} clientId={clientId} disciplineLabel={disciplineLabel}
+                toast={toast} busy={busy} setBusy={setBusy}
+              />
+            );
+          })}
+          <div style={{ fontSize: 11, color: '#94A3B8' }}>
+            {busy ? <><i className="fa-solid fa-spinner fa-spin" style={{ marginRight: 5 }} />Assigning…</> : `Picked above? It's assigned when you click Save Changes.`}
           </div>
         </div>
       )}
     </div>
   );
-}
+});
 
 export default function EditClientModal({ data, closeModal, toast }) {
   const [first = '', last = ''] = (data.name || '').split(' ');
@@ -460,6 +709,7 @@ export default function EditClientModal({ data, closeModal, toast }) {
   const [recommendedOt, setRecommendedOt] = useState(data.recommendedOt ?? 1);
   const [recommendedSpeech, setRecommendedSpeech] = useState(data.recommendedSpeech ?? 1);
 
+
   // Normally driven by an actual completed "Initial Assessment" reservation
   // (see POST /reservations/:clientId/assign-schedule), but staff can override
   // it by hand here, e.g. intake that happened before this system was in use,
@@ -469,6 +719,14 @@ export default function EditClientModal({ data, closeModal, toast }) {
   // this same modal checks it, rather than only after the whole form is saved.
   const [iaCompleted, setIaCompleted] = useState(!!data.initial_assessment_completed);
   const [iaSaving, setIaSaving] = useState(false);
+
+  // Refs to each discipline's pending (not-yet-assigned) picker, so a single
+  // Save Changes commits everything: the profile fields below AND any
+  // therapist/day/time picked but not yet submitted in either section, no
+  // more separate "Assign ... Schedule" button per discipline.
+  const otSectionRef = useRef(null);
+  const speechSectionRef = useRef(null);
+  const [saving, setSaving] = useState(false);
   async function toggleIaCompleted(checked) {
     if (!data.clientId) { setIaCompleted(checked); return; }
     setIaSaving(true);
@@ -489,7 +747,37 @@ export default function EditClientModal({ data, closeModal, toast }) {
         <div><label className="form-label">First Name</label><input id="ec-first" className="form-input" defaultValue={first} onInput={onNameInput('ec-first-note')} /><div id="ec-first-note" style={{ display: 'none', fontSize: 11, color: '#DC2626', marginTop: 4 }}>{INVALID_NAME_MSG}</div></div>
         <div><label className="form-label">Last Name</label><input id="ec-last" className="form-input" defaultValue={last} onInput={onNameInput('ec-last-note')} /><div id="ec-last-note" style={{ display: 'none', fontSize: 11, color: '#DC2626', marginTop: 4 }}>{INVALID_NAME_MSG}</div></div>
         <div style={{ gridColumn: '1/-1' }}><label className="form-label">Guardian</label><input id="ec-guardian" className="form-input" defaultValue={data.guardian || ''} onInput={onNameInput('ec-guardian-note')} /><div id="ec-guardian-note" style={{ display: 'none', fontSize: 11, color: '#DC2626', marginTop: 4 }}>{INVALID_NAME_MSG}</div></div>
-        <div style={{ gridColumn: '1/-1' }}><label className="form-label">Therapy Type</label><select id="ec-therapy" className="form-select" value={therapyLabel} onChange={e => setTherapyLabel(e.target.value)}><option value="">Not yet assigned</option><option>Occupational Therapy</option><option>Speech Therapy</option><option>Combined</option></select></div>
+        <div style={{ gridColumn: '1/-1' }}>
+          <label className="form-label">Therapy Type</label>
+          <select id="ec-therapy" className="form-select" value={therapyLabel} onChange={e => {
+            const next = e.target.value;
+            // A discipline still covered by an active (not discharged) fixed
+            // schedule can't be dropped out from under it here - the schedule
+            // would keep auto-filling reservations for a discipline the
+            // client's own profile no longer lists. Discharge it first (in
+            // the section below) if the therapy type genuinely needs to change.
+            const dropsOt = otSchedules.length > 0 && next !== 'Occupational Therapy' && next !== 'Combined';
+            const dropsSpeech = speechSchedules.length > 0 && next !== 'Speech Therapy' && next !== 'Combined';
+            if (dropsOt || dropsSpeech) {
+              toast(`Discharge the active ${dropsOt ? 'Occupational' : 'Speech-Language'} Therapy schedule below before changing Therapy Type away from it.`, 'fa-triangle-exclamation');
+              return;
+            }
+            setTherapyLabel(next);
+          }}>
+            <option value="" disabled={otSchedules.length > 0 || speechSchedules.length > 0}>Not yet assigned</option>
+            <option disabled={speechSchedules.length > 0}>Occupational Therapy</option>
+            <option disabled={otSchedules.length > 0}>Speech Therapy</option>
+            <option>Combined</option>
+          </select>
+          {(otSchedules.length > 0 || speechSchedules.length > 0) && (
+            <div style={{ fontSize: 11, color: '#94A3B8', marginTop: 4 }}>
+              <i className="fa-solid fa-lock" style={{ marginRight: 5 }} />
+              {otSchedules.length > 0 && speechSchedules.length > 0
+                ? 'Has active OT and Speech Therapy schedules, discharge one below to narrow the therapy type.'
+                : `Has an active ${otSchedules.length > 0 ? 'OT' : 'Speech Therapy'} schedule, discharge it below to remove that discipline.`}
+            </div>
+          )}
+        </div>
         <div style={{ gridColumn: '1/-1', display: 'flex', alignItems: 'center', justifyContent: 'space-between', border: '1px solid #E2E8F0', borderRadius: 10, padding: '10px 14px', background: '#FAFBFC' }}>
           <div style={{ minWidth: 0 }}>
             <div style={{ fontSize: 12.5, fontWeight: 600, color: '#0F172A' }}>Initial Assessment Completed</div>
@@ -517,11 +805,11 @@ export default function EditClientModal({ data, closeModal, toast }) {
                 <div style={{ gridColumn: '1/-1' }}>
                   <label className="form-label">Occupational Therapy Sessions Recommended Per Week</label>
                   <select className="form-select" value={recommendedOt} onChange={e => setRecommendedOt(e.target.value)}>
-                    <option value="">Not set (no cap)</option>
                     {[1, 2, 3, 4, 5].map(n => <option key={n} value={n}>{n} per week</option>)}
                   </select>
                 </div>
                 <DisciplineScheduleSection
+                  ref={otSectionRef}
                   clientId={data.clientId} discipline="OT" disciplineLabel="Occupational Therapy"
                   allTherapists={data.therapists} legacyAssigned={data.assignedOt} schedules={otSchedules}
                   allActiveSchedules={activeSchedules}
@@ -535,11 +823,11 @@ export default function EditClientModal({ data, closeModal, toast }) {
                 <div style={{ gridColumn: '1/-1' }}>
                   <label className="form-label">Speech Therapy Sessions Recommended Per Week</label>
                   <select className="form-select" value={recommendedSpeech} onChange={e => setRecommendedSpeech(e.target.value)}>
-                    <option value="">Not set (no cap)</option>
                     {[1, 2, 3, 4, 5].map(n => <option key={n} value={n}>{n} per week</option>)}
                   </select>
                 </div>
                 <DisciplineScheduleSection
+                  ref={speechSectionRef}
                   clientId={data.clientId} discipline="Speech" disciplineLabel="Speech Therapy"
                   allTherapists={data.therapists} legacyAssigned={data.assignedSpeech} schedules={speechSchedules}
                   allActiveSchedules={activeSchedules}
@@ -551,20 +839,33 @@ export default function EditClientModal({ data, closeModal, toast }) {
           </>
         )}
       </div>
-      <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 10, marginTop: 20 }}><button className="btn-primary" onClick={() => {
-        const firstVal = document.getElementById('ec-first').value.trim();
-        const lastVal = document.getElementById('ec-last').value.trim();
-        const guardian = document.getElementById('ec-guardian').value.trim();
-        const fullName = firstVal + (lastVal ? ' ' + lastVal : '');
-        const cb = data.onSave;
-        closeModal();
-        if (cb) cb({
-          name: fullName, initials: (firstVal[0] || '') + (lastVal[0] || ''), guardian, therapy_type: therapyType,
-          recommendedOt: recommendedOt === '' ? null : Number(recommendedOt),
-          recommendedSpeech: recommendedSpeech === '' ? null : Number(recommendedSpeech)
-        });
-        toast('Client profile updated: ' + fullName, 'fa-check');
-      }}><i className="fa-solid fa-floppy-disk" style={{ marginRight: 5 }} />Save Changes</button></div>
+      <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 10, marginTop: 20 }}><button className="btn-primary" disabled={saving} onClick={async () => {
+        setSaving(true);
+        try {
+          // Commit any picked-but-not-yet-submitted therapist/day/time in
+          // either discipline section first, if either fails (e.g. a slot
+          // conflict or an incomplete pick), keep the modal open so staff can
+          // fix it rather than silently dropping the profile-field changes too.
+          const otOk = showOt && otSectionRef.current ? await otSectionRef.current.commitPending() : true;
+          const speechOk = showSpeech && speechSectionRef.current ? await speechSectionRef.current.commitPending() : true;
+          if (!otOk || !speechOk) return;
+
+          const firstVal = document.getElementById('ec-first').value.trim();
+          const lastVal = document.getElementById('ec-last').value.trim();
+          const guardian = document.getElementById('ec-guardian').value.trim();
+          const fullName = firstVal + (lastVal ? ' ' + lastVal : '');
+          const cb = data.onSave;
+          closeModal();
+          if (cb) cb({
+            name: fullName, initials: (firstVal[0] || '') + (lastVal[0] || ''), guardian, therapy_type: therapyType,
+            recommendedOt: recommendedOt === '' ? null : Number(recommendedOt),
+            recommendedSpeech: recommendedSpeech === '' ? null : Number(recommendedSpeech)
+          });
+          toast('Client profile updated: ' + fullName, 'fa-check');
+        } finally {
+          setSaving(false);
+        }
+      }}><i className={'fa-solid ' + (saving ? 'fa-spinner fa-spin' : 'fa-floppy-disk')} style={{ marginRight: 5 }} />{saving ? 'Saving…' : 'Save Changes'}</button></div>
     </Modal>
   );
 }
