@@ -15,14 +15,18 @@ function todayPH() {
 export const FILL_HORIZON_DAYS = 14;
 
 /**
- * Every date in [today, today+FILL_HORIZON_DAYS] that falls on `dayOfWeek`
+ * Every date in [today+1, today+FILL_HORIZON_DAYS] that falls on `dayOfWeek`
  * (0=Sunday..6=Saturday, matching recurring_schedules.day_of_week and
- * JS Date#getUTCDay()).
+ * JS Date#getUTCDay()). Starts at tomorrow, never today: today's occurrence
+ * of the schedule's weekday may already have passed by the time this runs
+ * (assignment could happen any time of day), and every other booking path in
+ * this app already requires at least a day's notice - auto-fill shouldn't
+ * silently create a same-day confirmed session nobody can act on in time.
  */
 function upcomingWeekdayDates(dayOfWeek) {
   const dates = [];
   const start = new Date(todayPH() + 'T00:00:00Z');
-  for (let i = 0; i <= FILL_HORIZON_DAYS; i++) {
+  for (let i = 1; i <= FILL_HORIZON_DAYS; i++) {
     const d = new Date(start);
     d.setUTCDate(d.getUTCDate() + i);
     if (d.getUTCDay() === dayOfWeek) dates.push(d.toISOString().slice(0, 10));
