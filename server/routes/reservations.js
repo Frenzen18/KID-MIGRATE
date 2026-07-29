@@ -29,7 +29,9 @@ const cancellationUpload = multer({
 (async () => {
   const { data: buckets } = await db.storage.listBuckets();
   if (!buckets?.some(b => b.name === CANCELLATION_ATTACHMENT_BUCKET)) {
-    await db.storage.createBucket(CANCELLATION_ATTACHMENT_BUCKET, { public: false });
+    const { error } = await db.storage.createBucket(CANCELLATION_ATTACHMENT_BUCKET, { public: false });
+    if (error) console.error('Could not create storage bucket:', error.message);
+    else console.log(`Created "${CANCELLATION_ATTACHMENT_BUCKET}" storage bucket`);
   }
 })();
 

@@ -15,7 +15,7 @@ create table cancellation_requests (
   client_id uuid not null references clients (id) on delete cascade,
   requested_by uuid references profiles (id) on delete set null,
   attachment_path text not null,
-  attachment_bucket text not null default 'private-uploads',
+  attachment_bucket text not null default 'cancellation-attachments',
   note text,
   status text not null default 'pending' check (status in ('pending', 'excused', 'unexcused')),
   reviewed_by uuid references profiles (id) on delete set null,
