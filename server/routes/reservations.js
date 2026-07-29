@@ -1,11 +1,12 @@
 import { Router } from 'express';
+import multer from 'multer';
 import { db } from '../supabase.js';
 import { requireAuth, requireRole } from '../middleware/auth.js';
 import { getTherapistShifts, getAdminStaffShifts, hourLabel, labelToHour, worksOn, isLunchHour, workDayIndex } from './shifts.js';
 import { logAudit } from '../lib/audit.js';
 import { notifyEvent, therapistUserId } from '../lib/notify.js';
 import { rateFor, genInvoiceNo } from '../lib/billing.js';
-import { applyNoShowSideEffects, applyCancelSideEffects, releaseSessionPaymentAsCredit } from '../lib/noShow.js';
+import { applyNoShowSideEffects, applyCancelSideEffects, releaseSessionPaymentAsCredit, applyCancellationReviewSideEffects } from '../lib/noShow.js';
 import { dischargeSchedule, notifyWaitlistForFreedSlot, notifyWaitlistEntry, assignWaitlistEntry } from '../lib/recurringSchedules.js';
 import { fillReservationsForSchedule } from '../lib/recurringFill.js';
 
@@ -13,6 +14,24 @@ const router = Router();
 router.use(requireAuth);
 
 const PAYMENT_METHODS = ['Unpaid', 'Cash', 'Check', 'QRPh'];
+
+const CANCELLATION_ATTACHMENT_BUCKET = 'cancellation-attachments';
+const cancellationUpload = multer({
+  storage: multer.memoryStorage(),
+  limits: { fileSize: 5 * 1024 * 1024 }, // 5MB max
+  fileFilter: (req, file, cb) => cb(null, ['image/jpeg', 'image/png', 'image/webp', 'application/pdf'].includes(file.mimetype))
+});
+
+// Created once at startup if missing, same pattern as cms.js's 'uploads'
+// bucket, but private (no public flag) since a cancellation-proof attachment
+// (e.g. a medical certificate) is guardian-private, only ever served back via
+// a short-lived signed URL, never a guessable public one.
+(async () => {
+  const { data: buckets } = await db.storage.listBuckets();
+  if (!buckets?.some(b => b.name === CANCELLATION_ATTACHMENT_BUCKET)) {
+    await db.storage.createBucket(CANCELLATION_ATTACHMENT_BUCKET, { public: false });
+  }
+})();
 
 // A guardian's self-booking holds the slot as 'awaiting_payment' for this
 // long while they complete QRPh checkout, server/lib/bookingHolds.js sweeps
@@ -1417,6 +1436,139 @@ router.delete('/:id', requireRole('admin'), async (req, res) => {
   });
 
   res.json({ ok: true });
+});
+
+/**
+ * POST /api/reservations/:id/cancellation-requests, multipart with a `file`
+ * field (the proof attachment) and optional `note`. Guardian-only (their own
+ * child's reservation) for a fixed-schedule Speech/OT occurrence — this is
+ * the ONLY cancellation path left to them for these sessions now that manual
+ * booking/cancelling is staff/admin-only, see the client-portal changes.
+ * Creates a 'pending' request for staff/admin to review (see PUT
+ * /cancellation-requests/:id/review below); does not touch the reservation
+ * itself yet.
+ */
+router.post('/:id/cancellation-requests', (req, res, next) => {
+  cancellationUpload.single('file')(req, res, err => {
+    if (err) return res.status(400).json({ error: err.message || 'Upload failed' });
+    next();
+  });
+}, async (req, res) => {
+  if (!req.file) return res.status(400).json({ error: 'A proof attachment (JPEG, PNG, WEBP, or PDF, max 5MB) is required.' });
+
+  const { data: reservation } = await db.from('reservations')
+    .select('*, clients(parent_id, full_name)').eq('id', req.params.id).maybeSingle();
+  if (!reservation) return res.status(404).json({ error: 'Reservation not found' });
+  if (req.user.role === 'parent' && reservation.clients?.parent_id !== req.user.id) {
+    return res.status(403).json({ error: 'Not your child\'s reservation' });
+  }
+  if (!reservation.recurring_schedule_id || reservation.is_makeup) {
+    return res.status(400).json({ error: 'Only a fixed weekly Speech/OT session can be requested for cancellation this way.' });
+  }
+  if (!['confirmed', 'rescheduled'].includes(reservation.status)) {
+    return res.status(400).json({ error: 'This session is no longer in a cancellable state.' });
+  }
+
+  const EXT_FOR_TYPE = { 'image/jpeg': 'jpg', 'image/png': 'png', 'image/webp': 'webp', 'application/pdf': 'pdf' };
+  const ext = EXT_FOR_TYPE[req.file.mimetype] || 'bin';
+  const path = `${reservation.id}-${Date.now()}.${ext}`;
+  const { error: upErr } = await db.storage.from(CANCELLATION_ATTACHMENT_BUCKET).upload(path, req.file.buffer, {
+    contentType: req.file.mimetype, upsert: false
+  });
+  if (upErr) return res.status(500).json({ error: 'Failed to upload attachment: ' + upErr.message });
+
+  const { data: request, error } = await db.from('cancellation_requests').insert({
+    reservation_id: reservation.id,
+    client_id: reservation.client_id,
+    requested_by: req.user.id,
+    attachment_path: path,
+    attachment_bucket: CANCELLATION_ATTACHMENT_BUCKET,
+    note: (req.body?.note || '').trim() || null
+  }).select().single();
+  if (error) {
+    if (error.code === '23505') return res.status(409).json({ error: 'A cancellation request for this session is already pending review.' });
+    return res.status(500).json({ error: error.message });
+  }
+
+  await logAudit({
+    table_name: 'cancellation_requests', record_id: request.id, action: 'create',
+    description: `Cancellation requested for ${reservation.session_type} on ${reservation.date} ${reservation.time_slot} (${reservation.clients?.full_name || 'client'})`,
+    created_by: req.user.id
+  });
+  await notifyEvent(null, {
+    title: 'Cancellation request submitted',
+    body: `${reservation.clients?.full_name || 'A guardian'} requested to cancel ${reservation.session_type} on ${reservation.date} at ${reservation.time_slot}, review it in Reservations.`,
+    icon: 'fa-file-circle-question',
+    target_role: 'admin'
+  });
+  await notifyEvent(null, {
+    title: 'Cancellation request submitted',
+    body: `${reservation.clients?.full_name || 'A guardian'} requested to cancel ${reservation.session_type} on ${reservation.date} at ${reservation.time_slot}, review it in Reservations.`,
+    icon: 'fa-file-circle-question',
+    target_role: 'staff'
+  });
+
+  res.status(201).json(request);
+});
+
+/**
+ * GET /api/reservations/cancellation-requests?status=pending, staff/admin
+ * only. Lists requests newest-first with the reservation + client name joined
+ * in, so the review UI needs no follow-up round trip per row.
+ */
+router.get('/cancellation-requests', requireRole('admin', 'staff'), async (req, res) => {
+  let q = db.from('cancellation_requests')
+    .select('*, reservations(date, time_slot, session_type, therapist_name, status), clients(full_name)')
+    .order('created_at', { ascending: false });
+  if (req.query.status) q = q.eq('status', req.query.status);
+  const { data, error } = await q;
+  if (error) return res.status(500).json({ error: error.message });
+  res.json(data);
+});
+
+/** GET /api/reservations/cancellation-requests/:id/attachment, staff/admin
+ *  only, a short-lived signed URL to view the guardian's proof attachment
+ *  (private bucket, never a public/guessable URL). */
+router.get('/cancellation-requests/:id/attachment', requireRole('admin', 'staff'), async (req, res) => {
+  const { data: request } = await db.from('cancellation_requests').select('attachment_path, attachment_bucket').eq('id', req.params.id).maybeSingle();
+  if (!request) return res.status(404).json({ error: 'Request not found' });
+  const { data, error } = await db.storage.from(request.attachment_bucket).createSignedUrl(request.attachment_path, 60);
+  if (error) return res.status(500).json({ error: error.message });
+  res.json({ url: data.signedUrl });
+});
+
+/**
+ * PUT /api/reservations/cancellation-requests/:id/review  { verdict: 'excused'|'unexcused', note? }
+ * Staff/admin only. Resolves the request and applies the matching side
+ * effects to the underlying reservation (see applyCancellationReviewSideEffects
+ * in server/lib/noShow.js): excused = credit/drop, no fee; unexcused = a
+ * no-show fee always applies, on top of a credit if it was already paid.
+ */
+router.put('/cancellation-requests/:id/review', requireRole('admin', 'staff'), async (req, res) => {
+  const { verdict, note } = req.body || {};
+  if (!['excused', 'unexcused'].includes(verdict)) {
+    return res.status(400).json({ error: "verdict must be 'excused' or 'unexcused'" });
+  }
+  const { data: request } = await db.from('cancellation_requests').select('*, reservations(*)').eq('id', req.params.id).maybeSingle();
+  if (!request) return res.status(404).json({ error: 'Request not found' });
+  if (request.status !== 'pending') return res.status(409).json({ error: 'This request was already reviewed.' });
+
+  const reservation = request.reservations;
+  await db.from('reservations').update({ status: 'cancelled' }).eq('id', reservation.id);
+  await applyCancellationReviewSideEffects(reservation, verdict === 'excused', req.user.id);
+
+  const { data: updated, error } = await db.from('cancellation_requests').update({
+    status: verdict, reviewed_by: req.user.id, reviewed_at: new Date().toISOString(), review_note: (note || '').trim() || null
+  }).eq('id', request.id).select().single();
+  if (error) return res.status(500).json({ error: error.message });
+
+  await logAudit({
+    table_name: 'cancellation_requests', record_id: request.id, action: 'update',
+    description: `Cancellation request for ${reservation.session_type} on ${reservation.date} ${reservation.time_slot} reviewed as ${verdict}`,
+    updated_by: req.user.id
+  });
+
+  res.json(updated);
 });
 
 /**
