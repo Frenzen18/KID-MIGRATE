@@ -129,7 +129,16 @@ export async function assignWaitlistEntry(entry, actorId) {
   }).select().single();
   if (schedErr) throw new Error(schedErr.message);
 
-  await fillReservationsForSchedule(schedule, actorId);
+  // Isolated in its own try/catch: the schedule row itself is already
+  // committed above, so a transient fill failure shouldn't throw out of this
+  // function and fail the whole assignment (client patch/waitlist status
+  // update/audit/notification back in the route caller), the daily sweep
+  // will top up the reservations on its next run regardless.
+  try {
+    await fillReservationsForSchedule(schedule, actorId);
+  } catch (fillErr) {
+    console.error(`[assignWaitlistEntry] fillReservationsForSchedule failed for schedule ${schedule.id} (client ${client.id}, ${sessionType}):`, fillErr);
+  }
 
   const clientPatch = {};
   if (entry.discipline === 'OT') clientPatch.assigned_ot_therapist_name = entry.therapist_name;

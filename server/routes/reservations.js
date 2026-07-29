@@ -502,6 +502,14 @@ router.post('/', async (req, res) => {
     return res.status(400).json({ error: 'Bookings must be made at least a day in advance.' });
   }
 
+  // Speech/OT sessions are now exclusively auto-filled from the client's fixed
+  // weekly recurring schedule (see fillReservationsForSchedule), a guardian can
+  // no longer self-book one directly, only staff/admin (via make-up sessions,
+  // assign-schedule, etc.) can create these rows.
+  if (req.user.role === 'parent' && (b.session_type === 'Occupational Therapy' || b.session_type === 'Speech Therapy')) {
+    return res.status(400).json({ error: 'Speech and Occupational Therapy sessions are scheduled automatically once your fixed weekly slot is assigned, contact the clinic to arrange changes.' });
+  }
+
   const holiday = await isClinicHoliday(b.date);
   if (holiday) {
     return res.status(400).json({ error: `The clinic is closed on ${b.date}${holiday.label ? ` (${holiday.label})` : ''}.` });
@@ -858,10 +866,10 @@ router.post('/', async (req, res) => {
   // directly for the child, either way the child's already got a session that
   // date/discipline. They must wait for it to pass (or cancel it) before
   // submitting another, prevents flooding the queue with repeat requests for
-  // the same therapist/slot. Exempt for a discipline locked to a fixed
-  // recurring schedule, the whole point there is stacking several future
-  // occurrences of that same slot at once.
-  if (req.user.role === 'parent' && !lockedSchedule) {
+  // the same therapist/slot. (Speech/OT is no longer reachable by a parent at
+  // all, see the early guard above, so there's no remaining locked-schedule
+  // exemption to carve out here.)
+  if (req.user.role === 'parent') {
     const today = todayPH();
     const { data: activeForChild } = await db.from('reservations')
       .select('id, date, time_slot, status, session_type')
@@ -1698,8 +1706,16 @@ router.post('/:clientId/assign-schedule', requireRole('admin', 'staff'), async (
   if (schedErr) return res.status(500).json({ error: schedErr.message });
 
   // Fixed Speech/OT slots are pre-filled with confirmed sessions immediately,
-  // no more manual weekly booking — see server/lib/recurringFill.js.
-  await fillReservationsForSchedule(schedule, req.user.id);
+  // no more manual weekly booking — see server/lib/recurringFill.js. Isolated
+  // in its own try/catch: the schedule row itself is already committed above,
+  // so a transient fill failure shouldn't fail the whole assignment (client
+  // patch/audit/notification below), the daily sweep will top up the
+  // reservations on its next run regardless.
+  try {
+    await fillReservationsForSchedule(schedule, req.user.id);
+  } catch (fillErr) {
+    console.error(`[assign-schedule] fillReservationsForSchedule failed for schedule ${schedule.id} (client ${client.id}, ${sessionType}):`, fillErr);
+  }
 
   // A schedule IS this client's intake outcome for that discipline, so it
   // drives the same client-record fields the rest of the app already reads
@@ -1927,6 +1943,20 @@ router.put('/recurring-schedules/:id', requireRole('admin', 'staff'), async (req
     }
 
     notifiedWaitlistClient = await notifyWaitlistForFreedSlot(schedule.discipline, schedule.day_of_week, schedule.time_slot, schedule.therapist_name);
+
+    // The stale future reservations above were just cancelled, so nothing
+    // exists yet under the new day/time/therapist, refill it immediately
+    // rather than waiting on the next daily sweep. Isolated in its own
+    // try/catch: the schedule edit itself already committed above, so a
+    // transient fill failure shouldn't fail the whole edit (waitlist
+    // notification/audit/response below), the daily sweep will top up the
+    // reservations on its next run regardless.
+    try {
+      await fillReservationsForSchedule(updated, req.user.id);
+    } catch (fillErr) {
+      console.error(`[recurring-schedules edit] fillReservationsForSchedule failed for schedule ${updated.id} (client ${client.id}, ${sessionType}):`, fillErr);
+    }
+
     if (client.parent_id) {
       await notifyEvent(null, {
         title: 'Therapy schedule updated',
@@ -2146,6 +2176,18 @@ router.post('/schedule-waitlist/:id/accept', async (req, res) => {
     status: 'active', created_by: req.user.id
   }).select().single();
   if (schedErr) return res.status(500).json({ error: schedErr.message });
+
+  // Same immediate pre-fill as staff-run assign-schedule, otherwise this
+  // guardian's newly-accepted slot sits empty until the next daily sweep.
+  // Isolated in its own try/catch: the schedule row itself is already
+  // committed above, so a transient fill failure shouldn't fail the whole
+  // acceptance (client patch/audit/notifications/response below), the daily
+  // sweep will top up the reservations on its next run regardless.
+  try {
+    await fillReservationsForSchedule(schedule, req.user.id);
+  } catch (fillErr) {
+    console.error(`[schedule-waitlist accept] fillReservationsForSchedule failed for schedule ${schedule.id} (client ${client.id}, ${sessionType}):`, fillErr);
+  }
 
   const clientPatch = {};
   if (entry.discipline === 'OT') clientPatch.assigned_ot_therapist_name = entry.therapist_name;

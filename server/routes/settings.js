@@ -164,14 +164,15 @@ router.post('/holidays', requireAuth, requireRole('admin', 'staff'), async (req,
     return res.status(500).json({ error: error.message });
   }
 
-  // A closure announced AFTER confirmed Speech/OT sessions already exist for
-  // that date (the ahead-of-time case is instead handled by
-  // fillReservationsForSchedule never generating one) auto-cancels them as
-  // excused, no guardian action or attachment needed, it's the clinic's own
-  // closure, not the family's absence.
+  // A closure announced AFTER confirmed sessions already exist for that date
+  // (the ahead-of-time case for Speech/OT is instead handled by
+  // fillReservationsForSchedule never generating one) auto-cancels EVERYTHING
+  // still standing that date as excused, no guardian action or attachment
+  // needed, it's the clinic's own closure, not the family's absence. Not
+  // scoped to Speech/OT: an Initial Assessment (or anything else) booked on a
+  // day the clinic turns out to be closed must not be left standing either.
   const { data: affected } = await db.from('reservations')
-    .select('*').eq('date', date).in('status', ['confirmed', 'rescheduled'])
-    .in('session_type', ['Occupational Therapy', 'Speech Therapy']);
+    .select('*').eq('date', date).in('status', ['confirmed', 'rescheduled']);
   let excusedCount = 0;
   for (const r of affected || []) {
     try {

@@ -1587,7 +1587,7 @@ export default function ParentPortal() {
                 </div>
                 {activeSchedules.map(schedule => {
                   const upcoming = (schedule.reservations || [])
-                    .filter(s => s.date >= todayStr() && ['confirmed', 'rescheduled'].includes(s.status));
+                    .filter(s => s.date >= todayStr() && ['confirmed', 'rescheduled'].includes(s.status) && !s.is_makeup);
                   return (
                     <div key={schedule.id} style={{ padding: 14, borderRadius: 10, border: '1px solid #E2E8F0', background: '#F8FAFC', marginBottom: 10 }}>
                       <div style={{ fontSize: 13, fontWeight: 700, color: '#0F172A' }}>
