@@ -75,7 +75,7 @@ function mapShift(s, idx) {
   };
 }
 
-const RESERVATIONS_TAB_KEYS = ['calendar', 'queue', 'mastercal', 'waitlist', 'scheduling'];
+const RESERVATIONS_TAB_KEYS = ['calendar', 'queue', 'mastercal', 'waitlist', 'cancellations', 'scheduling'];
 
 export default function Reservations({ toast, openModal }) {
   /* ── Section tabs ── */
@@ -146,6 +146,47 @@ export default function Reservations({ toast, openModal }) {
       toast(err.message || 'Failed to assign client', 'fa-triangle-exclamation');
     } finally {
       setWaitlistActionId(null);
+    }
+  }
+
+  /* ── Cancellation Requests tab, guardian-submitted requests awaiting a
+     staff/admin excused/unexcused verdict, see GET/PUT
+     /reservations/cancellation-requests[/:id/review]. ── */
+  const [cancellationRequests, setCancellationRequests] = useState([]);
+  const [cancellationRequestsLoading, setCancellationRequestsLoading] = useState(false);
+  const [reviewingCancellationId, setReviewingCancellationId] = useState(null);
+  const fetchCancellationRequests = useCallback(async () => {
+    setCancellationRequestsLoading(true);
+    try {
+      const data = await api('/reservations/cancellation-requests?status=pending');
+      setCancellationRequests(data || []);
+    } catch (err) {
+      toast('Failed to load cancellation requests: ' + err.message, 'fa-triangle-exclamation');
+    } finally {
+      setCancellationRequestsLoading(false);
+    }
+  }, [toast]);
+  useEffect(() => { if (tab === 'cancellations') fetchCancellationRequests(); }, [tab, fetchCancellationRequests]);
+
+  async function viewCancellationAttachment(id) {
+    try {
+      const { url } = await api('/reservations/cancellation-requests/' + id + '/attachment');
+      window.open(url, '_blank');
+    } catch (err) {
+      toast(err.message || 'Failed to open attachment', 'fa-triangle-exclamation');
+    }
+  }
+
+  async function reviewCancellationRequest(id, verdict) {
+    setReviewingCancellationId(id);
+    try {
+      await api('/reservations/cancellation-requests/' + id + '/review', { method: 'PUT', body: { verdict } });
+      toast(verdict === 'excused' ? 'Marked excused' : 'Marked unexcused, no-show fee applied', 'fa-circle-check');
+      fetchCancellationRequests();
+    } catch (err) {
+      toast(err.message || 'Failed to review cancellation request', 'fa-triangle-exclamation');
+    } finally {
+      setReviewingCancellationId(null);
     }
   }
 
@@ -1223,6 +1264,10 @@ export default function Reservations({ toast, openModal }) {
         <button className={'res-tab' + (tab === 'queue' ? ' active' : '')} onClick={() => setTab('queue')}><i className="fa-solid fa-list-check" style={{ marginRight: 6 }} />Adjust &amp; Cancel Schedules</button>
         <button className={'res-tab' + (tab === 'mastercal' ? ' active' : '')} onClick={() => setTab('mastercal')}><i className="fa-solid fa-table-cells-large" style={{ marginRight: 6 }} />Master Calendar</button>
         <button className={'res-tab' + (tab === 'waitlist' ? ' active' : '')} onClick={() => setTab('waitlist')}><i className="fa-solid fa-user-clock" style={{ marginRight: 6 }} />Waitlist</button>
+        <button className={'res-tab' + (tab === 'cancellations' ? ' active' : '')} onClick={() => setTab('cancellations')}>
+          <i className="fa-solid fa-file-circle-exclamation" style={{ marginRight: 6 }} />Cancellation Requests
+          {cancellationRequests.length > 0 && <span className="pill pill-amber" style={{ fontSize: 10, marginLeft: 6 }}>{cancellationRequests.length}</span>}
+        </button>
         <button className={'res-tab' + (tab === 'scheduling' ? ' active' : '')} onClick={() => setTab('scheduling')}><i className="fa-solid fa-calendar-alt" style={{ marginRight: 6 }} />Employee Scheduling</button>
       </div>
 
@@ -1565,6 +1610,59 @@ export default function Reservations({ toast, openModal }) {
           </div>
         </Modal>
       )}
+
+      {/* ═══════ CANCELLATION REQUESTS ═══════ */}
+      <div style={{ display: tab === 'cancellations' ? '' : 'none' }}>
+        <div className="card" style={{ padding: '22px 0 0', marginBottom: 24 }}>
+          <div style={{ padding: '0 24px 16px', borderBottom: '1px solid #F1F5F9', display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: 10 }}>
+            <div>
+              <div className="section-title">Cancellation Requests</div>
+              <div className="section-sub">Guardian-submitted cancellations awaiting an excused/unexcused review</div>
+            </div>
+            <button className="btn-secondary" style={{ fontSize: 11.5, padding: '6px 12px' }} onClick={fetchCancellationRequests} disabled={cancellationRequestsLoading}>
+              <i className={'fa-solid ' + (cancellationRequestsLoading ? 'fa-spinner fa-spin' : 'fa-rotate')} style={{ marginRight: 5 }} />Refresh
+            </button>
+          </div>
+          <div style={{ padding: '16px 24px' }}>
+            {cancellationRequestsLoading ? (
+              <div style={{ textAlign: 'center', padding: '28px 0', color: '#94A3B8', fontSize: 13 }}><i className="fa-solid fa-spinner fa-spin" style={{ marginRight: 6 }} />Loading cancellation requests…</div>
+            ) : cancellationRequests.length === 0 ? (
+              <div style={{ textAlign: 'center', padding: '28px 0', color: '#94A3B8', fontSize: 13 }}>No pending cancellation requests.</div>
+            ) : cancellationRequests.map(req => (
+              <div key={req.id} style={{ padding: 14, borderRadius: 10, border: '1px solid #E2E8F0', background: '#F8FAFC', marginBottom: 10 }}>
+                <div style={{ fontSize: 13, fontWeight: 700, color: '#0F172A' }}>{req.clients?.full_name || 'Unknown client'}</div>
+                <div style={{ fontSize: 12, color: '#64748B', marginTop: 3 }}>
+                  {req.reservations?.session_type} · {req.reservations?.date ? fmtShort(req.reservations.date) : ''} at {req.reservations?.time_slot} with {req.reservations?.therapist_name}
+                </div>
+                {req.note && <div style={{ fontSize: 12, color: '#334155', marginTop: 6, fontStyle: 'italic' }}>"{req.note}"</div>}
+                <div style={{ marginTop: 8 }}>
+                  <a href="#" onClick={e => { e.preventDefault(); viewCancellationAttachment(req.id); }} style={{ fontSize: 12, color: 'var(--color-primary)' }}>
+                    <i className="fa-solid fa-paperclip" style={{ marginRight: 5 }} />View attachment
+                  </a>
+                </div>
+                <div style={{ display: 'flex', gap: 8, marginTop: 12 }}>
+                  <button
+                    className="btn-edit"
+                    style={{ fontSize: 12, color: 'var(--color-success)' }}
+                    disabled={reviewingCancellationId === req.id}
+                    onClick={() => reviewCancellationRequest(req.id, 'excused')}
+                  >
+                    <i className={'fa-solid ' + (reviewingCancellationId === req.id ? 'fa-spinner fa-spin' : 'fa-circle-check')} style={{ marginRight: 5 }} />Excused Cancellation
+                  </button>
+                  <button
+                    className="btn-edit"
+                    style={{ fontSize: 12, color: '#DC2626' }}
+                    disabled={reviewingCancellationId === req.id}
+                    onClick={() => reviewCancellationRequest(req.id, 'unexcused')}
+                  >
+                    <i className={'fa-solid ' + (reviewingCancellationId === req.id ? 'fa-spinner fa-spin' : 'fa-user-slash')} style={{ marginRight: 5 }} />Unexcused Cancellation
+                  </button>
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      </div>
 
       {/* ═══════════════ EMPLOYEE SCHEDULING ═══════════════ */}
       <div style={{ display: tab === 'scheduling' ? '' : 'none' }}>
