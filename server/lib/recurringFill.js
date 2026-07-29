@@ -2,17 +2,14 @@ import { db } from '../supabase.js';
 import { logAudit } from './audit.js';
 import { isClinicHoliday, ensurePaymentForReservation } from '../routes/reservations.js';
 import { getTherapistShifts, worksOn, isLunchHour, labelToHour } from '../routes/shifts.js';
+import { FILL_HORIZON_DAYS } from './horizon.js';
 
 /** Today's date (YYYY-MM-DD) in Philippine time (UTC+8), independent of server timezone. */
 function todayPH() {
   return new Date(Date.now() + 8 * 60 * 60 * 1000).toISOString().slice(0, 10);
 }
 
-/** How far ahead the auto-fill keeps confirmed reservations generated. Also
- *  doubles as the advance-payment cap (see server/routes/payments.js): a
- *  session simply can't be paid for before it's been generated, so there's
- *  nothing further to guard there beyond this one horizon. */
-export const FILL_HORIZON_DAYS = 14;
+export { FILL_HORIZON_DAYS };
 
 /**
  * Every date in [today+1, today+FILL_HORIZON_DAYS] that falls on `dayOfWeek`

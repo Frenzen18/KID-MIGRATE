@@ -8,7 +8,7 @@ import { generateQrph, retrievePaymentIntent, retryQrphOnIntent } from '../lib/p
 import { markPaidByIntentId } from '../lib/paymongoWebhook.js';
 import { sendMail } from '../mailer.js';
 import { makeLimiter, isProd, MIN } from '../lib/rateLimit.js';
-import { FILL_HORIZON_DAYS } from '../lib/recurringFill.js';
+import { FILL_HORIZON_DAYS } from '../lib/horizon.js';
 
 const router = Router();
 router.use(requireAuth);
