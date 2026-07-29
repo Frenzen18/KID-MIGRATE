@@ -2,7 +2,6 @@ import { useState, useEffect } from 'react';
 import { Modal } from '../../../components/ui.jsx';
 import { api } from '../../../api.js';
 import { useAuth } from '../../../auth.jsx';
-import NewSessionEntryModal from './milestones/NewSessionEntryModal.jsx';
 import ScorecardWizardModal from './milestones/ScorecardWizardModal.jsx';
 import { parseGasRemarks } from '../../../gasRemarks.js';
 
@@ -81,11 +80,6 @@ export default function Milestones({ go, toast, openModal }) {
     return MILESTONES_TAB_KEYS.includes(saved) ? saved : 'scorecard';
   });
   useEffect(() => { localStorage.setItem('kid_admin_milestones_tab', tab); }, [tab]);
-
-  /* ── Page-local modals ── */
-  const [msModal, setMsModal] = useState(null); // { type, param, name, lockDate }
-  const openMsModal = (type, param) => setMsModal({ type, param });
-  const closeModal = () => setMsModal(null);
 
   const [gasDiscipline, setGasDiscipline] = useState(GAS_DISCIPLINES[0]);
   const [gasSets, setGasSets] = useState({});       // { [discipline]: [{...set, items:[]}] }
@@ -696,11 +690,6 @@ export default function Milestones({ go, toast, openModal }) {
         <div>
           <h1 style={{ fontSize: 22, fontWeight: 700, color: '#0F172A', margin: '0 0 4px' }}>Milestone Scorecard</h1>
         </div>
-        {!isGasAdmin && (
-          <div style={{ display: 'flex', gap: 8 }}>
-            <button className="qa-btn" style={{ width: 'auto', padding: '10px 16px', fontSize: 13 }} onClick={() => openMsModal('new-entry')}><i className="fa-solid fa-plus" style={{ color: '#0EA5E9' }} /> Log New Session</button>
-          </div>
-        )}
       </div>
 
 
@@ -1148,10 +1137,6 @@ export default function Milestones({ go, toast, openModal }) {
       <div className="page-footer"><span style={{ fontSize: 12, color: '#94A3B8' }}>© 2026 KID Clinic Information Management System · Milestone Scorecard</span></div>
 
       {/* ═══════ Page-local modals ═══════ */}
-      {msModal && msModal.type === 'new-entry' && (
-        <NewSessionEntryModal onClose={closeModal} toast={toast} />
-      )}
-
       {scorecardClient && (
         <ScorecardWizardModal
           client={scorecardClient}

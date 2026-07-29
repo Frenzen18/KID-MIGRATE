@@ -181,7 +181,12 @@ export default function Reservations({ toast, openModal }) {
     setReviewingCancellationId(id);
     try {
       await api('/reservations/cancellation-requests/' + id + '/review', { method: 'PUT', body: { verdict } });
-      toast(verdict === 'excused' ? 'Marked excused' : 'Marked unexcused, no-show fee applied', 'fa-circle-check');
+      toast(
+        verdict === 'excused' ? 'Marked excused'
+          : verdict === 'unexcused' ? 'Marked unexcused, no-show fee applied'
+          : 'Session will proceed as scheduled',
+        'fa-circle-check'
+      );
       fetchCancellationRequests();
     } catch (err) {
       toast(err.message || 'Failed to review cancellation request', 'fa-triangle-exclamation');
@@ -1617,7 +1622,7 @@ export default function Reservations({ toast, openModal }) {
           <div style={{ padding: '0 24px 16px', borderBottom: '1px solid #F1F5F9', display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: 10 }}>
             <div>
               <div className="section-title">Cancellation Requests</div>
-              <div className="section-sub">Guardian-submitted cancellations awaiting an excused/unexcused review</div>
+              <div className="section-sub">Guardian-submitted cancellations awaiting review: excused, unexcused, or continue the session as scheduled</div>
             </div>
             <button className="btn-secondary" style={{ fontSize: 11.5, padding: '6px 12px' }} onClick={fetchCancellationRequests} disabled={cancellationRequestsLoading}>
               <i className={'fa-solid ' + (cancellationRequestsLoading ? 'fa-spinner fa-spin' : 'fa-rotate')} style={{ marginRight: 5 }} />Refresh
@@ -1640,7 +1645,7 @@ export default function Reservations({ toast, openModal }) {
                     <i className="fa-solid fa-paperclip" style={{ marginRight: 5 }} />View attachment
                   </a>
                 </div>
-                <div style={{ display: 'flex', gap: 8, marginTop: 12 }}>
+                <div style={{ display: 'flex', gap: 8, marginTop: 12, flexWrap: 'wrap' }}>
                   <button
                     className="btn-edit"
                     style={{ fontSize: 12, color: 'var(--color-success)' }}
@@ -1656,6 +1661,15 @@ export default function Reservations({ toast, openModal }) {
                     onClick={() => reviewCancellationRequest(req.id, 'unexcused')}
                   >
                     <i className={'fa-solid ' + (reviewingCancellationId === req.id ? 'fa-spinner fa-spin' : 'fa-user-slash')} style={{ marginRight: 5 }} />Unexcused Cancellation
+                  </button>
+                  <button
+                    className="btn-edit"
+                    style={{ fontSize: 12, color: 'var(--color-primary)' }}
+                    disabled={reviewingCancellationId === req.id}
+                    onClick={() => reviewCancellationRequest(req.id, 'continued')}
+                    title="Deny the cancellation, the session proceeds as originally scheduled"
+                  >
+                    <i className={'fa-solid ' + (reviewingCancellationId === req.id ? 'fa-spinner fa-spin' : 'fa-calendar-check')} style={{ marginRight: 5 }} />Continue Session
                   </button>
                 </div>
               </div>

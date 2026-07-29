@@ -510,6 +510,26 @@ router.put('/:id', requireRole('admin', 'staff', 'ot', 'speech'), async (req, re
     }
   }
 
+  // A discipline still covered by an active (not discharged) fixed schedule
+  // can't be dropped from Therapy Type out from under it - that schedule
+  // would keep auto-filling reservations for a discipline the client's own
+  // profile no longer lists. Server-side backstop for the same guard already
+  // in the Edit Client Profile UI (client/src/portals/admin/modals/EditClientModal.jsx),
+  // in case this is ever hit directly rather than through that form.
+  if ('therapy_type' in patch) {
+    const { data: activeSchedules } = await db.from('recurring_schedules')
+      .select('discipline').eq('client_id', req.params.id).eq('status', 'active');
+    const hasOt = (activeSchedules || []).some(s => s.discipline === 'OT');
+    const hasSpeech = (activeSchedules || []).some(s => s.discipline === 'Speech');
+    const willHaveOt = patch.therapy_type === 'OT' || patch.therapy_type === 'Both';
+    const willHaveSpeech = patch.therapy_type === 'Speech' || patch.therapy_type === 'Both';
+    if ((hasOt && !willHaveOt) || (hasSpeech && !willHaveSpeech)) {
+      return res.status(409).json({
+        error: `Discharge the active ${hasOt && !willHaveOt ? 'Occupational' : 'Speech-Language'} Therapy schedule before changing Therapy Type away from it.`
+      });
+    }
+  }
+
   // Development & Functional Information, any of admin/staff/ot/speech may
   // submit this (validated dynamically against the current field definitions,
   // same as self-register), unlike the fields above which stay admin/staff-only.

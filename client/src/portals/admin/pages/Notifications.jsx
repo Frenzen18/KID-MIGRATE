@@ -22,17 +22,17 @@ function fullDateTime(iso) {
   return new Date(iso).toLocaleString('en-US', { month: 'short', day: 'numeric', year: 'numeric', hour: 'numeric', minute: '2-digit' });
 }
 
-export default function Notifications({ go, toast, openModal, role = 'admin' }) {
-  // An 'ot'/'speech' therapist sees Reminders and their own Notifications
-  // inbox, push-send and configuration stay clinic-wide, admin/staff-only.
+export default function Notifications({ toast, openModal, role = 'admin' }) {
+  // An 'ot'/'speech' therapist sees only their own Notifications inbox,
+  // push-send and configuration stay clinic-wide, admin/staff-only.
   const isTherapist = role === 'ot' || role === 'speech';
 
   /* ── Tab switching ── */
-  const NOTIF_TAB_KEYS = isTherapist ? ['reminders', 'inbox'] : ['reminders', 'inbox', 'push', 'config'];
+  const NOTIF_TAB_KEYS = isTherapist ? ['inbox'] : ['inbox', 'push', 'config'];
   const notifTabStorageKey = 'kid_' + role + '_notifications_tab';
   const [tab, setTab] = useState(() => {
     const saved = localStorage.getItem(notifTabStorageKey);
-    return NOTIF_TAB_KEYS.includes(saved) ? saved : 'reminders';
+    return NOTIF_TAB_KEYS.includes(saved) ? saved : 'inbox';
   });
 
   // The "By Role" target list, minus whichever role is doing the composing,
@@ -135,37 +135,6 @@ export default function Notifications({ go, toast, openModal, role = 'admin' }) 
     }
   }
 
-  /* ── Real reminders (12.1), booking requests only, derived server-side from reservations ── */
-  const [reminders, setReminders] = useState([]);
-  const [remindersLoading, setRemindersLoading] = useState(true);
-  const [dismissedReminders, setDismissedReminders] = useState(new Set());
-
-  useEffect(() => {
-    setRemindersLoading(true);
-    api('/notifications/reminders')
-      .then(data => setReminders(data || []))
-      .catch(() => setReminders([]))
-      .finally(() => setRemindersLoading(false));
-  }, []);
-
-  async function notifyReminder(r) {
-    try {
-      await api('/notifications/reminders/notify', {
-        method: 'POST',
-        body: { type: r.type, record_id: r.record_id, title: r.title, body: r.sub }
-      });
-      toast('Notification sent', 'fa-paper-plane');
-    } catch (e) {
-      toast(e.message || 'Failed to send notification', 'fa-triangle-exclamation');
-    }
-  }
-
-  function dismissReminder(id) {
-    setDismissedReminders(prev => new Set(prev).add(id));
-  }
-
-  const visibleReminders = reminders.filter(r => !dismissedReminders.has(r.id));
-
   function switchNotifTab(t) {
     setTab(t);
     localStorage.setItem(notifTabStorageKey, t);
@@ -216,53 +185,9 @@ export default function Notifications({ go, toast, openModal, role = 'admin' }) 
 
       {/* Section tabs */}
       <div style={{ display: 'flex', gap: 6, marginBottom: 20, flexWrap: 'wrap' }}>
-        <button className={'notif-tab' + (tab === 'reminders' ? ' active' : '')} onClick={() => switchNotifTab('reminders')}><i className="fa-solid fa-clock" style={{ marginRight: 6 }} />Reminders</button>
         <button className={'notif-tab' + (tab === 'inbox' ? ' active' : '')} onClick={() => switchNotifTab('inbox')}><i className="fa-solid fa-inbox" style={{ marginRight: 6 }} />Notifications</button>
         {!isTherapist && <button className={'notif-tab' + (tab === 'push' ? ' active' : '')} onClick={() => switchNotifTab('push')}><i className="fa-solid fa-paper-plane" style={{ marginRight: 6 }} />Push Trigger</button>}
         {!isTherapist && <button className={'notif-tab' + (tab === 'config' ? ' active' : '')} onClick={() => switchNotifTab('config')}><i className="fa-solid fa-sliders" style={{ marginRight: 6 }} />Configuration</button>}
-      </div>
-
-      {/* ═══════ 12.1 REMINDERS TABLE ═══════ */}
-      <div id="tab-reminders" style={{ display: tab === 'reminders' ? 'block' : 'none' }}>
-        <div style={{ marginBottom: 24 }}>
-          <div className="card" style={{ padding: '22px 0 0' }}>
-            <div style={{ padding: '0 24px 16px', borderBottom: '1px solid #F1F5F9' }}>
-              <div className="section-title">Reminders Table</div>
-            </div>
-            <div style={{ overflowX: 'auto' }}>
-              <table className="data-table" id="reminder-table">
-                <thead><tr>
-                  <th style={{ paddingLeft: 24 }}>Reminder</th>
-                  <th>Type</th>
-                  <th>Due</th>
-                  <th>Assigned To</th>
-                  <th style={{ textAlign: 'right', paddingRight: 24 }}>Actions</th>
-                </tr></thead>
-                <tbody>
-                  {remindersLoading ? (
-                    <tr><td colSpan={5} style={{ textAlign: 'center', padding: 32, color: '#64748B', fontSize: 13 }}><i className="fa-solid fa-spinner fa-spin" style={{ marginRight: 8 }} />Loading reminders…</td></tr>
-                  ) : visibleReminders.length === 0 ? (
-                    <tr><td colSpan={5} style={{ textAlign: 'center', padding: 32, color: '#94A3B8', fontSize: 13 }}><i className="fa-solid fa-circle-check" style={{ marginRight: 8, color: '#10B981' }} />Nothing needs attention right now.</td></tr>
-                  ) : visibleReminders.map(r => (
-                    <tr key={r.id}>
-                      <td style={{ paddingLeft: 24 }}><div style={{ fontWeight: 600, color: '#0F172A' }}>{r.title}</div><div style={{ fontSize: 11.5, color: '#94A3B8' }}>{r.sub}</div></td>
-                      <td><span className={'pill ' + r.typePill} style={{ fontSize: 10 }}>{r.type}</span></td>
-                      <td style={{ fontSize: 12.5, fontWeight: 600, color: r.dueUrgent ? '#DC2626' : '#0F172A' }}>{r.due}</td>
-                      <td style={{ fontSize: 12.5 }}>{r.assignedTo}</td>
-                      <td style={{ textAlign: 'right', paddingRight: 24 }}>
-                        <div style={{ display: 'flex', gap: 5, justifyContent: 'flex-end' }}>
-                          {r.link && <a href="#" onClick={e => { e.preventDefault(); go(r.link); }} className="btn-edit" style={{ fontSize: 11, textDecoration: 'none' }}>Review</a>}
-                          <button className="btn-edit" style={{ fontSize: 11 }} onClick={() => notifyReminder(r)}>Notify</button>
-                          <button className="btn-edit" style={{ fontSize: 11 }} onClick={() => dismissReminder(r.id)}>Dismiss</button>
-                        </div>
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-          </div>
-        </div>
       </div>
 
       {/* ═══════ 12.2 NOTIFICATIONS INBOX ═══════ */}

@@ -95,39 +95,36 @@ async function activeScheduleTherapistNames(clientId, sessionType) {
  * never re-filled afterward (e.g. cancelled then immediately rebooked at the
  * same date/time to fix a mistake isn't a real gap). Returns the distinct
  * therapist names with at least one such unresolved miss.
+ *
+ * Accumulates across ALL time rather than resetting every week: every real
+ * miss (ever) adds one entitlement per therapist, and every make-up actually
+ * booked (ever) spends one, so what's left is simply misses-minus-used, a
+ * running balance rather than a "use it by Sunday or lose it" window. A
+ * client who racks up several misses without getting a make-up in right away
+ * keeps every one of them banked until they're actually used.
  */
 async function outstandingMakeupTherapists(clientId, sessionType) {
   const { data } = await db.from('reservations')
-    .select('id, date, therapist_name, status, is_makeup, created_at').eq('client_id', clientId).eq('session_type', sessionType);
+    .select('id, date, therapist_name, status, is_makeup').eq('client_id', clientId).eq('session_type', sessionType);
   const all = data || [];
-  // Scoped to THIS week only, not any week, or a client could pre-emptively
-  // cancel a session weeks ahead of time and use that cancellation to justify
-  // an extra make-up session right now, before the original session was even
-  // supposed to happen, manufacturing sessions on demand instead of only
-  // catching up a real, already-due miss. Resets every Monday.
-  const { weekStart, weekEnd } = currentWeekRangePH();
-  const inWeek = (dateStr) => dateStr >= weekStart && dateStr <= weekEnd;
-  // PH-local calendar date a timestamp falls on, same +8h convention as todayPH().
-  const phDateOf = (iso) => new Date(new Date(iso).getTime() + 8 * 60 * 60 * 1000).toISOString().slice(0, 10);
 
-  // A real miss: an actual (non-make-up) cancellation/no-show dated this
-  // week, excluding one immediately corrected by a same-day/same-therapist
-  // rebooking (that's a reschedule dance, not a genuine miss).
-  const misses = all.filter(r => !r.is_makeup && ['cancelled', 'no_show'].includes(r.status) && r.therapist_name && inWeek(r.date)
+  // A real miss: an actual (non-make-up) cancellation/no-show, excluding one
+  // immediately corrected by a same-day/same-therapist rebooking (that's a
+  // reschedule dance, not a genuine miss).
+  const misses = all.filter(r => !r.is_makeup && ['cancelled', 'no_show'].includes(r.status) && r.therapist_name
     && !all.some(other => other.id !== r.id && other.therapist_name === r.therapist_name
       && other.date === r.date && !['cancelled', 'declined'].includes(other.status)));
   const missCounts = {};
   for (const m of misses) missCounts[m.therapist_name] = (missCounts[m.therapist_name] || 0) + 1;
 
-  // Each make-up BOOKED this week spends one of this week's entitlements,
-  // permanently, regardless of what its own session date is or what later
-  // happens to it (completed, cancelled, no-showed). Without this, cancelling
-  // a make-up would look exactly like a fresh miss and mint another make-up,
-  // looping forever; and a client could otherwise use one real miss to book
-  // an unlimited number of make-ups.
+  // Every make-up ever booked (whatever later happens to it - completed,
+  // cancelled, no-showed) permanently spends one entitlement. Without this,
+  // cancelling a make-up would look exactly like a fresh miss and mint
+  // another make-up, looping forever; and a client could otherwise use one
+  // real miss to book an unlimited number of make-ups.
   const usedCounts = {};
   for (const r of all) {
-    if (r.is_makeup && r.status !== 'declined' && r.therapist_name && r.created_at && inWeek(phDateOf(r.created_at))) {
+    if (r.is_makeup && r.status !== 'declined' && r.therapist_name) {
       usedCounts[r.therapist_name] = (usedCounts[r.therapist_name] || 0) + 1;
     }
   }
@@ -275,7 +272,7 @@ async function getClinicHours(date) {
  * the facility, so an hour with no admin/staff on shift (or all of them at
  * lunch) isn't offered, even if it falls within clinic operating hours.
  */
-async function slotInfoForDate(date, restrictToTherapist, serviceType) {
+async function slotInfoForDate(date, restrictToTherapist, serviceType, excludeClientId) {
   if (await isClinicHoliday(date)) return [];
   // A client can have more than one active schedule (and therapist) for the
   // same discipline, so callers may pass an array of names to restrict to
@@ -335,10 +332,17 @@ async function slotInfoForDate(date, restrictToTherapist, serviceType) {
   if (restrictNames) shifts = shifts.filter(s => restrictNames.includes(s.name));
   if (!shifts.length) return [];
 
-  const { data: active, error } = await db.from('reservations')
+  let activeQuery = db.from('reservations')
     .select('*, clients(full_name, client_code), payments(status, fee_type)')
     .eq('date', date)
     .not('status', 'in', '(cancelled,declined)');
+  // Excludes a client's OWN already-booked reservation from the capacity
+  // count - used when re-checking availability for a schedule that client
+  // already holds (editing it in place), otherwise their own existing
+  // session on that exact date/hour/therapist fills the one slot of
+  // capacity and makes their own current slot look "taken" to themselves.
+  if (excludeClientId) activeQuery = activeQuery.neq('client_id', excludeClientId);
+  const { data: active, error } = await activeQuery;
   if (error) throw new Error(error.message);
 
   const minH = Math.min(...shifts.map(s => s.start_hour));
@@ -456,6 +460,10 @@ router.get('/', async (req, res) => {
  * shift (used when staff explicitly picks a therapist, e.g. for an assessment).
  * Otherwise, when client_id is given and that client has an Assigned Therapist,
  * slots are narrowed to that therapist's own shift instead of the whole clinic's.
+ * `exclude_client_id`, when given, leaves that client's own existing bookings
+ * out of the capacity count (see EditClientModal.jsx's useTakenTimes) - editing
+ * a client's own already-assigned schedule in place must not show their own
+ * current slot as "occupied" just because they're the one occupying it.
  */
 router.get('/slots', async (req, res) => {
   const date = req.query.date;
@@ -480,7 +488,7 @@ router.get('/slots', async (req, res) => {
         restrictToTherapist = scheduleNames.length ? scheduleNames : assignedTherapistFor(client, fallbackType);
       }
     }
-    res.json(await slotInfoForDate(date, restrictToTherapist, req.query.session_type));
+    res.json(await slotInfoForDate(date, restrictToTherapist, req.query.session_type, req.query.exclude_client_id || null));
   } catch (e) {
     res.status(500).json({ error: e.message });
   }
@@ -536,11 +544,10 @@ router.post('/', async (req, res) => {
   // before booking resumes. Only blocks creating a brand new reservation,
   // already-booked future sessions are completely unaffected and can still
   // be rescheduled/cancelled/managed normally.
-  // Exempt for a make-up session: the miss that likely created this very
-  // fee also opened a make-up entitlement that expires at the end of the
-  // week (see outstandingMakeupTherapists below), so blocking the make-up
-  // itself until the fee is paid would let the family's catch-up window
-  // quietly expire over an unrelated billing dispute, defeating the whole
+  // Exempt for a make-up session: it's catching up an existing, banked miss
+  // (see outstandingMakeupTherapists below), not a new regular booking, so
+  // blocking it until an unrelated fee is settled would hold the family's
+  // catch-up hostage to a separate billing dispute, defeating the whole
   // point of a make-up.
   if (b.is_makeup !== true) {
     const { data: outstandingFees } = await db.from('payments')
@@ -1522,6 +1529,46 @@ router.post('/:id/cancellation-requests', (req, res, next) => {
 });
 
 /**
+ * DELETE /api/reservations/cancellation-requests/:id, guardian-only, withdraws
+ * their OWN still-pending cancellation request (e.g. they changed their mind,
+ * or attached the wrong file and want to resubmit). Only 'pending' requests
+ * can be withdrawn, once staff/admin has reviewed it the verdict already took
+ * effect (fee/credit applied or session confirmed to continue) and undoing
+ * that here would bypass the whole review process. Deletes the row outright
+ * (not a status change) so the reservation's unique "one live pending request"
+ * index frees up immediately and the guardian can submit a fresh one right away.
+ */
+router.delete('/cancellation-requests/:id', async (req, res) => {
+  const { data: request } = await db.from('cancellation_requests').select('*, clients(parent_id, full_name)').eq('id', req.params.id).maybeSingle();
+  if (!request) return res.status(404).json({ error: 'Request not found' });
+  if (req.user.role === 'parent' && request.clients?.parent_id !== req.user.id) {
+    return res.status(403).json({ error: 'Not your child\'s request' });
+  } else if (!['parent', 'admin', 'staff'].includes(req.user.role)) {
+    return res.status(403).json({ error: 'Forbidden' });
+  }
+  if (request.status !== 'pending') {
+    return res.status(409).json({ error: 'This request was already reviewed and can no longer be withdrawn.' });
+  }
+
+  // Best-effort cleanup of the uploaded proof file, a leftover orphaned
+  // attachment in storage isn't worth failing the withdrawal over.
+  if (request.attachment_bucket && request.attachment_path) {
+    await db.storage.from(request.attachment_bucket).remove([request.attachment_path]).catch(() => {});
+  }
+
+  const { error } = await db.from('cancellation_requests').delete().eq('id', request.id);
+  if (error) return res.status(500).json({ error: error.message });
+
+  await logAudit({
+    table_name: 'cancellation_requests', record_id: request.id, action: 'delete',
+    description: `Cancellation request withdrawn (${request.clients?.full_name || 'client'})`,
+    updated_by: req.user.id
+  });
+
+  res.json({ ok: true });
+});
+
+/**
  * GET /api/reservations/cancellation-requests?status=pending, staff/admin see
  * every request (their review queue). A guardian (`parent` role) may also
  * call this to see their OWN children's requests only - scoped by client_id
@@ -1570,16 +1617,20 @@ router.get('/cancellation-requests/:id/attachment', requireRole('admin', 'staff'
 });
 
 /**
- * PUT /api/reservations/cancellation-requests/:id/review  { verdict: 'excused'|'unexcused', note? }
+ * PUT /api/reservations/cancellation-requests/:id/review  { verdict: 'excused'|'unexcused'|'continued', note? }
  * Staff/admin only. Resolves the request and applies the matching side
  * effects to the underlying reservation (see applyCancellationReviewSideEffects
  * in server/lib/noShow.js): excused = credit/drop, no fee; unexcused = a
- * no-show fee always applies, on top of a credit if it was already paid.
+ * no-show fee always applies, on top of a credit if it was already paid;
+ * continued = staff decided the cancellation doesn't hold up (or the guardian
+ * changed their mind) and the session proceeds as originally scheduled - the
+ * reservation is left completely untouched (no cancel, no fee, no credit), it
+ * only resolves the REQUEST itself so it drops off the review queue.
  */
 router.put('/cancellation-requests/:id/review', requireRole('admin', 'staff'), async (req, res) => {
   const { verdict, note } = req.body || {};
-  if (!['excused', 'unexcused'].includes(verdict)) {
-    return res.status(400).json({ error: "verdict must be 'excused' or 'unexcused'" });
+  if (!['excused', 'unexcused', 'continued'].includes(verdict)) {
+    return res.status(400).json({ error: "verdict must be 'excused', 'unexcused', or 'continued'" });
   }
   const { data: request } = await db.from('cancellation_requests').select('*, reservations(*)').eq('id', req.params.id).maybeSingle();
   if (!request) return res.status(404).json({ error: 'Request not found' });
@@ -1612,8 +1663,23 @@ router.put('/cancellation-requests/:id/review', requireRole('admin', 'staff'), a
       error: `This session's outcome was already resolved another way (marked ${reservation.status}). Nothing to review.`
     });
   }
-  await db.from('reservations').update({ status: 'cancelled' }).eq('id', reservation.id);
-  await applyCancellationReviewSideEffects(reservation, verdict === 'excused', req.user.id);
+
+  if (verdict === 'continued') {
+    // Session proceeds as scheduled, reservation stays confirmed/rescheduled
+    // exactly as it was; only the request itself is resolved.
+    const { data: client } = await db.from('clients').select('parent_id').eq('id', reservation.client_id).maybeSingle();
+    if (client?.parent_id) {
+      await notifyEvent(null, {
+        title: 'Cancellation request declined',
+        body: `Your cancellation request for ${reservation.date} at ${reservation.time_slot} was not approved, the session will proceed as originally scheduled.`,
+        icon: 'fa-calendar-check',
+        target_user: client.parent_id
+      });
+    }
+  } else {
+    await db.from('reservations').update({ status: 'cancelled' }).eq('id', reservation.id);
+    await applyCancellationReviewSideEffects(reservation, verdict === 'excused', req.user.id);
+  }
 
   const { data: updated, error } = await db.from('cancellation_requests').update({
     status: verdict, reviewed_by: req.user.id, reviewed_at: new Date().toISOString(), review_note: (note || '').trim() || null
@@ -1695,16 +1761,17 @@ router.post('/:clientId/assign-schedule', requireRole('admin', 'staff'), async (
     return res.status(409).json({ error: `${therapist_name} already has an active schedule with ${client.full_name}, one session per therapist per week.` });
   }
 
-  // The child can only be in one session at a time, so a new schedule can
-  // never land on a day/time they're already committed to, regardless of
-  // discipline or therapist (e.g. a Combined client's 2nd weekly OT session,
-  // or their Speech schedule, must fall on a different day/time than any
-  // schedule they already have, not just a different one from the same discipline).
-  const sameSlotForClient = (activeForClient || []).find(s => s.day_of_week === day_of_week && s.time_slot === time_slot);
+  // Two different therapists of the SAME discipline can never both hold this
+  // client at the same day/time (nonsensical: a discipline's own 2nd+ weekly
+  // session just needs a different day/time, never a same-time double-book).
+  // A DIFFERENT discipline at the same day/time is allowed (e.g. a Combined
+  // client's OT and Speech Therapy running concurrently, co-treatment or two
+  // separate therapists/rooms), so this only checks within `discipline`.
+  const sameSlotForClient = (activeForClient || []).find(s => s.discipline === discipline && s.day_of_week === day_of_week && s.time_slot === time_slot);
   if (sameSlotForClient) {
-    const conflictType = sameSlotForClient.discipline === 'OT' ? 'Occupational Therapy' : 'Speech Therapy';
     return res.status(409).json({
-      error: `${client.full_name} already has a ${conflictType} schedule ${WEEKDAY_NAMES[day_of_week]}s at ${time_slot} with ${sameSlotForClient.therapist_name}. Pick a different day or time.`
+      error: `${client.full_name} already has a ${sessionType} schedule ${WEEKDAY_NAMES[day_of_week]}s at ${time_slot} with ${sameSlotForClient.therapist_name}. Pick a different day or time.`,
+      scheduleConflict: true
     });
   }
 
@@ -1819,7 +1886,7 @@ router.get('/:clientId/schedules', async (req, res) => {
   const today = todayPH();
   for (const schedule of schedules || []) {
     const { data: sessions } = await db.from('reservations')
-      .select('id, date, time_slot, status, no_show_excused, is_makeup')
+      .select('id, date, time_slot, status, no_show_excused, is_makeup, administrative_cancel')
       .eq('recurring_schedule_id', schedule.id)
       .order('date', { ascending: true });
     schedule.reservations = sessions || [];
@@ -1904,6 +1971,7 @@ router.put('/recurring-schedules/:id', requireRole('admin', 'staff'), async (req
   if (!client) return res.status(404).json({ error: 'Client not found' });
 
   const requiredRole = schedule.discipline === 'OT' ? 'ot' : 'speech';
+  const sessionType = schedule.discipline === 'OT' ? 'Occupational Therapy' : 'Speech Therapy';
   const shiftsAll = await getTherapistShifts();
   const pickedTherapist = shiftsAll.find(s => s.name === newTherapist);
   if (!pickedTherapist || pickedTherapist.role !== requiredRole) {
@@ -1911,12 +1979,16 @@ router.put('/recurring-schedules/:id', requireRole('admin', 'staff'), async (req
   }
 
   const { data: othersForClient } = await db.from('recurring_schedules')
-    .select('id, therapist_name, day_of_week, time_slot').eq('client_id', client.id).eq('status', 'active').neq('id', schedule.id);
+    .select('id, discipline, therapist_name, day_of_week, time_slot').eq('client_id', client.id).eq('status', 'active').neq('id', schedule.id);
   if ((othersForClient || []).some(s => s.therapist_name === newTherapist)) {
     return res.status(409).json({ error: `${newTherapist} already has an active schedule with ${client.full_name}, one session per therapist per week.` });
   }
-  if ((othersForClient || []).some(s => s.day_of_week === newDay && s.time_slot === newTime)) {
-    return res.status(409).json({ error: `${client.full_name} already has a schedule ${WEEKDAY_NAMES[newDay]}s at ${newTime}.` });
+  // Same-discipline same-day/time is never valid (two different therapists
+  // of the same discipline can't both hold this client at once); a different
+  // discipline at the same day/time is fine (e.g. concurrent OT + Speech for
+  // a Combined client), so this only checks within this schedule's own discipline.
+  if ((othersForClient || []).some(s => s.discipline === schedule.discipline && s.day_of_week === newDay && s.time_slot === newTime)) {
+    return res.status(409).json({ error: `${client.full_name} already has a ${sessionType} schedule ${WEEKDAY_NAMES[newDay]}s at ${newTime}.`, scheduleConflict: true });
   }
 
   const { data: slotTakenBy } = await db.from('recurring_schedules')
@@ -1929,7 +2001,6 @@ router.put('/recurring-schedules/:id', requireRole('admin', 'staff'), async (req
     });
   }
 
-  const sessionType = schedule.discipline === 'OT' ? 'Occupational Therapy' : 'Speech Therapy';
   const previewDate = (() => {
     const d = new Date(Date.now() + 8 * 60 * 60 * 1000);
     d.setUTCHours(0, 0, 0, 0);
@@ -1966,10 +2037,11 @@ router.put('/recurring-schedules/:id', requireRole('admin', 'staff'), async (req
     // becomes unmanageable (can't be rescheduled, the parent can't self-cancel
     // it, see the "schedule no longer active"-style guards elsewhere) and can
     // silently distort the 3-consecutive-absence math. Cancelled outright
-    // instead - no_show_excused stays true and checkConsecutiveAbsences is
-    // never invoked, this is an administrative schedule move, not a real
-    // miss, it must never count as one - so staff/guardian can rebook fresh
-    // under the corrected day/time.
+    // instead - administrative_cancel: true (see migration_administrative_cancel_flag.sql)
+    // keeps it out of checkConsecutiveAbsences' own query AND the Edit Client
+    // Profile attendance-streak display, this is an administrative schedule
+    // move, not a real miss, it must never count or read as one - so
+    // staff/guardian can rebook fresh under the corrected day/time.
     const { data: staleFuture } = await db.from('reservations')
       .select('*').eq('recurring_schedule_id', schedule.id)
       .in('status', ['confirmed', 'rescheduled', 'awaiting_payment'])
@@ -1980,7 +2052,7 @@ router.put('/recurring-schedules/:id', requireRole('admin', 'staff'), async (req
       if (matchesNewConfig) continue;
       await db.from('payments').delete().eq('reservation_id', r.id).eq('status', 'pending');
       const credited = await releaseSessionPaymentAsCredit(r, 'Schedule updated');
-      await db.from('reservations').update({ status: 'cancelled', no_show_excused: true }).eq('id', r.id);
+      await db.from('reservations').update({ status: 'cancelled', no_show_excused: true, administrative_cancel: true }).eq('id', r.id);
       reconciledCount++;
       if (r.created_by) {
         await notifyEvent(null, {
@@ -2203,8 +2275,11 @@ router.post('/schedule-waitlist/:id/accept', async (req, res) => {
   if (alreadyHasTherapist) {
     return res.status(409).json({ error: `${entry.therapist_name} already has an active schedule with ${client.full_name}, one session per therapist per week. Please contact the clinic.` });
   }
+  // Same-discipline same-day/time only, see the matching check in POST
+  // assign-schedule - a different discipline at the same day/time is fine.
   const { data: clientSameSlot } = await db.from('recurring_schedules')
-    .select('id').eq('client_id', client.id).eq('day_of_week', entry.day_of_week).eq('time_slot', entry.time_slot).eq('status', 'active').maybeSingle();
+    .select('id').eq('client_id', client.id).eq('discipline', entry.discipline)
+    .eq('day_of_week', entry.day_of_week).eq('time_slot', entry.time_slot).eq('status', 'active').maybeSingle();
   if (clientSameSlot) {
     return res.status(409).json({ error: `${client.full_name} already has a schedule at that day and time. Please contact the clinic.` });
   }

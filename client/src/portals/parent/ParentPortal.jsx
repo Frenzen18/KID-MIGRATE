@@ -349,6 +349,10 @@ export default function ParentPortal() {
   const [cancellationFile, setCancellationFile] = useState(null);
   const [cancellationNote, setCancellationNote] = useState('');
   const [submittingCancellationRequest, setSubmittingCancellationRequest] = useState(false);
+  // Which pending cancellation request is currently being withdrawn (see
+  // withdrawCancellationRequest below), lets just that one row's button show
+  // a spinner instead of freezing the whole schedule card.
+  const [withdrawingRequestId, setWithdrawingRequestId] = useState(null);
 
   /* ── Progress page state ── */
 
@@ -366,10 +370,16 @@ export default function ParentPortal() {
   // (a growing mixed list of session payments, credits, and fees is hard to
   // scan for e.g. "just my retainer fees" otherwise).
   const [invoiceTypeFilter, setInvoiceTypeFilter] = useState('all');
+  const [invoiceSearchQuery, setInvoiceSearchQuery] = useState('');
   // Locked (not-yet-payable) invoices are non-actionable, showing every one of
   // them in full every time buries the invoices actually worth looking at.
   // Collapsed by default, one line to expand.
   const [showLockedInvoices, setShowLockedInvoices] = useState(false);
+  // "My Booking Requests" / "My Cancellation Requests" on the Book Session
+  // page are collapsible, expanded by default so existing behavior/visibility
+  // doesn't change, just adds a way to tuck them away once read.
+  const [showBookingRequests, setShowBookingRequests] = useState(true);
+  const [showCancellationRequests, setShowCancellationRequests] = useState(true);
 
   /* ── Notifications page state ── */
   // Full history can grow into the hundreds, rendering it all at once is what
@@ -901,8 +911,14 @@ export default function ParentPortal() {
     if (invoiceTypeFilter === 'session') return p.fee_type === 'session' && !!p.reservation_id;
     return p.fee_type === invoiceTypeFilter;
   };
+  const invoiceSearchMatches = p => {
+    const q = invoiceSearchQuery.trim().toLowerCase();
+    if (!q) return true;
+    return (p.invoice_no || '').toLowerCase().includes(q);
+  };
   const filteredInvoices = [...paidPayments, ...refundedPayments, ...waivedPayments]
     .filter(invoiceTypeMatches)
+    .filter(invoiceSearchMatches)
     .sort((a, b) => {
       const da = (a.paid_at || a.created_at || '').slice(0, 10);
       const db_ = (b.paid_at || b.created_at || '').slice(0, 10);
@@ -1037,7 +1053,11 @@ export default function ParentPortal() {
    *  with FormData (same pattern as uploadChildPhoto above) since this is a
    *  multipart upload, not a plain JSON call `api()` handles. */
   async function submitCancellationRequest() {
-    if (!cancellationRequestSession || !cancellationFile) return;
+    if (!cancellationRequestSession) return;
+    if (!cancellationFile) {
+      toast('Please attach a proof file before submitting your request', 'fa-triangle-exclamation');
+      return;
+    }
     setSubmittingCancellationRequest(true);
     try {
       const formData = new FormData();
@@ -1057,6 +1077,23 @@ export default function ParentPortal() {
       toast(err.message, 'fa-triangle-exclamation');
     } finally {
       setSubmittingCancellationRequest(false);
+    }
+  }
+
+  /** Withdraws the guardian's own still-pending cancellation request (e.g.
+   *  they changed their mind, or want to resubmit with a different file), see
+   *  DELETE /reservations/cancellation-requests/:id. Only 'pending' requests
+   *  can be withdrawn, once reviewed the verdict already took effect. */
+  async function withdrawCancellationRequest(id) {
+    setWithdrawingRequestId(id);
+    try {
+      await api('/reservations/cancellation-requests/' + id, { method: 'DELETE' });
+      toast('Cancellation request withdrawn', 'fa-rotate-left');
+      fetchCancellationRequests();
+    } catch (err) {
+      toast(err.message || 'Failed to withdraw request', 'fa-triangle-exclamation');
+    } finally {
+      setWithdrawingRequestId(null);
     }
   }
 
@@ -1630,12 +1667,21 @@ export default function ParentPortal() {
                           // submitting a second one would just 409 from the server's
                           // unique constraint, so hide the button instead of letting the
                           // guardian hit that confusing raw error a second time (finding 8).
-                          const alreadyRequested = cancellationRequests.some(r => r.reservation_id === session.id && r.status === 'pending');
+                          const pendingRequest = cancellationRequests.find(r => r.reservation_id === session.id && r.status === 'pending');
                           return (
-                            <div key={session.id} style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', fontSize: 12.5, padding: '6px 0', borderTop: '1px solid #E2E8F0' }}>
+                            <div key={session.id} style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', fontSize: 12.5, padding: '6px 0', borderTop: '1px solid #E2E8F0', gap: 8 }}>
                               <span>{fmtDate(session.date)} · {session.time_slot}</span>
-                              {alreadyRequested ? (
-                                <span className="pill pill-blue" style={{ fontSize: 10.5 }}>Cancellation pending review</span>
+                              {pendingRequest ? (
+                                <span style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                                  <span className="pill pill-blue" style={{ fontSize: 10.5 }}>Cancellation pending review</span>
+                                  <button
+                                    className="btn-secondary" style={{ padding: '4px 10px', fontSize: 11.5 }}
+                                    disabled={withdrawingRequestId === pendingRequest.id}
+                                    onClick={() => withdrawCancellationRequest(pendingRequest.id)}
+                                  >
+                                    <i className={'fa-solid ' + (withdrawingRequestId === pendingRequest.id ? 'fa-spinner fa-spin' : 'fa-rotate-left')} style={{ marginRight: 5 }} />Withdraw
+                                  </button>
+                                </span>
                               ) : tooSoonToRequest ? (
                                 <span style={{ fontSize: 11, color: '#94A3B8' }} title="Too close to the session date for a cancellation request to be reviewed in time. Contact the clinic directly.">Too late to request</span>
                               ) : (
@@ -1659,22 +1705,28 @@ export default function ParentPortal() {
                 /reservations/cancellation-requests?client_id= (guardian-scoped). */}
             {cancellationRequests.length > 0 && (
               <div className="card" style={{ padding: '18px 20px', marginBottom: 16 }}>
-                <div style={{ fontSize: 14, fontWeight: 700, color: '#0F172A', marginBottom: 10 }}>
-                  <i className="fa-solid fa-file-circle-question" style={{ color: '#4F46E5', marginRight: 7 }} />
-                  My Cancellation Requests
+                <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', cursor: 'pointer', marginBottom: showCancellationRequests ? 10 : 0 }} onClick={() => setShowCancellationRequests(v => !v)}>
+                  <div style={{ fontSize: 14, fontWeight: 700, color: '#0F172A' }}>
+                    <i className="fa-solid fa-file-circle-question" style={{ color: '#4F46E5', marginRight: 7 }} />
+                    My Cancellation Requests
+                    <span style={{ fontSize: 11.5, fontWeight: 600, color: '#94A3B8', marginLeft: 8 }}>({cancellationRequests.length})</span>
+                  </div>
+                  <i className={'fa-solid ' + (showCancellationRequests ? 'fa-chevron-up' : 'fa-chevron-down')} style={{ fontSize: 12, color: '#94A3B8' }} />
                 </div>
-                <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
-                  {cancellationRequests.map(req => {
-                    const pillClass = req.status === 'excused' ? 'pill-green' : req.status === 'unexcused' ? 'pill-red' : 'pill-blue';
-                    const statusLabel = req.status === 'excused' ? 'Excused' : req.status === 'unexcused' ? 'Unexcused' : 'Pending';
-                    return (
-                      <div key={req.id} style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', fontSize: 12.5, padding: '6px 0', borderTop: '1px solid #E2E8F0', gap: 10, flexWrap: 'wrap' }}>
-                        <span>{req.reservations?.session_type} · {req.reservations?.date ? fmtDate(req.reservations.date) : ''}{req.reservations?.time_slot ? ' · ' + req.reservations.time_slot : ''}</span>
-                        <span className={'pill ' + pillClass} style={{ fontSize: 10.5 }}>{statusLabel}</span>
-                      </div>
-                    );
-                  })}
-                </div>
+                {showCancellationRequests && (
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+                    {cancellationRequests.map(req => {
+                      const pillClass = req.status === 'excused' ? 'pill-green' : req.status === 'unexcused' ? 'pill-red' : req.status === 'continued' ? 'pill-teal' : 'pill-blue';
+                      const statusLabel = req.status === 'excused' ? 'Excused' : req.status === 'unexcused' ? 'Unexcused' : req.status === 'continued' ? 'Session Continued' : 'Pending';
+                      return (
+                        <div key={req.id} style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', fontSize: 12.5, padding: '6px 0', borderTop: '1px solid #E2E8F0', gap: 10, flexWrap: 'wrap' }}>
+                          <span>{req.reservations?.session_type} · {req.reservations?.date ? fmtDate(req.reservations.date) : ''}{req.reservations?.time_slot ? ' · ' + req.reservations.time_slot : ''}</span>
+                          <span className={'pill ' + pillClass} style={{ fontSize: 10.5 }}>{statusLabel}</span>
+                        </div>
+                      );
+                    })}
+                  </div>
+                )}
               </div>
             )}
             <div style={{ display: 'grid', gridTemplateColumns: '1fr', gap: 16, marginBottom: 24 }}>
@@ -1927,46 +1979,52 @@ export default function ParentPortal() {
 
             {/* Booking history */}
             <div className="card" style={{ padding: '22px 24px' }}>
-              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 10, flexWrap: 'wrap', marginBottom: 16 }}>
-                <div><div className="section-title">My Booking Requests</div><div className="section-sub">Live status updates from the clinic</div></div>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 10, flexWrap: 'wrap', marginBottom: 16, cursor: 'pointer' }} onClick={() => setShowBookingRequests(v => !v)}>
+                <div>
+                  <div className="section-title">My Booking Requests<span style={{ fontSize: 11.5, fontWeight: 600, color: '#94A3B8', marginLeft: 8 }}>({myReservations.length})</span></div>
+                  <div className="section-sub">Live status updates from the clinic</div>
+                </div>
+                <i className={'fa-solid ' + (showBookingRequests ? 'fa-chevron-up' : 'fa-chevron-down')} style={{ fontSize: 12, color: '#94A3B8' }} />
               </div>
-              <div className="history-list">
-                {myReservations.length === 0 ? (
-                  <div style={{ fontSize: 12.5, color: '#94A3B8', textAlign: 'center', padding: '20px 0' }}><i className="fa-solid fa-inbox" style={{ marginRight: 7 }} />No booking requests yet. Submit one above!</div>
-                ) : myReservations.slice(0, 10).map(r => {
-                  const badge = r.status === 'confirmed' ? <span className="pill pill-green">Confirmed</span>
-                    : r.status === 'awaiting_payment' ? <span className="pill pill-amber">Pending</span>
-                    : r.status === 'declined' ? <span className="pill pill-red">Declined</span>
-                    : r.status === 'cancelled' ? <span className="pill pill-gray">Cancelled</span>
-                    : r.status === 'rescheduled' ? <span className="pill pill-blue">Rescheduled</span>
-                    : r.status === 'completed' ? <span className="pill pill-teal">Completed</span>
-                    : r.status === 'no_show' ? <span className="pill pill-red">No-Show</span>
-                    : r.status === 'ongoing' ? <span className="pill pill-purple">Ongoing</span>
-                    : <span className="pill pill-amber">Pending Review</span>;
-                  return (
-                    <div className="history-item" key={r.id}>
-                      <div style={{ display: 'flex', justifyContent: 'space-between', gap: 10, flexWrap: 'wrap', marginBottom: 4 }}>
-                        <div style={{ fontSize: 13, fontWeight: 600, color: '#0F172A' }}>{fmtDate(r.date)} · {r.time_slot}</div>{badge}
+              {showBookingRequests && (
+                <div className="history-list">
+                  {myReservations.length === 0 ? (
+                    <div style={{ fontSize: 12.5, color: '#94A3B8', textAlign: 'center', padding: '20px 0' }}><i className="fa-solid fa-inbox" style={{ marginRight: 7 }} />No booking requests yet. Submit one above!</div>
+                  ) : myReservations.slice(0, 10).map(r => {
+                    const badge = r.status === 'confirmed' ? <span className="pill pill-green">Confirmed</span>
+                      : r.status === 'awaiting_payment' ? <span className="pill pill-amber">Pending</span>
+                      : r.status === 'declined' ? <span className="pill pill-red">Declined</span>
+                      : r.status === 'cancelled' ? <span className="pill pill-gray">Cancelled</span>
+                      : r.status === 'rescheduled' ? <span className="pill pill-blue">Rescheduled</span>
+                      : r.status === 'completed' ? <span className="pill pill-teal">Completed</span>
+                      : r.status === 'no_show' ? <span className="pill pill-red">No-Show</span>
+                      : r.status === 'ongoing' ? <span className="pill pill-purple">Ongoing</span>
+                      : <span className="pill pill-amber">Pending Review</span>;
+                    return (
+                      <div className="history-item" key={r.id}>
+                        <div style={{ display: 'flex', justifyContent: 'space-between', gap: 10, flexWrap: 'wrap', marginBottom: 4 }}>
+                          <div style={{ fontSize: 13, fontWeight: 600, color: '#0F172A' }}>{fmtDate(r.date)} · {r.time_slot}</div>{badge}
+                        </div>
+                        <div style={{ fontSize: 12.5, color: '#64748B' }}>{r.session_type}{r.clients?.full_name ? ' · ' + r.clients.full_name : ''}</div>
+                        {r.status === 'declined' && r.notes && (
+                          <div style={{ marginTop: 6, padding: '7px 10px', borderRadius: 7, background: '#FEF2F2', border: '1px solid #FECACA', fontSize: 12, color: '#DC2626' }}>
+                            <i className="fa-solid fa-comment-slash" style={{ marginRight: 5 }} />{r.notes}
+                          </div>
+                        )}
+                        {r.status === 'awaiting_payment' && (
+                          <div style={{ display: 'flex', gap: 8, marginTop: 6 }}>
+                            <button className="btn-primary" style={{ fontSize: 11, padding: '5px 10px' }} onClick={() => {
+                              const p = (payments || []).find(pm => pm.reservation_id === r.id);
+                              if (p) generateQr(p);
+                            }}>Complete Payment</button>
+                            <button className="btn-secondary" style={{ fontSize: 11, padding: '5px 10px' }} onClick={() => setCancelTarget(r)}><i className="fa-solid fa-xmark" style={{ marginRight: 4 }} />Cancel Booking</button>
+                          </div>
+                        )}
                       </div>
-                      <div style={{ fontSize: 12.5, color: '#64748B' }}>{r.session_type}{r.clients?.full_name ? ' · ' + r.clients.full_name : ''}</div>
-                      {r.status === 'declined' && r.notes && (
-                        <div style={{ marginTop: 6, padding: '7px 10px', borderRadius: 7, background: '#FEF2F2', border: '1px solid #FECACA', fontSize: 12, color: '#DC2626' }}>
-                          <i className="fa-solid fa-comment-slash" style={{ marginRight: 5 }} />{r.notes}
-                        </div>
-                      )}
-                      {r.status === 'awaiting_payment' && (
-                        <div style={{ display: 'flex', gap: 8, marginTop: 6 }}>
-                          <button className="btn-primary" style={{ fontSize: 11, padding: '5px 10px' }} onClick={() => {
-                            const p = (payments || []).find(pm => pm.reservation_id === r.id);
-                            if (p) generateQr(p);
-                          }}>Complete Payment</button>
-                          <button className="btn-secondary" style={{ fontSize: 11, padding: '5px 10px' }} onClick={() => setCancelTarget(r)}><i className="fa-solid fa-xmark" style={{ marginRight: 4 }} />Cancel Booking</button>
-                        </div>
-                      )}
-                    </div>
-                  );
-                })}
-              </div>
+                    );
+                  })}
+                </div>
+              )}
             </div>
           </>
         )}
@@ -2184,13 +2242,19 @@ export default function ParentPortal() {
             <div className="card" style={{ padding: '22px 0 0' }}>
               <div style={{ padding: '0 20px 14px', borderBottom: '1px solid #F1F5F9', display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
                 <div><div className="section-title">Digital Billing Invoices</div><div className="section-sub">Tap View for the full receipt, payment method, and reference number</div></div>
-                <select className="form-select" style={{ width: 'auto', height: 32, fontSize: 12.5 }} value={invoiceTypeFilter} onChange={e => setInvoiceTypeFilter(e.target.value)}>
-                  <option value="all">All Types</option>
-                  <option value="session">Session Payments</option>
-                  <option value="credit">Unallocated Session Credits</option>
-                  <option value="no_show_fee">No-Show Fees</option>
-                  <option value="retainer_fee">Retainer Fees</option>
-                </select>
+                <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+                  <div style={{ position: 'relative' }}>
+                    <i className="fa-solid fa-magnifying-glass" style={{ position: 'absolute', left: 9, top: '50%', transform: 'translateY(-50%)', fontSize: 11, color: '#94A3B8' }} />
+                    <input type="text" className="form-input" placeholder="Search invoice no." value={invoiceSearchQuery} onChange={e => setInvoiceSearchQuery(e.target.value)} style={{ width: 160, height: 32, fontSize: 12.5, paddingLeft: 26 }} />
+                  </div>
+                  <select className="form-select" style={{ width: 'auto', height: 32, fontSize: 12.5 }} value={invoiceTypeFilter} onChange={e => setInvoiceTypeFilter(e.target.value)}>
+                    <option value="all">All Types</option>
+                    <option value="session">Session Payments</option>
+                    <option value="credit">Unallocated Session Credits</option>
+                    <option value="no_show_fee">No-Show Fees</option>
+                    <option value="retainer_fee">Retainer Fees</option>
+                  </select>
+                </div>
               </div>
               <div>
                 {filteredInvoices.length === 0 && (
@@ -2526,8 +2590,7 @@ export default function ParentPortal() {
             style={{ width: '100%', minHeight: 70, marginBottom: 14 }}
           />
           <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8 }}>
-            <button className="btn-secondary" disabled={submittingCancellationRequest} onClick={() => setCancellationRequestSession(null)}>Cancel</button>
-            <button className="btn-primary" disabled={!cancellationFile || submittingCancellationRequest} onClick={submitCancellationRequest}>
+            <button className="btn-primary" disabled={submittingCancellationRequest} onClick={submitCancellationRequest}>
               {submittingCancellationRequest ? <><i className="fa-solid fa-spinner fa-spin" style={{ marginRight: 6 }} />Submitting…</> : 'Submit Request'}
             </button>
           </div>

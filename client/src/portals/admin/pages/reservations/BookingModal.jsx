@@ -1,18 +1,7 @@
 import { useEffect, useState } from 'react';
 import { Modal } from '../../../../components/ui.jsx';
 import { api } from '../../../../api.js';
-import { rateForSessionType, effectiveSlotAvailable, REQUIRED_ROLE_FOR_TYPE, therapistWorksOn, todayPH } from './reservationsHelpers.js';
-
-/** Monday-Sunday bounds (inclusive) of the current PH-time calendar week, as
- *  "YYYY-MM-DD" strings, mirrors server/routes/reservations.js's own
- *  currentWeekRangePH, see the make-up-eligibility effect below. */
-function currentWeekRangePH() {
-  const d = new Date(todayPH() + 'T00:00:00Z');
-  const daysSinceMonday = (d.getUTCDay() + 6) % 7;
-  const monday = new Date(d); monday.setUTCDate(d.getUTCDate() - daysSinceMonday);
-  const sunday = new Date(monday); sunday.setUTCDate(monday.getUTCDate() + 6);
-  return { weekStart: monday.toISOString().slice(0, 10), weekEnd: sunday.toISOString().slice(0, 10) };
-}
+import { rateForSessionType, effectiveSlotAvailable, REQUIRED_ROLE_FOR_TYPE, therapistWorksOn } from './reservationsHelpers.js';
 
 // A Combined client carries two independent assigned therapists (one OT, one
 // Speech), never a single shared field, this picks the one matching the
@@ -145,7 +134,10 @@ export default function BookingModal({ selected, daySlots, slotState, defaultTim
   // checkbox even appears. A cancellation only counts as still outstanding if
   // that exact date's slot with that therapist was never re-filled afterward
   // (e.g. cancelled then immediately rebooked at the same date/time to fix a
-  // mistake isn't a real gap).
+  // mistake isn't a real gap). Accumulates across ALL time rather than
+  // resetting weekly: every real miss (ever) is a banked entitlement per
+  // therapist until it's actually used by a make-up, it never expires on its
+  // own.
   const [outstandingMakeupTherapists, setOutstandingMakeupTherapists] = useState([]);
   useEffect(() => {
     if (!selectedClientId || requiredRole) { setOutstandingMakeupTherapists([]); return; }
@@ -154,24 +146,17 @@ export default function BookingModal({ selected, daySlots, slotState, defaultTim
       .then(list => {
         if (cancelledReq) return;
         const all = (list || []).filter(r => r.session_type === serviceType);
-        // Scoped to THIS week only, or a client could pre-emptively cancel a
-        // future week's session and use it to justify an extra make-up right
-        // now, before that session was even supposed to happen, see
-        // outstandingMakeupTherapists server-side for the authoritative check.
-        const { weekStart, weekEnd } = currentWeekRangePH();
-        const inWeek = (d) => d >= weekStart && d <= weekEnd;
-        const phDateOf = (iso) => new Date(new Date(iso).getTime() + 8 * 60 * 60 * 1000).toISOString().slice(0, 10);
-        const misses = all.filter(r => !r.is_makeup && ['cancelled', 'no_show'].includes(r.status) && r.therapist_name && inWeek(r.date)
+        const misses = all.filter(r => !r.is_makeup && ['cancelled', 'no_show'].includes(r.status) && r.therapist_name
           && !all.some(other => other.id !== r.id && other.therapist_name === r.therapist_name
             && other.date === r.date && !['cancelled', 'declined'].includes(other.status)));
         const missCounts = {};
         misses.forEach(m => { missCounts[m.therapist_name] = (missCounts[m.therapist_name] || 0) + 1; });
-        // A make-up already booked this week (whatever later happens to it)
-        // spends that entitlement, otherwise cancelling a make-up would look
-        // like a fresh miss and mint another one, looping forever.
+        // Every make-up EVER booked (whatever later happens to it) spends one
+        // entitlement, otherwise cancelling a make-up would look like a
+        // fresh miss and mint another one, looping forever.
         const usedCounts = {};
         all.forEach(r => {
-          if (r.is_makeup && r.status !== 'declined' && r.therapist_name && r.created_at && inWeek(phDateOf(r.created_at))) {
+          if (r.is_makeup && r.status !== 'declined' && r.therapist_name) {
             usedCounts[r.therapist_name] = (usedCounts[r.therapist_name] || 0) + 1;
           }
         });
@@ -410,10 +395,7 @@ export default function BookingModal({ selected, daySlots, slotState, defaultTim
               <label style={{ display: 'flex', alignItems: 'flex-start', gap: 8, cursor: 'pointer' }}>
                 <input id="modal-is-makeup" type="checkbox" checked={isMakeup} onChange={e => setIsMakeup(e.target.checked)} style={{ marginTop: 2 }} />
                 <span style={{ fontSize: 11.5, color: '#92400E' }}>
-                  <strong>This is a make-up session.</strong> {makeupCandidateNames.length === 1
-                    ? `Books this open gap with ${makeupCandidateNames[0]}, matching ${selectedClientForSchedule?.full_name}'s missed session on file with them`
-                    : `Books this open gap with whichever of ${selectedClientForSchedule?.full_name}'s therapists you pick below, matching their missed session on file`
-                  } without needing to match their fixed day/time, for a one-off missed-session catch-up. Only offered because there's an actual missed session on file, not a free extra add-on.
+                  <strong>Book Make-up session</strong>
                 </span>
               </label>
               {isMakeup && makeupCandidateNames.length > 1 && (

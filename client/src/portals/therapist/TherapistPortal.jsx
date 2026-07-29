@@ -158,8 +158,6 @@ export default function TherapistPortal() {
           <div className="nav-label">My Caseload</div>
           {nav_item('clients', 'fa-child', 'Client Records')}
           {nav_item('milestones', 'fa-trophy', 'Milestone Scoreboard')}
-          <div className="nav-label">System</div>
-          {nav_item('notifications', 'fa-bell', 'Notifications')}
         </nav>
       </aside>
       <div id="sidebar-backdrop" className={sidebarOpen ? 'open' : ''} onClick={() => setSidebarOpen(false)} />
@@ -182,7 +180,7 @@ export default function TherapistPortal() {
                   {notifs.length === 0 && (
                     <div style={{ padding: '24px 16px', textAlign: 'center', fontSize: 12.5, color: '#94A3B8' }}>No notifications yet</div>
                   )}
-                  {notifs.slice(0, 8).map(n => (
+                  {notifs.slice(0, 15).map(n => (
                     <div key={n.id} style={{ display: 'flex', alignItems: 'flex-start', gap: 12, padding: '12px 16px', cursor: n.read ? 'default' : 'pointer', background: !n.read ? '#F0F9FF' : '#fff', borderBottom: '1px solid #F8FAFC' }} onClick={() => !n.read && markNotifRead(n.id)}>
                       <div style={{ width: 34, height: 34, borderRadius: 9, flexShrink: 0, background: !n.read ? '#DBEAFE' : '#F1F5F9', color: !n.read ? '#2563EB' : '#94A3B8', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
                         <i className={'fa-solid ' + (n.icon || 'fa-bell')} style={{ fontSize: 13 }} />

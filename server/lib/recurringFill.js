@@ -39,7 +39,25 @@ function upcomingWeekdayDates(dayOfWeek) {
  * therapist no longer works (shift changed since the schedule was assigned) —
  * neither case creates a confirmed booking nobody can actually deliver.
  * Idempotent: safe to call repeatedly (assignment time, daily sweep), a date
- * that already has a live reservation is left untouched.
+ * that already has ANY reservation on file at this schedule's CURRENT
+ * time_slot — including a cancelled, no_show, or declined one — is left
+ * untouched. A cancelled/no_show occurrence has already been adjudicated
+ * (e.g. an unexcused cancellation review, a no-show fee); recreating a fresh
+ * 'confirmed' row for that same date+time would silently resurrect an
+ * already-settled week and undo that outcome. The daily sweep runs against a
+ * rolling horizon, so a date cancelled days ago can still fall inside the
+ * window on a later run — it must never be treated as "empty" just because
+ * its status isn't 'confirmed' anymore.
+ *
+ * Matching on time_slot AND therapist_name (not just date) deliberately lets
+ * PUT /recurring-schedules/:id's own reconciliation still refill correctly
+ * right after moving a schedule to a new day/time/therapist: the stale
+ * reservations it just cancelled sit at the OLD time_slot and/or OLD
+ * therapist, so they never block a fresh fill at the NEW combo, only a
+ * genuine already-settled occurrence matching the schedule's CURRENT
+ * time_slot + therapist does (a day_of_week change alone never causes a
+ * false collision either, since a different weekday produces an entirely
+ * different set of calendar dates in the first place).
  */
 export async function fillReservationsForSchedule(schedule, actorId) {
   if (schedule.status !== 'active') return { created: 0, skippedHolidays: 0 };
@@ -53,8 +71,8 @@ export async function fillReservationsForSchedule(schedule, actorId) {
   if (!candidateDates.length) return { created: 0, skippedHolidays: 0 };
 
   const { data: existing } = await db.from('reservations')
-    .select('date').eq('recurring_schedule_id', schedule.id).in('date', candidateDates)
-    .not('status', 'in', '(cancelled,declined)');
+    .select('date, time_slot, therapist_name').eq('recurring_schedule_id', schedule.id).in('date', candidateDates)
+    .eq('time_slot', schedule.time_slot).eq('therapist_name', schedule.therapist_name);
   const existingDates = new Set((existing || []).map(r => r.date));
 
   let created = 0;

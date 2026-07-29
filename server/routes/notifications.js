@@ -4,8 +4,6 @@ import { requireAuth, requireRole } from '../middleware/auth.js';
 import { logAudit } from '../lib/audit.js';
 import { describeNotification, channelEnabled } from '../lib/notify.js';
 import { sendSms } from '../sms.js';
-import { notifyBalanceReminderNow, notifySessionReminderNow } from '../lib/reminders.js';
-
 const router = Router();
 router.use(requireAuth);
 
@@ -125,83 +123,6 @@ router.put('/settings', requireRole('admin', 'staff'), async (req, res) => {
   const { data, error } = await db.from('notification_settings').update(patch).eq('id', 1).select().single();
   if (error) return res.status(500).json({ error: error.message });
   res.json(data);
-});
-
-/**
- * GET /api/notifications/reminders, real, derived operational reminders.
- * Booking only: pending self-service/staff-entered reservation requests
- * awaiting approval. Payment and upcoming-session reminders are handled by
- * the automated sweep (see lib/reminders.js) rather than this table. An
- * 'ot'/'speech' therapist doesn't see these at all, front-desk booking
- * reminders aren't their job. No separate table, computed live from
- * reservations so it can never drift from what's actually true.
- */
-router.get('/reminders', requireRole('admin', 'staff', 'ot', 'speech'), async (req, res) => {
-  const isTherapist = req.user.role === 'ot' || req.user.role === 'speech';
-
-  const { data: pendingBookings } = isTherapist
-    ? { data: [] }
-    : await db.from('reservations').select('*, clients(full_name, client_code)').eq('status', 'pending').order('date');
-
-  const reminders = [];
-
-  for (const r of pendingBookings || []) {
-    reminders.push({
-      id: 'booking-' + r.id,
-      record_id: r.id,
-      type: 'Reservation',
-      typePill: 'pill-blue',
-      title: 'Booking request, ' + (r.clients?.full_name || 'Unknown client'),
-      sub: (r.channel === 'parent-portal' ? 'Parent self-service' : 'Staff-entered') + ' · awaiting approval for ' + r.date + ' ' + r.time_slot,
-      due: 'Today',
-      dueUrgent: false,
-      priority: 'High',
-      priorityPill: 'pill-amber',
-      assignedTo: 'Front Desk',
-      link: 'reservations'
-    });
-  }
-
-  res.json(reminders);
-});
-
-/**
- * POST /api/notifications/reminders/notify, the 12.1 Reminders table's
- * "Notify" button. Payment/Session reminders message the actual guardian
- * (in-app + SMS, same wording as the automated sweep), there's no automated
- * frequency gate here since a staff member is explicitly asking for it now.
- * A pending booking Reservation has no parent action to notify them about
- * (they already submitted it); it just re-flags the request for admins.
- */
-router.post('/reminders/notify', requireRole('admin', 'staff', 'ot', 'speech'), async (req, res) => {
-  const { type, record_id, title, body } = req.body || {};
-  if (!type || !record_id) return res.status(400).json({ error: 'type and record_id are required' });
-  try {
-    if (type === 'Payment') {
-      await notifyBalanceReminderNow(record_id);
-    } else if (type === 'Session') {
-      await notifySessionReminderNow(record_id);
-    } else {
-      const { data, error } = await db.from('notifications').insert({
-        title: title || 'Reminder', body: body || '', icon: 'fa-bell', target_role: 'admin', created_by: req.user.id
-      }).select().single();
-      if (error) throw new Error(error.message);
-      await logAudit({
-        table_name: 'notifications', record_id: data.id, action: 'create',
-        description: describeNotification(title || 'Reminder', 'admin', null), created_by: req.user.id
-      });
-      if (await channelEnabled('channel_sms')) {
-        const smsText = (title || 'Reminder') + (body ? ': ' + body : '') + ', KID Clinic';
-        const { data: recipients } = await db.from('profiles').select('contact').eq('role', 'admin').eq('active', true);
-        for (const r of recipients || []) {
-          if (r.contact) sendSms({ to: r.contact, message: smsText }).catch(e => console.error('Reminder SMS failed:', e.message));
-        }
-      }
-    }
-    res.json({ ok: true });
-  } catch (e) {
-    res.status(400).json({ error: e.message });
-  }
 });
 
 export default router;

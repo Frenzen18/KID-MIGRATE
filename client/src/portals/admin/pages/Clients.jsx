@@ -6,6 +6,8 @@ import { formatPhoneDisplay } from '../../../phoneInput.js';
 
 /* == page: clients == */
 
+const WEEKDAY_NAMES = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
+
 /* Color palette for avatars (cycle based on index), the same 8-slot
    categorical order used for role badges and chart series elsewhere
    (see --cat-1..8 in shared.css), one system instead of a separate
@@ -174,6 +176,13 @@ export default function Clients({ go, toast, openModal, role = 'admin', scopeToT
   const [historyName, setHistoryName] = useState('');
   const [gasEntries, setGasEntries] = useState([]);
   const [gasLoading, setGasLoading] = useState(false);
+  // Every active fixed weekly schedule for the selected client, so the
+  // "Assigned Therapist" section can show ALL of them (a discipline can have
+  // more than one active schedule, e.g. 2x/week needs 2 different
+  // therapists, see EditClientModal), not just the single legacy
+  // assigned_ot/speech_therapist_name field, which only ever reflects
+  // whichever schedule action wrote to it last.
+  const [clientSchedules, setClientSchedules] = useState([]);
   // Session History Remarks, which session entry's remarks the dropdown below GAS Progress is showing.
   const [remarksEntryId, setRemarksEntryId] = useState(null);
   // Defaults to the most recent entry whenever a client's entries (re)load, gasEntries is
@@ -314,7 +323,6 @@ export default function Clients({ go, toast, openModal, role = 'admin', scopeToT
       dob: c.dob_formatted, guardian: c.guardian, contact: c.contact, enrolled: c.enrolled,
       allergies: c.allergies || 'None recorded', medications: c.daily_medication || 'None recorded',
       thxName: c.thxName, thxInitials: (c.thxName || '–').split(' ').map(w => w[0]).join('').slice(0, 2), thxType: c.thxType,
-      thxOt: c.thxOt, thxSpeech: c.thxSpeech,
       status: c.status, statusPill: c.statusPill, therapy: c.therapy,
       // Development & Functional Information, keyed by dev_functional_fields.id
       dev_functional_data: c.dev_functional_data || {},
@@ -326,6 +334,12 @@ export default function Clients({ go, toast, openModal, role = 'admin', scopeToT
     setEditedSummary('');
     setEditedRecommendations('');
     setChartMonthFilter('all');
+
+    // Every active fixed weekly schedule (see "Assigned Therapist" section below)
+    setClientSchedules([]);
+    api('/reservations/' + c.id + '/schedules')
+      .then(list => setClientSchedules((list || []).filter(s => s.status === 'active')))
+      .catch(() => setClientSchedules([]));
 
     // GAS Longitudinal Progress
     setGasEntries([]);
@@ -736,24 +750,24 @@ export default function Clients({ go, toast, openModal, role = 'admin', scopeToT
                 </div>
               </div>
             </div>
-            {/* Assigned Therapist, unassigned shows a muted "not yet assigned" state instead of a
+            {/* Assigned Therapist(s), unassigned shows a muted "not yet assigned" state instead of a
                 bare "–" standing in for both the avatar initials and the name, which read like
-                missing data rather than an intentional empty state. */}
+                missing data rather than an intentional empty state. One card per ACTIVE schedule
+                (not per discipline) - a discipline can have more than one, e.g. 2x/week needs 2
+                different therapists (see EditClientModal), the legacy single
+                assigned_ot/speech_therapist_name field only ever reflects the most recent one. */}
             <div className="no-print" style={{ display: 'flex', flexDirection: 'column', gap: 10, marginBottom: 20 }}>
-              {[
-                ...(profile.thxOt ? [{ name: profile.thxOt, role: 'Occupational Therapist' }] : []),
-                ...(profile.thxSpeech ? [{ name: profile.thxSpeech, role: 'Speech-Language Pathologist' }] : []),
-              ].map(t => (
-                <div key={t.role} style={{ padding: '14px 18px', borderRadius: 12, border: '1px solid #E2E8F0', background: '#FAFBFC', display: 'flex', alignItems: 'center', gap: 12 }}>
-                  <div style={{ width: 40, height: 40, borderRadius: 10, background: '#DBEAFE', color: '#2563EB', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 13, fontWeight: 700, flexShrink: 0 }}>{t.name.split(' ').map(w => w[0]).join('').slice(0, 2)}</div>
+              {clientSchedules.map(s => (
+                <div key={s.id} style={{ padding: '14px 18px', borderRadius: 12, border: '1px solid #E2E8F0', background: '#FAFBFC', display: 'flex', alignItems: 'center', gap: 12 }}>
+                  <div style={{ width: 40, height: 40, borderRadius: 10, background: '#DBEAFE', color: '#2563EB', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 13, fontWeight: 700, flexShrink: 0 }}>{s.therapist_name.split(' ').map(w => w[0]).join('').slice(0, 2)}</div>
                   <div style={{ flex: 1 }}>
                     <div style={{ fontSize: 10.5, color: '#94A3B8', fontWeight: 600, textTransform: 'uppercase', letterSpacing: '.3px' }}>Assigned Therapist</div>
-                    <div style={{ fontSize: 13.5, fontWeight: 600, color: '#0F172A' }}>{t.name}</div>
-                    <div style={{ fontSize: 12, color: '#64748B' }}>{t.role}</div>
+                    <div style={{ fontSize: 13.5, fontWeight: 600, color: '#0F172A' }}>{s.therapist_name}</div>
+                    <div style={{ fontSize: 12, color: '#64748B' }}>{s.discipline === 'OT' ? 'Occupational Therapist' : 'Speech-Language Pathologist'} · {WEEKDAY_NAMES[s.day_of_week]}s at {s.time_slot}</div>
                   </div>
                 </div>
               ))}
-              {!profile.thxOt && !profile.thxSpeech && (
+              {clientSchedules.length === 0 && (
                 <div style={{ padding: '14px 18px', borderRadius: 12, border: '1px solid #E2E8F0', background: '#FAFBFC', display: 'flex', alignItems: 'center', gap: 12 }}>
                   <div style={{ width: 40, height: 40, borderRadius: 10, background: '#F1F5F9', color: '#94A3B8', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 15, flexShrink: 0 }}><i className="fa-solid fa-user-slash" /></div>
                   <div style={{ flex: 1 }}>

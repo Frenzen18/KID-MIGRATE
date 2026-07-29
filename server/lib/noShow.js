@@ -68,11 +68,16 @@ export async function checkConsecutiveAbsences(reservation) {
   // consecutive" - never a make-up (deliberately booked on a different day,
   // see POST /reservations), which would otherwise mix into the same
   // recurring_schedule_id and get mistaken for one of the schedule's real
-  // weekly misses.
+  // weekly misses. Also excludes administrative_cancel rows (the schedule
+  // itself was edited/discharged, not a real miss, see
+  // migration_administrative_cancel_flag.sql) - left in, editing a schedule
+  // could cancel 2+ already-generated future occurrences at once and get
+  // mistaken for 2-3 real consecutive absences.
   const { data: rows } = await db.from('reservations')
     .select('id, status, no_show_excused, date, time_slot')
     .eq('recurring_schedule_id', reservation.recurring_schedule_id)
     .eq('is_makeup', false)
+    .eq('administrative_cancel', false)
     .in('status', ['completed', 'no_show', 'cancelled', 'confirmed', 'rescheduled'])
     .lte('date', currentWeekEndPH())
     .order('date', { ascending: false })

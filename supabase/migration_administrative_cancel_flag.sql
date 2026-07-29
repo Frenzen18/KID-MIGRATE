@@ -1,0 +1,12 @@
+-- Distinguishes an administrative cancellation (staff moved or discharged a
+-- fixed schedule, see cancelFutureReservationsForDischarge and the reconcile
+-- block in PUT /reservations/recurring-schedules/:id) from a REAL missed
+-- session (guardian/staff cancellation, no-show). Both set status='cancelled'
+-- and no_show_excused=true, but only a real one should ever count toward the
+-- 3-consecutive-absence retainer-fee/forfeiture streak (see
+-- checkConsecutiveAbsences in server/lib/noShow.js) or the attendance-streak
+-- warning shown in Edit Client Profile (computeAttendanceStreak, client-side).
+-- Without this flag, simply editing or discharging a schedule (which can
+-- cancel 2+ already-generated future occurrences at once, 7 days apart) reads
+-- exactly like 2-3 real consecutive absences and falsely triggers/threatens a fee.
+alter table reservations add column if not exists administrative_cancel boolean not null default false;
