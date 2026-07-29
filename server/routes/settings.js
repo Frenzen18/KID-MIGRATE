@@ -177,6 +177,13 @@ router.post('/holidays', requireAuth, requireRole('admin', 'staff'), async (req,
   for (const r of affected || []) {
     try {
       await db.from('reservations').update({ status: 'cancelled' }).eq('id', r.id);
+      // A closure is a legitimate reason like any other: applyCancelSideEffects
+      // only converts an already-PAID invoice into a credit, it never touches a
+      // still-pending one, so that must be cleared explicitly first, same as
+      // every other excused-cancellation path in this codebase. Scoped to the
+      // session invoice only, a pending no_show_fee or retainer_fee row on the
+      // same reservation isn't this closure's business.
+      await db.from('payments').delete().eq('reservation_id', r.id).eq('fee_type', 'session').eq('status', 'pending');
       await applyCancelSideEffects(r, req.user.id);
       excusedCount++;
     } catch (err) {
